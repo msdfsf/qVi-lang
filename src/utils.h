@@ -6,8 +6,8 @@ namespace Utils {
 
     inline uint32_t reverse(uint32_t word);
 
-    int findLineStart(const char *body, int idx, int *tabCount);
-    int findLineEnd(const char* str, int idx);
+    int findLineStart(const char* str, int idx, uint32_t linesBefore = 0);
+    int findLineEnd(const char* str, int idx, uint32_t linesAfter = 0);
 
     inline uint64_t getPow2Ceil(size_t val) {
         return std::bit_ceil(val);

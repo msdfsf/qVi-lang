@@ -4,14 +4,34 @@
 #include "utils.h"
 
 #include <cstdarg>
+#include <cstdint>
 #include <stdio.h>
 #include <stdarg.h>
 #include <cstdlib>
 
+
+
+// TODO : to config
+constexpr int     LoggerContextLines = 1;
+
+
 constexpr int DEFAULT_MESSAGE_LENGTH = 256;
 constexpr int TAB_SIZE = 4;
 
+constexpr    size_t   gBufferSize = 1024;
+thread_local char     gBuffer[gBufferSize];
+thread_local uint32_t gBufferIndex = 0;
+thread_local uint32_t gBufferPreviousLength = 0;
+
+
+
+
 namespace Logger {
+
+    uint32_t     flushStreamCount = 0;
+    FlushStream* flushStreams = NULL;
+
+    SpanStyle defaultSpanStyle = SpanStyle();
 
     uint32_t verbosity = PLAIN | HINT | INFO | WARNING | ERROR;
     uint64_t mute = 0;
@@ -27,13 +47,72 @@ namespace Logger {
         }
     }
 
-    // TODO : format argument {
-    //  digitsAlign,
-    //  color,
-    //  backgroundColor
-    // }
-    int printSpanStrict(FILE* stream, Span* span) {
 
+
+    // Low level rutines that gather all
+    // needed info from configuration
+    void write(const char* str, uint32_t len) {
+        const uint32_t size = gBufferSize - gBufferIndex;
+        len = len < size ? len : size;
+
+        memcpy(gBuffer + gBufferIndex, str, len);
+        gBufferIndex += len;
+    }
+
+    void write(const char* const str) {
+        write(str, strlen(str));
+    }
+
+    void writefv(const char* fmt, va_list args) {
+        const uint32_t size = gBufferSize - gBufferIndex;
+
+        const int len = vsnprintf(gBuffer + gBufferIndex, size, fmt, args);
+        gBufferIndex += len >= 0 ? (len > size ? size : len) : 0;
+    }
+
+    void writef(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        writefv(fmt, args);
+        va_end(args);
+    }
+
+
+
+    void flush(FlushStream* stream) {
+        if (stream->kind == FlushStream::FS_C_STREAM) {
+            fwrite(gBuffer, 1, gBufferIndex, stream->cstream);
+        }
+        gBufferPreviousLength = gBufferIndex;
+        gBufferIndex = 0;
+    }
+
+    void flush() {
+        for (int i = 0; i < flushStreamCount; i++) {
+            FlushStream* stream = flushStreams + i;
+            if (stream->kind == FlushStream::FS_C_STREAM) {
+                fwrite(gBuffer, 1, gBufferIndex, stream->cstream);
+            }
+        }
+        gBufferPreviousLength = gBufferIndex;
+        gBufferIndex = 0;
+    }
+
+
+
+    char* getLastString(int* len) {
+        *len = gBufferPreviousLength;
+        return gBuffer;
+    }
+
+    char* getCurrentString(int* len) {
+        *len = gBufferIndex;
+        return gBuffer;
+    }
+
+
+
+    int printSpanStrictNoFlush(Span* span) {
         const char* str = span->str;
         const uint64_t size = span->end.idx - span->start.idx;
         const uint64_t endIdx = span->end.idx;
@@ -46,8 +125,8 @@ namespace Logger {
         while (idx < endIdx) {
             const char ch = str[idx];
             if (ch == '\n') {
-                printf(AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
-                fwrite(str + prevIdx, 1, idx - prevIdx, stream);
+                writef(AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
+                write(str + prevIdx, idx - prevIdx);
                 lineNum++;
                 prevIdx = idx;
             }
@@ -55,158 +134,231 @@ namespace Logger {
         }
 
         if (idx - prevIdx > 0) {
-            printf(AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
-            fwrite(str + prevIdx, 1, idx - prevIdx, stream);
+            writef(AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
+            write(str + prevIdx, idx - prevIdx);
         }
 
-        fprintf(stream, AC_RESET "\n");
+        writef(AC_RESET "\n");
 
         return maxLineDigits;
+    };
 
+    int printSpanStrict(Span* span) {
+        const int tmp = printSpanStrictNoFlush(span);
+        flush();
+        return tmp;
     }
 
-    // messy
-    void vlog (const Type type, const char* const message, Span* span, va_list args) {
+    int printSpanStrict(FlushStream* stream, Span* span) {
+        const int tmp = printSpanStrictNoFlush(span);
+        flush(stream);
+        return tmp;
+    }
 
+
+
+    void printUnderline(uint32_t maxLineDigits, uint32_t offset, uint32_t length, SpanStyle* style) {
+        writef("%s%*s | ", style->colorGutter, maxLineDigits, " ");
+
+        for (int i = 0; i < offset; i++) write(" ");
+        writef("%s%c%s", style->colorPointer, style->pointer, style->colorUnderline);
+        for (int i = 1; i < length; i++) writef("%c", style->underline);
+
+        write("\n");
+    }
+
+    int printSpanNoFlush(Span* span, SpanStyle* style) {
+        if (!span || !span->str || !style) return 0;
+
+        const char* str = span->str;
+
+        uint32_t startIdx = Utils::findLineStart(str, span->start.idx, style->contextLines);
+        uint32_t endIdx   = Utils::findLineEnd(str, span->end.idx, style->contextLines);
+
+        const int maxLineDigits = Utils::countDigits(span->end.ln + style->contextLines);
+
+        uint32_t idx = startIdx;
+        uint32_t lastCommitedIdx = startIdx - 1;
+        uint32_t lineStartIdx = idx;
+
+        uint32_t currentLine = span->start.ln - style->contextLines;;
+
+        if (idx <= endIdx) {
+            writef("%s%*u | %s", style->colorGutter, maxLineDigits, currentLine, style->colorText);
+        }
+
+        bool lineInSpan = false;
+        while (idx <= endIdx) {
+            if (str[idx] == '\n' || idx == endIdx) {
+                write(str + lastCommitedIdx + 1, idx - lastCommitedIdx);
+
+                if (style->showUnderline && lineInSpan) {
+                    const uint32_t start = span->start.idx > lineStartIdx ?
+                        (span->start.idx - lineStartIdx) : 0;
+                    const uint32_t end = span->end.idx < idx ?
+                        (span->end.idx - lineStartIdx) : (idx - lineStartIdx);
+                    const uint32_t length = end > start ? (end - start) : 1;
+
+                    printUnderline(maxLineDigits, start, length, style);
+                }
+
+                if (str[idx] != '\n') break;
+
+                currentLine++;
+                writef("%s%*u | %s", style->colorGutter, maxLineDigits, currentLine, style->colorText);
+
+                lineInSpan = idx < span->end.idx;
+
+                lineStartIdx = idx + 1;
+                lastCommitedIdx = idx;
+                
+                idx++;
+                continue;
+            }
+
+            if (idx == span->start.idx) {
+                lineInSpan = true;
+                write(str + lastCommitedIdx + 1, idx - lastCommitedIdx - 1);
+                write(style->colorHighlight);
+                
+                if (idx == span->end.idx) {
+                    write(str + idx, 1);
+                    write(style->colorText);
+                    lastCommitedIdx = idx;
+                } else {
+                    lastCommitedIdx = idx - 1;
+                }
+            } else if (idx == span->end.idx) {
+                write(str + lastCommitedIdx + 1, idx - lastCommitedIdx - 1);
+                write(style->colorText);
+                lastCommitedIdx = idx - 1;
+            }
+
+            idx++;
+        }
+
+        write(AC_RESET);
+
+        return maxLineDigits;
+    }
+
+    int printSpan(Span* span, SpanStyle* style) {
+        const int tmp = printSpanNoFlush(span, style);
+        flush();
+        return tmp;
+    }
+
+    int printSpan(FlushStream* stream, Span* span, SpanStyle* style) {
+        const int tmp = printSpanNoFlush(span, style);
+        flush(stream);
+        return tmp;
+    }
+
+
+
+    void vlogNoFlush(Type type, const char* const message, Span* span, va_list args) {
         if (mute || !(verbosity & type.level)) return;
 
-        char* body = NULL;
+        if (!(type.style & NO_HEADER)) {
+            switch (type.level) {
+                case INFO: {
+                    write("INFO");
+                    break;
+                }
 
-        int idx = 0;
-        int tabCount = 0;
-        int lnStartIdx = 0;
-        int lnEndIdx = 0;
-        int lnLength = 0;
-        int underlineLen = 0;
+                case WARNING: {
+                    writef(AC_WARNING "\nWARNING" AC_RESET);
+                    break;
+                }
+
+                case ERROR: {
+                    writef(AC_ERROR "\nERROR" AC_RESET);
+                    break;
+                }
+
+                default: {
+                    break;
+                }
+            }
+
+            if (type.tag) {
+                writef("[%s]", type.tag);
+            }
+
+            if (span) {
+                uint32_t lineStart = Utils::findLineStart(span->str, span->start.idx);
+                writef("(%i, %i) : ", span->end.ln, span->start.idx - lineStart + 1);
+            } else if (type.level != PLAIN) {
+                write(" : ");
+            }
+
+        }
+
+        writefv(message, args);
+        write("\n");
 
         if (span) {
-            // TODO : buggy when \0
-            body = (char*) span->str;
-            idx = span->start.idx;
-            lnStartIdx = Utils::findLineStart(body, idx, &tabCount);
-            lnEndIdx = Utils::findLineEnd(body, idx);
-            lnLength = lnEndIdx - lnStartIdx;
-            underlineLen = span->end.idx - span->start.idx + 1;
+            printSpanNoFlush(span, &Logger::defaultSpanStyle);
         }
 
-        const char* underlineEscColor = "";
-        switch (type.level) {
+        if (!span || type.style & NO_FOOTER) return;
 
-            case INFO : {
-                printf("INFO");
-                break;
-            }
-
-            case WARNING : {
-                underlineEscColor = AC_WARNING;
-                printf(AC_WARNING "\nWARNING" AC_RESET);
-                break;
-            }
-
-            case ERROR : {
-                underlineEscColor = AC_ERROR;
-                printf(AC_ERROR "\nERROR" AC_RESET);
-                // printf("(%i, %i) : ", span->line, idx - lnStartIdx + 1);
-                break;
-            }
-
-            default :
-                break;
-
-        }
-
-        if (type.tag) {
-            printf("[%s]", type.tag);
-        }
-
-        if (span) {
-            printf("(%i, %i) : ", span->end.ln, idx - lnStartIdx + 1);
-        } else {
-            if (type.level != PLAIN) printf(" : ");
-        }
-
-        vprintf(message, args);
-
-        if (!span) return;
-
-        putchar('\n');
-
-        // enough?
-        char numbuff[32];
-        sprintf(numbuff, "%i | ", span->end.ln);
-
-        printf("%s%.*s\n", numbuff, lnLength, body + lnStartIdx);
-
-        // awful
-        const int tabOffset = tabCount * (TAB_SIZE - 1);
-        int i = lnStartIdx;
-        for (int i = 0; i < strlen(numbuff); i++) putchar(' ');
-        for (; i < lnStartIdx + tabCount; i++) putchar('\t');
-        for (; i < idx; i++) putchar(' ');
-        printf(underlineEscColor);
-        for (; i < idx + underlineLen; i++) putchar('^');
-        printf(AC_RESET);
-        for (; i < lnEndIdx; i++) putchar(' ');
-
-        putchar('\n');
-
-        printf(" in file: %.*s\n", span->fileInfo->name.len, span->fileInfo->name.buff);
-
-        putchar('\n');
-
+        write("\n");
+        writef(" in file: %.*s\n", span->fileInfo->name.len, span->fileInfo->name.buff);
+        write("\n");
     }
 
-    void log(const Type type, const char* const message, Span* span, ...) {
+    void log(Type type, const char* const message, Span* span, ...) {
         va_list args;
         va_start(args, span);
 
-        vlog(type, message, span, args);
+        vlogNoFlush(type, message, span, args);
+        flush();
 
         va_end(args);
     }
 
     void log(Type type, const char* const message) {
-
-        if (mute) return;
-        if (!(verbosity & type.level)) return;
-
-        const char* underlineEscColor = "";
-        switch (type.level) {
-
-            case HINT : {
-                break;
-            }
-
-            case INFO : {
-                printf("INFO : ");
-                break;
-            }
-
-            case WARNING : {
-                printf(AC_WARNING "WARNING : " AC_RESET);
-                break;
-            }
-
-            case ERROR : {
-                printf(AC_ERROR "\nERROR " AC_RESET);
-                break;
-            }
-
-            default :
-                break;
-
-        }
-
-        printf(message);
-
+        log(type, message, NULL);
     }
+
+    void log(FlushStream* stream, Type type, const char* const message, Span* span, ...) {
+        va_list args;
+        va_start(args, span);
+
+        vlogNoFlush(type, message, span, args);
+        flush(stream);
+
+        va_end(args);
+    }
+
+    void log(FlushStream* stream, Type type, const char* const message) {
+        log(stream, type, message, NULL);
+    }
+
+    void logNoFlush(Type type, const char* const message, Span* span, ...) {
+        va_list args;
+        va_start(args, span);
+
+        vlogNoFlush(type, message, span, args);
+
+        va_end(args);
+    }
+
+    void logNoFlush(Type type, const char* const message) {
+        logNoFlush(type, message, NULL);
+    }
+
+
+
 
     [[noreturn]] void panic(const char* const message, Span* span, ...) {
         va_list args;
         va_start(args, span);
 
         Type type = {.level = ERROR, .tag = "PANIC"};
-        vlog(type, message, span, args);
+        vlogNoFlush(type, message, span, args);
+        flush();
 
         va_end(args);
         exit(1);

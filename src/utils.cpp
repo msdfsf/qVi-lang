@@ -1,4 +1,5 @@
 #include "utils.h"
+#include <cstdint>
 
 namespace Utils {
 
@@ -15,28 +16,36 @@ namespace Utils {
         return rev;
     }
 
-    int findLineStart(const char* str, int idx, int* tabCount) {
-
-        int count = 0;
-        while (idx > 0 && str[idx - 1] != '\n') {
-            if (str[idx] == '\t') count++;
+    int findLineStart(const char* str, int idx, uint32_t linesBefore) {
+        while (idx > 0) {
+            if (str[idx] == '\n') {
+                if (linesBefore == 0) {
+                    idx++;
+                    break;
+                }
+                linesBefore--;
+            }
             idx--;
         }
 
-        if (tabCount) *tabCount = count;
         return idx;
-
     }
 
-    int findLineEnd(const char* str, int idx) {
-
+    // foo <x>; boo y;\n
+    // 
+    int findLineEnd(const char* str, int idx, uint32_t linesAfter) {
         while (str[idx] != '\0') {
-            if (str[idx] == '\n') return idx;
+            if (str[idx] == '\n') {
+                if (linesAfter == 0) {
+                    idx--;
+                    break;
+                }
+                linesAfter--;
+            }
             idx++;
         }
 
         return idx;
-
     }
 
 }

@@ -12,6 +12,13 @@ Logger::Type logErr = { .level = Logger::ERROR, .tag = "main" };
 Logger::Type logInf = { .level = Logger::INFO, .tag = NULL };
 Logger::Type logPln = { .level = Logger::PLAIN, .tag = NULL };
 
+Logger::FlushStream flushStreams[] = {
+    {
+        .kind = Logger::FlushStream::FS_C_STREAM,
+        .cstream = stdout
+    }
+};
+
 int calledFromBat = 0;
 
 int run ();
@@ -129,6 +136,9 @@ int parseArgs(char* argv[], int argc) {
 }
 
 int main(int argc, char* argv[]) {
+
+    Logger::flushStreams = flushStreams;
+    Logger::flushStreamCount = sizeof(flushStreams) / sizeof(Logger::FlushStream);
 
 	int atLeastOneLangSet = 0;
 

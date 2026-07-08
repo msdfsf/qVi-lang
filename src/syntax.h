@@ -890,6 +890,7 @@ namespace Ast {
         const char* str(ExpressionType type);
 
         String getName(SyntaxNode* node);
+        Span* getNameSpan(SyntaxNode* node);
     };
 
     namespace Find {

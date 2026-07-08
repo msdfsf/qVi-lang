@@ -504,7 +504,7 @@ SyntaxNode* _findGenericInScope(Scope* scope, String* name) {
 }
 
 String Ast::Node::getName(SyntaxNode* node) {
-    if (!node) return { nullptr, 0 };
+    if (!node) return { NULL, 0 };
 
     // TODO : ?
     if (node->ogNode) node = node->ogNode;
@@ -517,7 +517,7 @@ String Ast::Node::getName(SyntaxNode* node) {
         case NT_VARIABLE_DEFINITION: {
             Variable* var = ((VariableDefinition*) node)->var;
             if (var) return *(String*) &var->name;
-            return { nullptr, 0 };
+            return { NULL, 0 };
         }
 
         case NT_FUNCTION: {
@@ -555,7 +555,64 @@ String Ast::Node::getName(SyntaxNode* node) {
         }
 
         default: {
-            return { nullptr, 0 };
+            return { NULL, 0 };
+        }
+    }
+}
+
+// TODO : it seems name spans are not tracked
+Span* Ast::Node::getNameSpan(SyntaxNode* node) {
+    if (!node) return NULL;
+
+    // TODO : ?
+    if (node->ogNode) node = node->ogNode;
+
+    switch (node->type) {
+        case NT_VARIABLE: {
+            return ((Variable*) node)->base.span;
+        }
+
+        case NT_VARIABLE_DEFINITION: {
+            Variable* var = ((VariableDefinition*) node)->var;
+            if (var) return var->base.span;
+            return node->span;
+        }
+
+        case NT_FUNCTION: {
+            return ((Function*) node)->name.span;
+        }
+
+        case NT_TYPE_DEFINITION: {
+            return ((TypeDefinition*) node)->name.span;
+        }
+
+        case NT_UNION: {
+            return ((Union*) node)->base.name.span;
+        }
+
+        case NT_ENUMERATOR: {
+            return ((Enumerator*) node)->name.span;
+        }
+
+        case NT_NAMESPACE: {
+            return ((Namespace*) node)->name.span;
+        }
+
+        case NT_LABEL: {
+            return ((Label*) node)->name.span;
+        }
+
+        case NT_ERROR: {
+            return ((ErrorSet*) node)->name.span;
+        }
+
+        case NT_IMPORT: {
+            ImportStatement* imp = (ImportStatement*)node;
+            return node->span;
+        }
+
+        default: {
+            return node->span;
         }
     }
 }

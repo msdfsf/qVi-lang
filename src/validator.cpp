@@ -156,6 +156,86 @@ namespace Validator {
         return Err::OK;
     }
 
+    struct ScopeIndexEntry {
+        String name;
+        SyntaxNode* node;
+    };
+
+    Err::Err ensureUniqueDefinitions(ValidationContext* ctx, Scope* scope) {
+        if (scope->base.flags & IS_UNIQUE) {
+            return Err::OK;
+        }
+
+        SyntaxNode* firstToCollide;
+        SyntaxNode* lastToCompare;
+
+        const uint32_t count = scope->definitionCount;
+
+        if (count <= Config::LINEAR_SEARCH_THRESHOLD) {
+            for (int i = 0; i < count; i++) {
+                String src = Ast::Node::getName(scope->definitions[i]);
+
+                for (int j = i + 1; j < count; j++) {
+                    String dest = Ast::Node::getName(scope->definitions[j]);
+                    if (cstrcmp(src, dest)) {
+                        lastToCompare = scope->definitions[i];
+                        firstToCollide = scope->definitions[j];
+                        goto errorReturn;
+                    }
+                }
+            }
+
+            scope->base.flags = IS_UNIQUE;
+        } else {
+            if (!scope->index) {
+                scope->index = (SymbolIndex*) alloc(alc, sizeof(SymbolIndex));
+                scope->index->set.hashMethod = Set::HM_STRING_STRUCT_FNV1A;
+                scope->index->set.keyOffset = 0;
+                // TODO : move table size coef to config?
+                Set::init(&scope->index->set, 2 * scope->definitionCount);
+            }
+
+            for (int i = 0; i < count; i++) {
+                ScopeIndexEntry entry;
+                entry.name = Ast::Node::getName(scope->definitions[i]);
+                entry.node = scope->definitions[i];
+
+                if (!Set::insert(&scope->index->set, (uint8_t*) &entry)) {
+                    lastToCompare = scope->definitions[i];
+                    firstToCollide = (SyntaxNode*) Set::find(&scope->index->set, entry.name);
+                    goto errorReturn;
+                }
+            }
+
+            scope->base.flags = IS_UNIQUE;
+        }
+            
+        return Err::OK;
+        
+        errorReturn:
+        // TODO : think of a function to find span of the name
+        String name = Ast::Node::getName(firstToCollide);
+        Logger::logNoFlush(
+            { .level = Logger::Level::ERROR, .tag = ctx->unit->ast->tag },
+            "Symbol '%.*s' is already defined in this scope.",
+            Ast::Node::getNameSpan(firstToCollide),
+            name.len, name.buff
+        );
+
+        name = Ast::Node::getName(lastToCompare);
+        Logger::logNoFlush(
+            { .level = Logger::Level::ERROR, .style = Logger::NO_HEADER, .tag = ctx->unit->ast->tag },
+            "Previous definition of '%.*s' is here.",
+            Ast::Node::getNameSpan(lastToCompare),
+            name.len, name.buff
+        );
+
+        Diag::commit(ctx->unit->ast, lastToCompare->span, Err::SYMBOL_ALREADY_DEFINED);
+
+        return Err::SYMBOL_ALREADY_DEFINED;
+    }
+
+    // TODO : make sure only one def of the same name exists in scope
     Err::Err validate(ValidationContext* ctx, VariableDefinition* def) {
         Err::Err err;
 
@@ -1010,6 +1090,18 @@ namespace Validator {
     }
 
 
+
+    Err::Err preValidate(ValidationContext* ctx) {
+        Err::Err err;
+
+        AstRegistry* reg = ctx->unit->reg;
+        for (int i = 0; i < reg->scopes.size; i++) {
+            err = ensureUniqueDefinitions(ctx, *(Scope**) DArray::get(&reg->scopes, i));
+            if (err != Err::OK) return err;
+        }
+
+        return Err::OK;
+    }
 
     Err::Err validate(ValidationContext* ctx) {
         Err::Err err;

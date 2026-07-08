@@ -30,8 +30,6 @@ int Compiler::command = TRANSLATE;
 int Compiler::outLangs = 0;
 int Compiler::debugInfo = 0;
 
-
-
 inline void runTranslator(Translator* t) {
     t->debugInfo = Compiler::debugInfo;
     t->init(Compiler::outDir);
@@ -54,6 +52,7 @@ int Compiler::compile() {
     Ast::init();
     FileSystem::init();
     TaskSystem::init(0);
+
     Extern::init();
 
     Logger::log({ Logger::INFO }, "Initialization completed\n");
@@ -68,6 +67,14 @@ int Compiler::compile() {
     TaskSystem::wait();
 
     Logger::log({ Logger::INFO }, "Parsing completed\n");
+
+
+
+    TaskSystem::beginGroup();
+    TaskSystem::dispatchPreValidation(mainFileHandle);
+    TaskSystem::wait();
+
+    Logger::log({ Logger::INFO }, "Pre validation completed\n");
 
 
 

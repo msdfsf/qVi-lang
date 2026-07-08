@@ -500,6 +500,8 @@ namespace Parser {
         ctx->currentScope = currentScope;
         ctx->idxInScope   = idxInscope;
 
+        DArray::push(&ctx->unit->reg->scopes, (void**) &node);
+
         node->children = commitStack(&ctx->nodeStack, csmark, &node->childrenCount);
         node->definitions = commitStack(&ctx->defStack, dsmark, &node->definitionCount);
         node->base.span = finalizeSpan(&lspan, span);

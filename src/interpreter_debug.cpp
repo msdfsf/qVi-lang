@@ -772,7 +772,11 @@ namespace Interpreter {
             while (offset >= lineEnd) {
                 // TODO: maybe safety size check?
                 LineInfo* line = block->lines + lineIdx;
-                Logger::printSpanStrict(stream, &line->span);
+                Logger::FlushStream fStream = {
+                    .kind = Logger::FlushStream::FS_C_STREAM,
+                    .cstream = stream
+                };
+                Logger::printSpanStrict(&fStream, &line->span);
                 lineEnd = line->ocOffsetEnd;
                 lineIdx++;
             }
@@ -1321,7 +1325,7 @@ namespace Interpreter {
         Namespace* path[16];
         constexpr int maxPathLen = sizeof(path) / sizeof(Namespace*);
         int pathLen = 0;
-        
+
         Scope* scope = fcn->base.scope;
         while (scope && scope->base.type == NT_NAMESPACE) {
             if (pathLen < maxPathLen) {

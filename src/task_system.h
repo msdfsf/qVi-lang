@@ -32,6 +32,7 @@ namespace TaskSystem {
     // Concrete dispatch functions, as we are a part
     // of concrete compiler.
     void dispatchParse(FileSystem::Handle file);
+    void dispatchPreValidation(FileSystem::Handle file);
     void dispatchValidation(FileSystem::Handle file);
     void dispatchCompileTimeBuild(Function* fcn, bool waitForExecution);
     void dispatchCodegen(Translator* translator, FileSystem::Handle file);

@@ -201,41 +201,12 @@ namespace Diag {
     }
 
     void report(AstContext* ctx, Span* span, Severity sev, uint32_t code, const char* const format, va_list args) {
-        char buff[1024];
-
-        const int len = vsnprintf(buff, sizeof(buff), format, args);
-        if (len < 0) return;
-
         if constexpr (Config::LOGGING_ENABLED) {
             Logger::Level level = toLoggerLevel(sev);
-            Logger::log({ .level = level, .tag = ctx->tag }, buff, span);
+            Logger::logNoFlush({ .level = level, .tag = ctx->tag }, format, span, args);
         }
 
-        if (sev == SEV_ERROR) {
-            if constexpr (Config::ERROR_RECOVERY_ENABLED) {
-                if (ctx->errorCount < Config::maxErrorCount) {
-                    AstError* err = &ctx->errors[ctx->errorCount];
-                    err->severity = sev;
-                    err->err = code;
-                    err->span = getSpanStamp(span);
-
-                    err->msg.buff = (char*) nalloc(nalc, AT_ERROR_STRING, len);
-                    memcpy(err->msg.buff, buff, len + 1);
-                    err->msg.len = len;
-
-                    ctx->errorCount++;
-                }
-
-                ctx->totalErrorCount++;
-
-                if (Err::isFatal((Err::Err) code)) {
-                    TaskSystem::panic(code);
-                }
-            } else {
-                TaskSystem::panic(code);
-            }
-        }
-
+        commit(ctx, span, sev, code);
     }
 
     void report(AstContext* ctx, Span* span, Err::Err code, Format fmt, ...) {
@@ -278,6 +249,55 @@ namespace Diag {
         va_start(args, code);
         report(ctx, span, SEV_NOTE, -code, Inf::str(code), args);
         va_end(args);
+    }
+
+
+
+    void commit(AstContext* ctx, Span* span, Severity sev, uint32_t code) {
+        if constexpr (Config::LOGGING_ENABLED) {
+            Logger::flush();
+        }
+        
+        if (sev == SEV_ERROR) {
+            if constexpr (Config::ERROR_RECOVERY_ENABLED) {
+                if (ctx->errorCount < Config::maxErrorCount) {
+                    AstError* err = &ctx->errors[ctx->errorCount];
+                    err->severity = sev;
+                    err->err = code;
+                    err->span = getSpanStamp(span);
+
+                    int errStrLen;
+                    char* errStr = Logger::getLastString(&errStrLen);
+
+                    err->msg.buff = (char*) nalloc(nalc, AT_ERROR_STRING, errStrLen + 1);
+                    memcpy(err->msg.buff, errStr, errStrLen);
+                    err->msg.buff[errStrLen] = '\0';
+                    err->msg.len = errStrLen;
+
+                    ctx->errorCount++;
+                }
+
+                ctx->totalErrorCount++;
+
+                if (Err::isFatal((Err::Err)code)) {
+                    TaskSystem::panic(code);
+                }
+            } else {
+                TaskSystem::panic(code);
+            }
+        }
+    }
+
+    void commit(AstContext* ctx, Span* span, Err::Err code) {
+        commit(ctx, span, SEV_ERROR, -code);
+    }
+
+    void commit(AstContext* ctx, Span* span, Wrn::Wrn code) {
+        commit(ctx, span, SEV_WARNING, -code);
+    }
+
+    void commit(AstContext* ctx, Span* span, Inf::Inf code) {
+        commit(ctx, span, SEV_NOTE, -code);
     }
 
 }

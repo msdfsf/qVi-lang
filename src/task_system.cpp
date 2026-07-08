@@ -39,6 +39,7 @@ namespace TaskSystem {
 
     enum TaskKind {
         TK_PARSING,
+        TK_PRE_VALIDATION,
         TK_VALIDATION,
         TK_COMPILE_TIME_BUILD,
     };
@@ -139,7 +140,9 @@ namespace TaskSystem {
             ctx->errId &= THREAD_MASK;
 
             ctx->idxInScope = 0;
-        } else if (kind == TK_VALIDATION) {
+        } else if (kind == TK_VALIDATION || kind == TK_PRE_VALIDATION) {
+            // TODO : We may separate cases if their clear requirements
+            //  will differ drastically
             Validator::ValidationContext* ctx = &state->v;
 
             ctx->unit = NULL;
@@ -343,6 +346,34 @@ namespace TaskSystem {
         task.arg.file = fhnd;
         task.kind = TK_PARSING;
         task.fcn = &runParse;
+
+        enqueue(task);
+    }
+
+
+
+    static void runPreValidate(TaskState* state, TaskArgument arg) {
+        state->v.unit = Reg::get(arg.file);
+        Validator::preValidate(&state->v);
+
+        FileSystem::FileInfo* finfo = FileSystem::getFileInfo(arg.file);
+        finfo->status.store(FileSystem::FS_READY, std::memory_order_release);
+
+        gTaskCount.fetch_sub(1, std::memory_order_relaxed);
+        gTaskCount.notify_one();
+    }
+
+    void dispatchPreValidation(FileSystem::Handle fhnd) {
+        using namespace FileSystem;
+
+        FileInfo* finfo = getFileInfo(fhnd);
+
+        gTaskCount.fetch_add(1, std::memory_order_relaxed);
+
+        Task task;
+        task.arg.file = fhnd;
+        task.kind = TK_PRE_VALIDATION;
+        task.fcn = &runPreValidate;
 
         enqueue(task);
     }

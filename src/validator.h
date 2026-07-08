@@ -60,6 +60,8 @@ namespace Validator {
     void init   (ValidationContext* ctx);
     void release(ValidationContext* ctx);
 
+    Err::Err preValidate(ValidationContext* ctx);
+
     Err::Err validate       (ValidationContext* ctx);
     Err::Err ensureValidated(ValidationContext* ctx, SyntaxNode* node, SyntaxNode* triggerNode = NULL);
 

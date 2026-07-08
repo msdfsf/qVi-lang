@@ -82,19 +82,23 @@ enum State : uint64_t {
     IS_LENGTH = 1 << 16,
     IS_SIZE = 1 << 17,
 
+    // TODO : better name
     // For now here. Sometimes we may need to know
     // what ordering constraints are applicable to 'us'.
     IS_UNORDERED = 1 << 18,
 
     // If node is 'anonymous' and actualy is product
     // of an import statement.
-    IS_FROM_IMPORT = 1 << 19,
+    IS_FROM_IMPORT = 1 << 20,
 
-    IS_EXTERN = 1 << 20,
+    IS_EXTERN = 1 << 21,
 
     IS_RENDERED = 1 << 24,
 
-    IS_UNIQUE  = 1 << 30, // used in parser while checking for unique names in scope
+    // TODO : better name
+    // If children are unique. Where both, children and unique,
+    // are relative to the specific node type.
+    IS_UNIQUE  = 1 << 30,
 };
 
 struct Pos {

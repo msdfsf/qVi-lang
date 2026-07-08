@@ -526,8 +526,8 @@ namespace Interpreter {
                 }
 
                 case OC_SET_BLOB: {
-                    const uint64_t offset = FETCH(ip, uint64_t);
                     const uint64_t size = FETCH(ip, uint64_t);
+                    const uint64_t offset = FETCH(ip, uint64_t);
 
                     DROP(sp, size);
                     memcpy(fp + offset, sp, size);
