@@ -213,7 +213,6 @@ namespace Validator {
         return Err::OK;
         
         errorReturn:
-        // TODO : think of a function to find span of the name
         String name = Ast::Node::getName(firstToCollide);
         Logger::logNoFlush(
             { .level = Logger::Level::ERROR, .tag = ctx->unit->ast->tag },
