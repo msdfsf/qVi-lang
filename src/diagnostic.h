@@ -114,10 +114,6 @@ namespace Diag {
     void report(AstContext* ast, Span* span, Wrn::Wrn code, Format fmt, ...);
     void report(AstContext* ast, Span* span, Inf::Inf code, Format fmt, ...);
 
-    void report(AstContext* ast, Span** span, Err::Err code, Format* fmt, ...);
-    void report(AstContext* ast, Span** span, Wrn::Wrn code, Format* fmt, ...);
-    void report(AstContext* ast, Span** span, Inf::Inf code, Format* fmt, ...);
-
     void commit(AstContext* ast, Span* span, Err::Err code);
     void commit(AstContext* ast, Span* span, Wrn::Wrn code);
     void commit(AstContext* ast, Span* span, Inf::Inf code);
