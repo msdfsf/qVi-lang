@@ -1,3 +1,7 @@
+// TODO : if Err::UNEXPECTED_ERROR is encountered, treat it specially
+//        and add some sort of extra header so its obvious that its an
+//        internal compiler error.
+
 #pragma once
 #include "stdint.h"
 
@@ -77,7 +81,10 @@ namespace Err {
         PATH_TOO_LONG                   = -68,
         SYMBOL_NOT_FOUND                = -69,
         LIBRARY_LOAD_FAILED             = -70,
-        COUNT                           = 71,
+        INVALID_BREAK_TARGET            = -71,
+        INVALID_CONTINUE_TARGET         = -72,
+        INVALID_RETURN_TARGET           = -73,
+        COUNT                           = 74,
     };
     const char* const str(Err code);
     bool isFatal(Err err);

@@ -860,7 +860,7 @@ fcn reset(int[const] board, int width) {
         board[i] = FieldType.BORDER_X;
     }
 
-    loop renderBuffer using int i = 0 {
+    loop renderBuffer as [int i = 0] {
         renderBuffer[i].color = COLOR_FG;
         renderBuffer[i].value = ' ';
         renderBuffer[i].leftBorder = ' ';
@@ -971,7 +971,7 @@ fcn renderUIBorder(int x, int y, int width, int height) {
 
 fcn renderString(u8[const] str, int x, int y) {
 
-    loop str using int i = 0 {
+    loop str as [int i = 0] {
         
         const int ri = y * RENDER_WIDTH + x + i;
 
@@ -986,7 +986,7 @@ fcn renderString(u8[const] str, int x, int y) {
 
 fcn renderString(u8[const] str, int x, int y, u8[const] color) {
 
-    loop str using int i = 0 {
+    loop str as [int i = 0] {
         
         const int ri = y * RENDER_WIDTH + x + i;
 
@@ -1339,7 +1339,7 @@ fcn spawnTetromino(TetrominoType t) {
 fcn initQueue() {
     
     int i = TetrominoType.COUNT;
-    loop queue using i {
+    loop queue as [i] {
         TetrominoType t = i - TetrominoType.COUNT;
         queue[i] = t;
         queue[i - TetrominoType.COUNT] = t;

@@ -35,6 +35,7 @@
 #include "array_list.h"
 #include "data_types.h"
 #include "dynamic_arena.h"
+#include "emitter_drivers/emitter_driver_debug.h"
 #include "file_system.h"
 #include "foreign_code.h"
 #include "globals.h"
@@ -52,6 +53,7 @@
 #include "utils.h"
 #include "diagnostic.h"
 #include "config.h"
+#include "debug_helper.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -73,11 +75,14 @@ namespace Validator {
         DArray::init(&ctx->fCandidates, 32, sizeof(FunctionPrototype));
         Set::init(&ctx->searchSet, 64);
         Arena::init(&ctx->stringArena, 8 * 1024);
+        Arena::init(&ctx->tmpArena, 8 * 1024);
     }
 
     void release(ValidationContext* ctx) {
         DArray::release(&ctx->fCandidates);
         Set::release(&ctx->searchSet);
+        Arena::release(&ctx->stringArena);
+        Arena::release(&ctx->tmpArena);
     }
 
 
@@ -123,8 +128,15 @@ namespace Validator {
             return Err::UNEXPECTED_ERROR;
         }
 
+        if (import->lib) {
+            fcn->lib = import->lib;
+            return Extern::ensureFunctionExists(ctx, fcn->lib, fcn);
+        }
+
         err = Extern::loadLibrary(ctx, import->fname, Extern::LL_INSPECT, &fcn->lib);
         if (err != Err::OK) return err;
+
+        import->lib = fcn->lib;
 
         return Extern::ensureFunctionExists(ctx, fcn->lib, fcn);
     }
@@ -156,10 +168,445 @@ namespace Validator {
         return Err::OK;
     }
 
-    struct ScopeIndexEntry {
-        String name;
-        SyntaxNode* node;
+    struct TmpOverloadEntry {
+        SyntaxNode*       node;
+        TmpOverloadEntry* next;
     };
+
+    // Lock beforehand scope if needed
+    Err::Err ensureIndexedIfNeeded(ValidationContext* ctx, Scope* scope) {
+        if (scope->index || scope->definitionCount <= Config::LINEAR_SEARCH_THRESHOLD) {
+            return Err::OK;
+        }
+
+        scope->index = (SymbolIndex*) alloc(alc, sizeof(SymbolIndex));
+
+        Set::init(&scope->index->set, scope->definitionCount);
+        scope->index->set.hashMethod = Set::HM_STRING_STRUCT_FNV1A;
+        scope->index->set.keyOffset = offsetof(SymbolIndexEntry, name);
+        scope->index->set.keyStorage = Set::KS_VALUE;
+
+        Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
+
+        for (uint32_t i = 0; i < scope->definitionCount; i++) {
+            SyntaxNode* node = scope->definitions[i];
+            String name = Ast::Node::getName(node);
+            if (!name.buff) continue;
+
+            SymbolIndexEntry* entry = (SymbolIndexEntry*) Set::find(&scope->index->set, name);
+            if (entry) {
+                TmpOverloadEntry* newEntry = (TmpOverloadEntry*) Arena::push(&ctx->tmpArena, sizeof(TmpOverloadEntry));
+                newEntry->node = node;
+
+                if (entry->kind == SymbolIndexEntry::SINGLE) {
+                    TmpOverloadEntry* head = (TmpOverloadEntry*) Arena::push(&ctx->tmpArena, sizeof(TmpOverloadEntry));
+                    head->node = entry->node;
+                    head->next = newEntry;
+                    newEntry->next = NULL;
+
+                    entry->kind = SymbolIndexEntry::OVERLOAD;
+                    entry->overloads.data = (SyntaxNode**) head;
+                    entry->overloads.count = 2;
+                } else {
+                    newEntry->next = (TmpOverloadEntry*) entry->overloads.data;
+                    entry->overloads.data = (SyntaxNode**) newEntry;
+                    entry->overloads.count++;
+                }
+            } else {
+                SymbolIndexEntry* entry = (SymbolIndexEntry*) alloc(alc, sizeof(SymbolIndexEntry));
+                entry->name = name;
+                entry->kind = SymbolIndexEntry::SINGLE;
+                entry->node = node;
+
+                Set::insert(&scope->index->set, (uint8_t*) entry);
+            }
+        }
+
+        for (uint32_t i = 0; i < scope->index->set.tableSize; i++) {
+            Set::Slot* slot = scope->index->set.table + i;
+            if (slot->type != Set::ST_OCCUPIED) continue;
+
+            SymbolIndexEntry* entry = (SymbolIndexEntry*) slot->data;
+            if (entry->kind == SymbolIndexEntry::OVERLOAD) {
+                const uint32_t count = entry->overloads.count;
+                TmpOverloadEntry* curr = (TmpOverloadEntry*) entry->overloads.data;
+
+                SyntaxNode** data = (SyntaxNode**) alloc(alc, sizeof(SyntaxNode*) * count);
+
+                for (uint32_t j = 0; j < count; j++) {
+                    data[j] = curr->node;
+                    curr = curr->next;
+                }
+
+                entry->overloads.data = data;
+            }
+        }
+
+        Arena::rollback(&ctx->tmpArena, marker);
+
+        return Err::OK;
+    }
+
+    // Find Trivia:
+    // All 'findSymbol' functions shall serve as 'dumb' search functions, that return
+    // result (or not) as its without acunting for language semantics.
+    // For 'smart' search 'resolveSymbol' functions shall be used. They, by the nature,
+    // have to 'throw' errors if needed, which shall be possible to silent.
+    //
+    // 'Functions further differ by the provided result:
+    // 'asIndexEntry' functions are the 'core' ones, that return general index entry,
+    // which can support overloaded results. They need an allocator to supply, as
+    // index may not be avaliable, or its not reasonable to build one, and result
+    // in such cases has to be allocated.
+    //
+    // pure 'findSymbol' functions shall work direcly on SyntaxNode and ignore overloaded
+    // cases (After pre-validation defintions that doesnt support overloading are guaranted
+    // to be unique in scope).
+    //
+    // 'dumb' functions also can have 'Recursive' 'postfix'.
+    // These functions shall search all scopes recursively, therefore each 'default'
+    // function just search provided scope, no more. (Ex. one qualified path may be
+    // resolved once and used in different consequent checks).
+    //
+    //
+    //
+    // TODO : create a function that automaticaly calls findClosestFunction etc.
+    //
+    // TODO : make these find function take directly arena instead of ctx
+    // Allows to use the index abstraction even for cases when index is not builded
+    // Uses ctx->tmpArena to allocate data, so make sure to unroll when needed.
+    SymbolIndexEntry* findSymbolAsIndexEntry(ValidationContext* ctx, Scope* scope, String name) {
+        if (scope->index) {
+            SymbolIndexEntry* entry = (SymbolIndexEntry*) Set::find(&scope->index->set, name);
+            return entry;
+        }
+
+        uint32_t matchCount = 0;
+        SyntaxNode* firstMatch = NULL;
+
+        for (uint32_t i = 0; i < scope->definitionCount; i++) {
+            if (cstrcmp(name, Ast::Node::getName(scope->definitions[i]))) {
+                if (matchCount == 0) firstMatch = scope->definitions[i];
+                matchCount++;
+            }
+        }
+
+        if (matchCount == 0) return NULL;
+
+        SymbolIndexEntry* entry = (SymbolIndexEntry*) Arena::push(&ctx->tmpArena, sizeof(SymbolIndexEntry));
+        entry->name = name;
+
+        if (matchCount == 1) {
+            entry->kind = SymbolIndexEntry::SINGLE;
+            entry->node = firstMatch;
+        } else {
+            entry->kind = SymbolIndexEntry::OVERLOAD;
+            entry->overloads.count = 0;
+
+            entry->overloads.data = (SyntaxNode**) Arena::push(&ctx->tmpArena, sizeof(SyntaxNode*) * matchCount);
+
+            for (uint32_t i = 0; i < scope->definitionCount; i++) {
+                if (cstrcmp(name, Ast::Node::getName(scope->definitions[i]))) {
+                    entry->overloads.data[entry->overloads.count++] = scope->definitions[i];
+                }
+            }
+        }
+
+        return entry;
+    }
+
+    SymbolIndexEntry* findSymbolAsIndexEntryRecursive(ValidationContext* ctx, Scope* startScope, String name) {
+        Scope* current = startScope;
+
+        while (current) {
+            // translatorDebug.printNode(stdout, 0, (SyntaxNode*) startScope, NULL);
+            SymbolIndexEntry* entry = findSymbolAsIndexEntry(ctx, current, name);
+            if (entry) return entry;
+
+            current = current->base.scope;
+        }
+
+        return NULL;
+    }
+
+    // Returns a node only if it's not overloaded
+    // Supposed to be used in valid context (pre-validation step is completed).
+    SyntaxNode* findSymbol(ValidationContext* ctx, Scope* scope, String name) {
+        Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
+        SymbolIndexEntry* entry = findSymbolAsIndexEntry(ctx, scope, name);
+        Arena::rollback(&ctx->tmpArena, marker);
+
+        if (entry && entry->kind == SymbolIndexEntry::SINGLE) {
+            return entry->node;
+        }
+
+        return NULL;
+    }
+
+    // Returns a node only if it's not overloaded
+    // Supposed to be used in valid context (pre-validation step is completed).
+    SyntaxNode* findSymbolRecursive(ValidationContext* ctx, Scope* startScope, String name) {
+        Scope* current = startScope;
+
+        while (current) {
+            SyntaxNode* node = findSymbol(ctx, current, name);
+            if (node) return node;
+
+            current = current->base.scope;
+        }
+
+        return NULL;
+    }
+
+    // Uses ctx->tmpBuffer
+    Err::Err resolveQualifiedPath(ValidationContext* ctx, Scope* startScope, QualifiedName* qname, Scope** outScope) {
+        if (!qname || qname->pathSize == 0) {
+            *outScope = startScope;
+            return Err::OK;
+        }
+
+        Scope* currentSearchScope = startScope;
+
+        for (uint16_t i = 0; i < qname->pathSize; i++) {
+            String segment = *(String*) (qname->path + i);
+
+            Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
+
+            SymbolIndexEntry* entry;
+            if (i == 0) {
+                entry = findSymbolAsIndexEntryRecursive(ctx, currentSearchScope, segment);
+            } else {
+                entry = findSymbolAsIndexEntry(ctx, currentSearchScope, segment);
+            }
+
+            Arena::rollback(&ctx->tmpArena, marker);
+
+            if (!entry) {
+                Diag::report(ctx->unit->ast, qname->span, Err::UNEXPECTED_SYMBOL,
+                    Diag::Format {
+                        "Segment '%.*s' not found."
+                    }, segment.len, segment.buff);
+                return Err::UNEXPECTED_SYMBOL;
+            }
+
+            if (entry->kind != SymbolIndexEntry::SINGLE || entry->node->type != NT_NAMESPACE) {
+                Diag::report(ctx->unit->ast, qname->span, Err::UNEXPECTED_SYMBOL,
+                    Diag::Format {
+                        "Path segment '%.*s' is not a namespace."
+                    }, segment.len, segment.buff);
+                return Err::UNEXPECTED_SYMBOL;
+            }
+
+            Namespace* nspace = (Namespace*) entry->node;
+
+            Err::Err err = ensureValidated(ctx, (SyntaxNode*) nspace);
+            if (err != Err::OK) return err;
+
+            currentSearchScope = &nspace->scope;
+        }
+
+        *outScope = currentSearchScope;
+        return Err::OK;
+    }
+
+    // Uses ctx->tmpArena
+    Err::Err resolveQualifiedNameAsIndexEntry(ValidationContext* ctx, Scope* startScope, QualifiedName* name, SymbolIndexEntry** outEntry, bool reportErrors) {
+        Scope* scope;
+        Err::Err err = resolveQualifiedPath(ctx, startScope, name, &scope);
+        if (err != Err::OK) return err;
+
+        Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
+
+        bool isOrderingInvalid = false;
+
+        SymbolIndexEntry tmpErrorEntry;
+        SymbolIndexEntry* entry;
+        if (name->pathSize == 0) {
+            // We are not in a namespace and are free to search
+            while (1) {
+                entry = findSymbolAsIndexEntryRecursive(ctx, scope, *(String*) name);
+                if (!entry) {
+                    // If ordering invalid, we know there was previous successful lookup,
+                    // therefore it cannot be internal symbol
+                    if (isOrderingInvalid) {
+                        entry = &tmpErrorEntry;
+                        break;
+                    }
+
+                    SyntaxNode* node = findInternalSymbol((String*) name);
+                    if (node) {
+                        entry = (SymbolIndexEntry*)Arena::push(&ctx->tmpArena, sizeof(SymbolIndexEntry));
+                        entry->kind = SymbolIndexEntry::SINGLE;
+                        entry->node = node;
+                    }
+                    break;
+                }
+
+                if (isOrderingValid(entry, name)) {
+                    isOrderingInvalid = false;
+                    break;
+                }
+
+                isOrderingInvalid = true;
+                tmpErrorEntry = *entry;
+
+                scope = entry->node->scope->base.scope;
+                Arena::rollback(&ctx->tmpArena, marker);
+            }
+        } else {
+            // We search only in found namespace
+            entry = findSymbolAsIndexEntry(ctx, scope, *(String*) name);
+            if (entry) {
+                isOrderingInvalid = !isOrderingValid(entry, name);
+            }
+        }
+
+        if (entry && !isOrderingInvalid) {
+            *outEntry = entry;
+            return Err::OK;
+        }
+
+        if (reportErrors) {
+            if (isOrderingInvalid) {
+                SyntaxNode* node = entry->node;
+
+                Logger::logNoFlush(
+                    { .level = Logger::Level::ERROR, .tag = ctx->unit->ast->tag },
+                    "Local symbol '%.*s' used before its declaration.",
+                    name->span, name->len, name->buff
+                );
+
+                Logger::logNoFlush(
+                    { .level = Logger::Level::ERROR, .tag = ctx->unit->ast->tag },
+                    "Declaration of '%.*s' is here.",
+                    node->span, name->len, name->buff
+                );
+
+                Diag::commit(ctx->unit->ast, node->span, Err::DECLARATION_AFTER_USE);
+                err = Err::DECLARATION_AFTER_USE;
+            } else if (!entry) {
+                Diag::report(ctx->unit->ast, name->span, Err::SYMBOL_NOT_FOUND,
+                    Diag::Format{
+                        "Undefined symbol '%.*s'."
+                    }, name->len, name->buff
+                );
+                err = Err::SYMBOL_NOT_FOUND;
+            }
+        } else {
+            err = Err::OK;
+        }
+
+        Arena::rollback(&ctx->tmpArena, marker);
+
+        *outEntry = NULL;
+        return err;
+    }
+
+    Err::Err resolveQualifiedName(ValidationContext* ctx, Scope* startScope, QualifiedName* name, SyntaxNode** outNode) {
+        Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
+
+        SymbolIndexEntry* entry = NULL;
+        Err::Err err = resolveQualifiedNameAsIndexEntry(ctx, startScope, name, &entry, true);
+        if (err != Err::OK) return err;
+
+        if (entry->kind == SymbolIndexEntry::SINGLE) {
+            *outNode = entry->node;
+        } else {
+            Diag::report(ctx->unit->ast, name->span, Err::SYMBOL_NOT_FOUND,
+                Diag::Format{
+                    "Undefined symbol '%.*s'."
+                }, name->len, name->buff
+            );
+
+            *outNode = NULL;
+            err = Err::SYMBOL_NOT_FOUND;
+        }
+
+        Arena::rollback(&ctx->tmpArena, marker);
+        return err;
+    }
+
+    bool signaturesMatch(FunctionPrototype* const fptrA, FunctionPrototype* const fptrB) {
+        if (fptrA->inArgCount != fptrB->inArgCount) return false;
+
+        for (int i = 0; i < fptrA->inArgCount; i++) {
+            Variable* pA = fptrA->inArgs[i]->var;
+            Variable* pB = fptrB->inArgs[i]->var;
+
+            if (pA->value.typeKind != pB->value.typeKind) return false;
+
+            if (pA->value.typeKind == Type::DT_CUSTOM) {
+                if (pA->value.def && pB->value.def) {
+                    if (pA->value.def != pB->value.def) return false;
+                } else {
+                    if (!cstrcmp((String*) &pA->name, (String*) &pB->name)) return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    bool signaturesMatch(Function* fcnA, Function* fcnB) {
+        return signaturesMatch(&fcnA->prototype, &fcnB->prototype);
+    }
+
+    Err::Err ensureUniqueOverloads(ValidationContext* ctx, SymbolIndexEntry* entry) {
+        const uint32_t count     = entry->overloads.count;
+        SyntaxNode** const nodes = entry->overloads.data;
+
+        for (uint32_t i = 0; i < count; i++) {
+            SyntaxNode* node = nodes[i];
+            if (node->type != NT_FUNCTION) {
+                Logger::logNoFlush(
+                    { .level = Logger::Level::ERROR, .tag = ctx->unit->ast->tag },
+                    "Symbol '%.*s' is redefined across incompatible types. Only functions support overloading.",
+                    Ast::Node::getNameSpan(nodes[0]), entry->name.len, entry->name.buff
+                );
+
+                // TODO : add max count to config
+                for (uint32_t i = 0; i < count; i++) {
+                    Logger::logNoFlush(
+                        { .level = Logger::Level::ERROR, .style = Logger::Style::NO_HEADER, .tag = ctx->unit->ast->tag },
+                        "Defined here as a %s.",
+                        nodes[i]->span,
+                        Ast::Node::str(nodes[i]->type)
+                    );
+                }
+
+                Diag::commit(ctx->unit->ast, nodes[0]->span, Err::SYMBOL_ALREADY_DEFINED);
+                return Err::SYMBOL_ALREADY_DEFINED;
+            }
+
+            // Redefinition Check
+            for (uint32_t j = 0; j < i; j++) {
+                Function* fcnA = (Function*) node;
+                Function* fcnB = (Function*) nodes[j];
+
+                if (signaturesMatch(fcnA, fcnB)) {
+                    Logger::logNoFlush(
+                        { .level = Logger::Level::ERROR, .tag = ctx->unit->ast->tag },
+                        "Function '%.*s' with this signature is already defined in this scope.",
+                        fcnA->base.span, fcnA->name.len, fcnA->name.buff
+                    );
+
+                    Logger::logNoFlush(
+                        { .level = Logger::Level::ERROR, .style = Logger::NO_HEADER, .tag = ctx->unit->ast->tag },
+                        "Symbol '%.*s' is already defined here.",
+                        fcnB->base.span, fcnB->name.len, fcnB->name.buff
+                    );
+
+                    Diag::commit(ctx->unit->ast, fcnB->base.span, Err::SYMBOL_ALREADY_DEFINED);
+
+                    return Err::SYMBOL_ALREADY_DEFINED;
+                }
+            }
+
+            nodes[i] = node;
+        }
+
+        return Err::OK;
+    }
 
     Err::Err ensureUniqueDefinitions(ValidationContext* ctx, Scope* scope) {
         if (scope->base.flags & IS_UNIQUE) {
@@ -171,70 +618,270 @@ namespace Validator {
 
         const uint32_t count = scope->definitionCount;
 
-        if (count <= Config::LINEAR_SEARCH_THRESHOLD) {
-            for (int i = 0; i < count; i++) {
-                String src = Ast::Node::getName(scope->definitions[i]);
+        ensureIndexedIfNeeded(ctx, scope);
+        for (int i = 0; i < count; i++) {
+            String name = Ast::Node::getName(scope->definitions[i]);
+            if (!name.buff) continue;
 
-                for (int j = i + 1; j < count; j++) {
-                    String dest = Ast::Node::getName(scope->definitions[j]);
-                    if (cstrcmp(src, dest)) {
-                        lastToCompare = scope->definitions[i];
-                        firstToCollide = scope->definitions[j];
-                        goto errorReturn;
-                    }
-                }
+            Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
+            SymbolIndexEntry* entry = findSymbolAsIndexEntry(ctx, scope, name);
+            Arena::rollback(&ctx->tmpArena, marker);
+
+            if (entry && entry->kind == SymbolIndexEntry::SINGLE) {
+                continue;
             }
 
-            scope->base.flags = IS_UNIQUE;
-        } else {
-            if (!scope->index) {
-                scope->index = (SymbolIndex*) alloc(alc, sizeof(SymbolIndex));
-                scope->index->set.hashMethod = Set::HM_STRING_STRUCT_FNV1A;
-                scope->index->set.keyOffset = 0;
-                // TODO : move table size coef to config?
-                Set::init(&scope->index->set, 2 * scope->definitionCount);
-            }
-
-            for (int i = 0; i < count; i++) {
-                ScopeIndexEntry entry;
-                entry.name = Ast::Node::getName(scope->definitions[i]);
-                entry.node = scope->definitions[i];
-
-                if (!Set::insert(&scope->index->set, (uint8_t*) &entry)) {
-                    lastToCompare = scope->definitions[i];
-                    firstToCollide = (SyntaxNode*) Set::find(&scope->index->set, entry.name);
-                    goto errorReturn;
-                }
-            }
-
-            scope->base.flags = IS_UNIQUE;
+            Err::Err err = ensureUniqueOverloads(ctx, entry);
+            if (err != Err::OK) return err;
         }
-            
+
         return Err::OK;
-        
-        errorReturn:
-        String name = Ast::Node::getName(firstToCollide);
-        Logger::logNoFlush(
-            { .level = Logger::Level::ERROR, .tag = ctx->unit->ast->tag },
-            "Symbol '%.*s' is already defined in this scope.",
-            Ast::Node::getNameSpan(firstToCollide),
-            name.len, name.buff
-        );
-
-        name = Ast::Node::getName(lastToCompare);
-        Logger::logNoFlush(
-            { .level = Logger::Level::ERROR, .style = Logger::NO_HEADER, .tag = ctx->unit->ast->tag },
-            "Previous definition of '%.*s' is here.",
-            Ast::Node::getNameSpan(lastToCompare),
-            name.len, name.buff
-        );
-
-        Diag::commit(ctx->unit->ast, lastToCompare->span, Err::SYMBOL_ALREADY_DEFINED);
-
-        return Err::SYMBOL_ALREADY_DEFINED;
     }
 
-    // TODO : make sure only one def of the same name exists in scope
+    // Pass validated function and call
+    void computeFunctionMatchScore(Function* fcn, FunctionCall* call, FunctionScore* outScore) {
+        const uint32_t fcnInCnt  = fcn->prototype.inArgCount;
+        const uint32_t callInCnt = call->inArgCount;
+
+        const bool isVariadic = (fcnInCnt > 0 &&
+            fcn->prototype.inArgs[fcnInCnt - 1]->var->value.typeKind == Type::DT_MULTIPLE_TYPES);
+
+        if (!isVariadic && fcnInCnt != callInCnt) {
+            outScore->value = 0;
+            return;
+        }
+        if (isVariadic && callInCnt < (fcnInCnt - 1)) {
+            outScore->value = 0;
+            return;
+        }
+
+        uint64_t score = 0;
+
+        // Prefer fixed-signatures over variadic ones
+        if (!isVariadic) score += FOS_NON_VAR_BONUS;
+
+        const uint32_t fixedCount = isVariadic ? fcnInCnt - 1 : fcnInCnt;
+
+        for (uint32_t i = 0; i < callInCnt; i++) {
+            // Handle Variadic tail
+            if (i >= fixedCount) {
+                score += FOS_IMPLICIT_CAST;
+                continue;
+            }
+
+            Variable* fArg = fcn->prototype.inArgs[i]->var;
+            Variable* cArg = call->inArgs[i];
+
+            const Type::Kind fDtype = fArg->value.typeKind;
+            const Type::Kind cDtype = cArg->value.typeKind;
+
+            // Exact Match
+            if (fDtype == cDtype) {
+                if (fDtype == Type::DT_CUSTOM) {
+                    if (fArg->value.def != cArg->value.def) {
+                        outScore->value = 0;
+                        return;
+                    }
+                }
+
+                score += FOS_EXACT_MATCH;
+                continue;
+            }
+
+            // Numeric Rules
+            if (Type::isInt(cDtype) && Type::isInt(fDtype)) {
+                if (Type::isSignedInt(cDtype) == Type::isSignedInt(fDtype)) {
+                    // Promotion (Safe) vs Decrease (Dangerous)
+                    score += Type::basicTypes[cDtype].size < Type::basicTypes[fDtype].size
+                             ? FOS_PROMOTION : FOS_SIZE_DECREASE;
+                } else {
+                    score += FOS_SIGN_CHANGE;
+                }
+                continue;
+            }
+
+            if (Type::isFloat(cDtype) && Type::isFloat(fDtype)) {
+                score += Type::basicTypes[cDtype].size < Type::basicTypes[fDtype].size
+                         ? FOS_PROMOTION : FOS_SIZE_DECREASE;
+                continue;
+            }
+
+            if (Type::isInt(cDtype) && Type::isFloat(fDtype)) {
+                score += FOS_TO_FLOAT;
+                continue;
+            }
+
+            // General Implicit Casts
+            if (validateImplicitCast(cDtype, fDtype)) {
+                score += FOS_IMPLICIT_CAST;
+                continue;
+            }
+
+            // Missmatch
+            outScore->value = 0;
+            return;
+        }
+
+        outScore->value = score;
+    }
+
+    // TODO : on error fill ctx with top score functions for better message.
+    Function* findClosestFunction(SymbolIndexEntry* entry, Variable* callOp) {
+        Scope* scope        = callOp->base.scope;
+        FunctionCall* call  = (FunctionCall*) callOp->expression;
+        const int callInCnt = call->inArgCount;
+
+        if (!entry) return NULL;
+        if (entry->kind == SymbolIndexEntry::SINGLE) {
+            if (entry->node->type == NT_FUNCTION) {
+                return (Function*) entry->node;
+            } else {
+                return NULL;
+            }
+        }
+
+        Function* bestFunction = NULL;
+        FunctionScore bestScore = { .value = 0 };
+        int sameScoreCnt = 0;
+
+        for (int i = 0; i < entry->overloads.count; i++) {
+            Function* fcn = (Function*) entry->overloads.data[i];
+
+            FunctionScore score;
+            computeFunctionMatchScore(fcn, call, &score);
+
+            if (score.value > bestScore.value) {
+                bestScore = score;
+                bestFunction = fcn;
+            } else if (score.value == bestScore.value) {
+                sameScoreCnt++;
+                continue;
+            }
+
+            sameScoreCnt = 0;
+        }
+
+        if (bestScore.value > 0 && sameScoreCnt == 0) {
+            return bestFunction;
+        }
+
+        return NULL;
+    }
+
+    // TODO : incorporate to Ast::Internal
+    SyntaxNode* findInternalSymbol(const String* name) {
+        using namespace Ast::Internal;
+
+        for (int i = 0; i < IV_COUNT; i++) {
+            const char* internalStr = NULL;
+            switch (i) {
+                case IV_NULL:  internalStr = IVS_NULL;  break;
+                case IV_TRUE:  internalStr = IVS_TRUE;  break;
+                case IV_FALSE: internalStr = IVS_FALSE; break;
+                default: continue;
+            }
+
+            if (internalStr && cstrcmp(*name, internalStr)) {
+                return (SyntaxNode*) &variables[i];
+            }
+        }
+
+        for (int i = 1; i < IF_COUNT; i++) {
+            const char* internalStr = NULL;
+            switch (i) {
+                case IF_ALLOC:  internalStr = IFS_ALLOC;  break;
+                case IF_FREE:   internalStr = IFS_FREE;   break;
+                default: continue;
+            }
+
+            if (internalStr && cstrcmp(*name, internalStr)) {
+                return (SyntaxNode*) &functions[i];
+            }
+        }
+
+        return nullptr;
+    }
+
+    // Finds function where all arguments follow 'exact match'
+    // TODO
+    Function* findExactFunction(Scope* scope, INamed* const name, FunctionPrototype* const fptr) {
+        return NULL;
+    }
+
+    // TODO
+    Err::Err validate(ValidationContext* ctx, FunctionPrototype* fp) {
+        return Err::OK;
+    }
+
+    Err::Err validateDataType(ValidationContext* ctx, Type::Kind kind, void* data, Span* span) {
+        // As string is just internal type, we can skip it
+        if (Type::isBasic(kind) || kind == Type::DT_STRING) {
+            return Err::OK;
+        }
+
+        if (!data) {
+            Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_ERROR,
+                Diag::Format {
+                    "Internal Compiler Error: Type kind '%s' requires metadata, but pointer was NULL."
+                },
+                Type::str(kind));
+            return Err::UNEXPECTED_SYMBOL;
+        }
+
+        switch (kind) {
+            case Type::DT_CUSTOM:
+            case Type::DT_UNION:
+            case Type::DT_ENUM: {
+                return ensureValidated(ctx, (SyntaxNode*) data);
+            }
+
+            case Type::DT_POINTER: {
+                Pointer* ptr = (Pointer*) data;
+                return validateDataType(ctx, ptr->pointsToKind, ptr->pointsTo, span);
+            }
+
+            case Type::DT_ARRAY: {
+                Array* arr = (Array*) data;
+
+                Err::Err err = validateDataType(ctx, arr->base.pointsToKind, arr->base.pointsTo, span);
+                if (err != Err::OK) return err;
+
+                if (arr->length) {
+                    validate(ctx, arr->length, NULL);
+                    if (arr->flags & IS_CMP_TIME) {
+                        Interpreter::eval(ctx, arr->length);
+                    }
+                }
+
+                Value val = {
+                    .typeKind = Type::DT_ARRAY,
+                    .hasValue = false,
+                    .arr = arr
+                };
+
+                Type::TypeInfo* info;
+                computeTypeInfo(ctx, &val, &info);
+
+                return Err::OK;
+            }
+
+            case Type::DT_FUNCTION: {
+                return validate(ctx, (FunctionPrototype*) data);
+            }
+
+            default: {
+                Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_ERROR,
+                    Diag::Format {
+                        "Unhandled type kind (%s) in validateDataType."
+                    },
+                    Type::str(kind));
+                return Err::UNEXPECTED_ERROR;
+            }
+        }
+
+        return Err::OK;
+    }
+
     Err::Err validate(ValidationContext* ctx, VariableDefinition* def) {
         Err::Err err;
 
@@ -243,24 +890,33 @@ namespace Validator {
 
         Value leftValue = def->var->value;
 
+        //err = validateDataType(ctx, leftValue.typeKind, leftValue.any, def->var->base.span);
+        //if (err != Err::OK) return err;
+
         err = validate(ctx, def->var, def->var);
+        if (err != Err::OK) return err;
+        
+        // In case of static array, we may need to infer length
+        // TODO : IS_CMP_TIME to IS_EMBEDED ?
+        // TODO : check for static to a function
+        // TODO : use info to check?
+        if (
+            leftValue.typeKind == Type::DT_ARRAY &&
+            leftValue.arr->flags & IS_CMP_TIME &&
+            (!leftValue.arr->length || !leftValue.arr->length->value.hasValue)
+        ) {
+            leftValue.arr->length = def->var->value.arr->length;
+        }
+
+
+        // TODO : as we cahche anyway, create a function without
+        //        return value
+        Type::TypeInfo* info;
+        err = computeTypeInfo(ctx, &leftValue, &info);
         if (err != Err::OK) return err;
 
         err = applyImplicitCast(ctx, &leftValue, def->var);
         if (err != Err::OK) return err;
-
-        // In case of static array, we may need to infer length
-        // TODO : IS_CMP_TIME to IS_EMBEDED ?
-        if (
-            leftValue.typeKind == Type::DT_ARRAY &&
-            leftValue.arr->flags & IS_CMP_TIME
-        ) {
-            Variable* len = (Variable*) unwrap(leftValue.arr->length);
-            if (len && !len->value.hasValue) {
-                // TODO : ??
-                return Err::OK;
-            }
-        }
 
         def->var->value = leftValue;
 
@@ -306,39 +962,22 @@ namespace Validator {
         return Err::OK;
     }
 
-    Err::Err validate(ValidationContext* ctx, Variable* var, Variable* target) {
+    // Resolves and type-checks the internal 'expression' of a variable.
+    //
+    // The resulting type and metadata of the expression are written directly into
+    // variable. Basically a sub function of validate<Variable, Variable>, so look
+    // there for more info.
+    Err::Err validateExpression(ValidationContext* ctx, Variable* var, Variable* target) {
         Err::Err err;
-
-        if (!var) return Err::OK;
-
-        if (var->base.semStatus == TS_READY) return Err::OK;
-        var->base.semStatus = TS_PENDING;
-
-        if (!var->def) {
-            err = linkVariable(ctx, var);
-            if (err != Err::OK) return err;
-
-            if (target && var->def == target->def) {
-                // usage of the variable in own definition...
-                Diag::report(ctx->unit->ast, var->base.span, Err::INVALID_DECLARATION_ORDER);
-                return Err::INVALID_DECLARATION_ORDER;
-            }
-        }
-
-        if (var->def && var != target) {
-            err = ensureValidated(ctx, &var->def->base, (SyntaxNode*) var);
-            if (err != Err::OK) return err;
-
-            // TODO : dont like this call, think about it more...
-            Ast::Node::copyRef(var, var->def->var);
-        }
-        // TODO : we may want to move this to a validateExpression,
-        //        so we can use it directly in validate<VariableDefinition>
-        //        then we can drop var != target check... or maybe leave it
-        //        for sanity anyway...
 
         Expression* ex = var->expression;
         if (!ex) {
+            // If no expression to resolve, we have to ensure that its
+            // data type is valid, as we are the source of truth for
+            // other expressions.
+            err = validateDataType(ctx, var->value.typeKind, var->value.any, var->base.span);
+            if (err != Err::OK) return err;
+
             var->base.semStatus = TS_READY;
             return Err::OK;
         }
@@ -393,8 +1032,10 @@ namespace Validator {
                 err = linkCall(ctx, var);
                 if (err != Err::OK) return err;
 
-                //
                 Function* fcn = call->fcn;
+
+                err = ensureValidated(ctx, &fcn->base);
+                if (err != Err::OK) return err;
 
                 int callArgCount = call->inArgCount;
                 int fixedCount = fcn->prototype.inArgCount;
@@ -414,9 +1055,6 @@ namespace Validator {
                     err = applyImplicitCast(ctx, &lvar->value, rvar);
                     if (err != Err::OK) return err;
                 }
-
-                // TODO : ? We may want to compute specific
-                //          runtim type info for here...
 
                 if (fcn->prototype.outArg) {
                     // TODO : again, dont like this call, think about it more...
@@ -453,17 +1091,34 @@ namespace Validator {
 
             case EXT_STRING_INITIALIZATION: {
 
-                StringInitialization* init = (StringInitialization*)ex;
+                StringInitialization* init = (StringInitialization*) ex;
 
-                var->value.typeKind = Type::DT_STRING;
+                // var->value.typeKind = Type::DT_STRING;
+                // var->value.any = init;
+
+                var->value.typeKind = Type::DT_ARRAY;
+                var->value.arr = Ast::Node::makeArray();
+                var->value.arr->base.pointsToKind = init->wideType;
+                var->value.arr->base.pointsTo = NULL;
+                var->value.arr->flags = IS_CMP_TIME;
+
+                Variable* len = Ast::Node::makeVariable();
+                len->value.hasValue = true;
+                len->value.typeKind = Type::DT_U64;
+                len->value.u64 = init->wideType == Type::DT_U8 ?
+                    init->rawStr.len : init->wideStr.len;
+                var->value.arr->length = len;
+
+                Type::TypeInfo* info;
+                err = computeTypeInfo(ctx, &var->value, &info);
+                if (err != Err::OK) return err;
 
                 return Err::OK;
 
             }
 
             case EXT_ARRAY_INITIALIZATION: {
-
-                ArrayInitialization* init = (ArrayInitialization*)ex;
+                ArrayInitialization* init = (ArrayInitialization*) ex;
 
                 Value* dominantVal = NULL;
                 int dominantIdx = 0;
@@ -514,13 +1169,17 @@ namespace Validator {
                 }
 
                 Variable* len = Ast::Node::makeVariable();
-                len->value.hasValue = 1;
+                len->value.hasValue = true;
                 len->value.typeKind = Type::DT_U64;
                 len->value.u64 = init->attributeCount;
                 var->value.arr->length = len;
 
-                return Err::OK;
+                // TODO : not sure it shall happen here...
+                Type::TypeInfo* info;
+                err = computeTypeInfo(ctx, &var->value, &info);
+                if (err != Err::OK) return err;
 
+                return Err::OK;
             }
 
             case EXT_TYPE_INITIALIZATION: {
@@ -542,10 +1201,26 @@ namespace Validator {
                     return Err::UNEXPECTED_SYMBOL;
                 }
 
+                bool attributesAreNamed = init->attributeCount > 0 &&
+                    init->attributes[0]->name.len > 0;
+
+                if (attributesAreNamed) {
+                    init->idxs = (int*) alloc(alc, sizeof(int) * init->attributeCount);
+                }
+
                 int i = 0;
                 for (; i < init->attributeCount; i++) {
-                    Variable* dest = td->vars[i];
+                    Variable* dest;
                     Variable* src = init->attributes[i];
+
+                    if (attributesAreNamed) {
+                        int idx = Ast::Find::inArray(td->vars, td->varCount, (String*) &src->name, &dest);
+                        init->idxs[i] = idx;
+                    } else {
+                        dest = td->vars[i];
+                    }
+
+                    applyVariableLinkage(ctx, src, (SyntaxNode*) dest->def);
 
                     err = validate(ctx, src, dest);
                     if (err != Err::OK) return err;
@@ -558,7 +1233,9 @@ namespace Validator {
                     for (; i < td->varCount; i++) {
                         Variable* dest = td->vars[i];
 
-                        err = validate(ctx, init->fillVar, dest);
+                        applyVariableLinkage(ctx, init->fillVar, (SyntaxNode*) dest->def);
+
+                        err = validate(ctx, init->fillVar, NULL);
                         if (err != Err::OK) return err;
 
                         err = applyImplicitCast(ctx, &dest->value, init->fillVar);
@@ -579,6 +1256,54 @@ namespace Validator {
             }
         }
 
+        return Err::OK;
+    }
+
+    // Validates a Variable node. This is the primary entry point for all variables.
+    //
+    // Execution Flow:
+    //  - Returns immediately if the node is already validated (NS_READY).
+    //  - If the variable is unlinked, tries to do so.
+    //  - If the node has a definition but contains no expression, it is treated as
+    //    a reference -> forces the definition to be validated, copies needed metadata
+    //    and returns.
+    //  - If the node contains an expression (even if linked, such as a member in a
+    //    struct initializer), it bypasses the reference treatment and proceed to
+    //    its validation.
+    //
+    // Parameters:
+    //   var:    any variable node to validate
+    //   target: The 'context' variable (representing the left-hand side of an assignment
+    //           or any binding-like relationship) used to guide type inference. Can be NULL.
+    Err::Err validate(ValidationContext* ctx, Variable* var, Variable* target) {
+        Err::Err err;
+
+        if (!var) return Err::OK;
+
+        if (var->base.semStatus == TS_READY) return Err::OK;
+        var->base.semStatus = TS_PENDING;
+
+        if (var->value.hasValue) return Err::OK;
+
+        if (!var->def) {
+            err = linkVariable(ctx, var);
+            if (err != Err::OK) return err;
+        }
+
+        if (!var->expression && var->def && var != target) {
+            err = ensureValidated(ctx, &var->def->base, (SyntaxNode*) var);
+            if (err != Err::OK) return err;
+
+            // TODO : dont like this call, think about it more...
+            Ast::Node::copyRef(var, var->def->var);
+
+            var->base.semStatus = TS_READY;
+            return Err::OK;
+        }
+
+        err = validateExpression(ctx, var, target);
+        if (err != Err::OK) return err;
+
         var->base.semStatus = TS_READY;
         return Err::OK;
     }
@@ -586,7 +1311,7 @@ namespace Validator {
     Err::Err validate(ValidationContext* ctx, VariableAssignment* ass) {
         Err::Err err;
 
-        err = validate(ctx, ass->lvar, ass->lvar);
+        err = validate(ctx, ass->lvar, NULL);
         if (err != Err::OK) return err;
 
         err = validate(ctx, ass->rvar, ass->lvar);
@@ -704,46 +1429,104 @@ namespace Validator {
         return Err::OK;
     }
 
+    Err::Err validate(ValidationContext* ctx, Range* range) {
+        Err::Err err;
+
+        err = validate(ctx, range->bidx);
+        if (err != Err::OK) return err;
+        if (!Type::isInt(range->bidx->value.typeKind)) {
+            Value lval = toValue(Type::DT_I64);
+            applyImplicitCast(ctx, &lval, range->bidx);
+        }
+
+        err = validate(ctx, range->eidx);
+        if (err != Err::OK) return err;
+        if (!Type::isInt(range->eidx->value.typeKind)) {
+            Value lval = toValue(Type::DT_I64);
+            applyImplicitCast(ctx, &lval, range->eidx);
+        }
+
+        return Err::OK;
+    }
+
+    void aliasVariable(VariableDefinition* aliasDef, Variable* source) {
+        if (source->expression) {
+            aliasDef->var->expression = source->expression;
+        } else if (source->def) {
+            UnaryExpression* uex = Ast::Node::makeUnaryExpression();
+            uex->operand = source;
+            uex->base.opType = OP_NONE;
+
+            aliasDef->var->expression = (Expression*) uex;
+        }
+
+        aliasDef->var->value = source->value;
+    }
+
     Err::Err validate(ValidationContext* ctx, Loop* node) {
         Err::Err err;
 
         if (!node) return Err::OK;
 
-        if (node->idxDef) {
-            err = validate(ctx, node->idxDef);
+        // Arg
+        if (node->arg.kind == Loop::Arg::ARRAY) {
+            err = validate(ctx, node->arg.array);
             if (err != Err::OK) return err;
-        }
 
-        if (node->array) {
-            err = validate(ctx, node->array);
-            if (err != Err::OK) return err;
-        }
-
-        if (node->to) {
-            err = validate(ctx, node->to);
-            if (err != Err::OK) return err;
-        }
-
-        Type::Kind sourceKind = node->array ? node->array->value.typeKind : Type::DT_ERROR;
-
-        if (node->to) {
-            // CASE: Numeric Range Loop (for i = 0 to 10)
-            Type::Kind limitKind = node->to->value.typeKind;
-
-            if (!Type::isInt(sourceKind) || !Type::isInt(limitKind)) {
-                Diag::report(ctx->unit->ast, node->base.span, Err::INVALID_DATA_TYPE);
-                return Err::INVALID_DATA_TYPE;
+            Type::Kind kind = node->arg.array->value.typeKind;
+            if (kind != Type::DT_ARRAY && kind != Type::DT_SLICE) {
+                if (kind != Type::DT_ERROR) {
+                    Diag::report(ctx->unit->ast, node->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
+                        "Type '%s' is not iterable."
+                    }, Type::str(kind));
+                }
             }
         } else {
-            if (sourceKind != Type::DT_ARRAY && sourceKind != Type::DT_SLICE) {
-                if (sourceKind != Type::DT_ERROR) {
-                    Diag::report(ctx->unit->ast, node->array->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
-                        "Type '%s' is not iterable."
-                    }, Type::str(sourceKind));
+            err = validate(ctx, node->arg.range);
+            if (err != Err::OK) return err;
+        }
+
+        // As
+        if (node->array) {
+            if (node->arg.kind != Loop::Arg::ARRAY) {
+                // TODO : error
+            }
+            aliasVariable(node->array, node->arg.array);
+        }
+
+        if (node->index.var) {
+            if (node->index.var->base.type == NT_VARIABLE) {
+                validate(ctx, node->index.var);
+            } else {
+                if (node->index.def->var->value.typeKind == Type::DT_VOID) {
+                    node->index.def->var->value.hasValue = true;
+                    node->index.def->var->value.typeKind = Type::DT_I64;
+                    node->index.def->var->value.any = NULL;
                 }
             }
         }
 
+        // By
+        if (node->stride) {
+            err = validate(ctx, node->stride);
+            if (!Type::isInt(node->stride->value.typeKind)) {
+                Value lval = toValue(Type::DT_I64);
+                applyImplicitCast(ctx, &lval, node->stride);
+            }
+        }
+
+        // While
+        if (node->condition) {
+            err = validate(ctx, node->condition);
+            if (err != Err::OK) return err;
+
+            if (!Type::isTruthy(node->condition->value.typeKind)) {
+                Diag::report(ctx->unit->ast, node->condition->base.span, Err::INVALID_DATA_TYPE);
+                return Err::INVALID_DATA_TYPE;
+            }
+        }
+
+        // Body
         if (node->bodyScope) {
             SyntaxNode* prevLoop = ctx->currentLoop;
             ctx->currentLoop = (SyntaxNode*) node;
@@ -757,16 +1540,40 @@ namespace Validator {
         return Err::OK;
     }
 
+    Err::Err validate(ValidationContext* ctx, BreakStatement* node) {
+        if (!node) return Err::OK;
+
+        if (!ctx->currentLoop) {
+            Diag::report(ctx->unit->ast, node->base.span, Err::INVALID_BREAK_TARGET);
+            return Err::OK;
+        }
+
+        node->target = (SyntaxNode*) ctx->currentLoop;
+        return Err::OK;
+    }
+
+    Err::Err validate(ValidationContext* ctx, ContinueStatement* node) {
+        if (!node) return Err::OK;
+
+        if (!ctx->currentLoop) {
+            Diag::report(ctx->unit->ast, node->base.span, Err::INVALID_CONTINUE_TARGET);
+            return Err::OK;
+        }
+
+        node->target = (SyntaxNode*) ctx->currentLoop;
+        return Err::OK;
+    }
+
     Err::Err validate(ValidationContext* ctx, ReturnStatement* node) {
         Err::Err err;
 
         if (!node) return Err::OK;
 
         if (!ctx->currentFunction) {
-            Diag::report(ctx->unit->ast, node->base.span, Err::UNEXPECTED_ERROR);
+            Diag::report(ctx->unit->ast, node->base.span, Err::INVALID_RETURN_TARGET,
+                "Return statement must be inside a function.");
             return Err::OK;
         }
-
         node->fcn = ctx->currentFunction;
 
         if (node->var) {
@@ -792,6 +1599,17 @@ namespace Validator {
             expectedValue = proto->outArg->var->value;
         } else {
             expectedValue = Value { .typeKind = Type::DT_VOID };
+        }
+
+        if (!node->var) {
+            if (expectedValue.typeKind != Type::DT_VOID) {
+                Diag::report(ctx->unit->ast, node->base.span, Err::INVALID_DATA_TYPE,
+                    Diag::Format{
+                        "Function expects a return value of type '%s'."
+                    }, Type::str(expectedValue.typeKind));
+                return Err::INVALID_DATA_TYPE;
+            }
+            return Err::OK;
         }
 
         if (applyImplicitCast(ctx, &expectedValue, node->var) != Err::OK) {
@@ -885,49 +1703,6 @@ namespace Validator {
         return Err::OK;
     }
 
-    // TODO : move to Ast::Node ?
-    void ensureIndexedIfNeeded(ValidationContext* ctx, Scope* scope) {
-        if (scope->index || scope->definitionCount <= Config::LINEAR_SEARCH_THRESHOLD) {
-            return;
-        }
-
-        // TODO : I dont think we need to lock the data, as
-        //        they have to be already locked, but its better
-        //        to think twice...
-
-        scope->index = (SymbolIndex*) alloc(alc, sizeof(SymbolIndex));
-        Set::init(&scope->index->set, scope->definitionCount * 2);
-
-        for (uint32_t i = 0; i < scope->definitionCount; i++) {
-            SyntaxNode* node = scope->definitions[i];
-            String name = Ast::Node::getName(node);
-            if (name.buff) {
-                Set::insert(&scope->index->set, name, (uint8_t*) node);
-            }
-        }
-    }
-
-    // TODO : move to Ast::Node ?
-    SyntaxNode* findSymbol(ValidationContext* ctx, Scope* startScope, String name) {
-        Scope* current = startScope;
-
-        while (current) {
-            ensureIndexedIfNeeded(ctx, current);
-
-            SyntaxNode* node;
-            if (current->index) {
-                node = (SyntaxNode*) Set::find(&current->index->set, name);
-            } else {
-                node = Ast::Find::inArray(current->definitions, current->definitionCount, &name);
-            }
-            if (node) return node;
-
-            current = current->base.scope;
-        }
-
-        return NULL;
-    }
-
     Err::Err validate(ValidationContext* ctx, SyntaxNode* node) {
         Err::Err err;
 
@@ -1014,6 +1789,16 @@ namespace Validator {
                 break;
             }
 
+            case NT_BREAK_STATEMENT: {
+                err = validate(ctx, (BreakStatement*) node);
+                break;
+            }
+
+            case NT_CONTINUE_STATEMENT: {
+                err = validate(ctx, (ContinueStatement*) node);
+                break;
+            }
+
             default: {
                 Diag::report(ctx->unit->ast, node->span, Err::NOT_YET_IMPLEMENTED);
                 break;
@@ -1049,6 +1834,11 @@ namespace Validator {
 
                 case NT_TYPE_DEFINITION: {
                     err = validate(ctx, (TypeDefinition*) node);
+                    break;
+                }
+
+                case NT_ENUMERATOR: {
+                    err = validate(ctx, (Enumerator*) node);
                     break;
                 }
 
@@ -1119,9 +1909,6 @@ namespace Validator {
         err = verifyNamespacesAreGlobal(ctx);
         if (err != Err::OK) return err;
 
-        err = checkDuplicateNames(ctx);
-        if (err != Err::OK) return err;
-
 
 
         AstRegistry* reg = ctx->unit->reg;
@@ -1157,6 +1944,11 @@ namespace Validator {
         }
         */
 
+        // DEBUG:
+        for (int i = 0; i < reg->initializations.size; i++) {
+            SyntaxNode* arr = *(SyntaxNode**) DArray::get(&reg->initializations, i);
+            Emitter::driverDebug.emitNode(&DebugHelper::emitter, arr, &DebugHelper::stream);
+        }
 
         for (int i = 0; i < reg->cmpTimeVars.size; i++) {
             Variable* var = *(Variable**) DArray::get(&reg->cmpTimeVars, i);
@@ -1172,8 +1964,27 @@ namespace Validator {
     // === Link functions
     //
 
+    // TODO : move in appropriate place
+    bool areInOrder(Span* before, Span* after) {
+        return (before->start.idx < after->start.idx);
+    }
+
+    // TODO : move in appropriate place
+    // Basically to 'abstract' errors in invalid ordering case, that are kinda ugly
+    bool isOrderingValid(SymbolIndexEntry* entry, QualifiedName* name) {
+        return (
+            entry->kind == SymbolIndexEntry::OVERLOAD ||
+            entry->node->flags & IS_UNORDERED ||
+            areInOrder(entry->node->span, name->span)
+        );
+    }
+
     Err::Err linkDataType(ValidationContext* ctx, VariableDefinition* def) {
         if (!def->dtype) return Err::OK;
+
+        SyntaxNode* node;
+        Err::Err err = resolveQualifiedName(ctx, def->base.scope, def->dtype, &node);
+        if (err != Err::OK) return err;
 
         void** type;
         Type::Kind* typeKind;
@@ -1186,24 +1997,7 @@ namespace Validator {
             typeKind = &(def->var->value.typeKind);
         }
 
-        // TODO : why path is pointer
-        Scope* scope = def->base.scope;
-        if (def->dtype && def->dtype->path && def->dtype->path->len > 0) {
-            Namespace* nspace = NULL;
-            ErrorSet* eset = NULL;
-            const Err::Err err = validateQualifiedName(ctx, scope, def->dtype, &nspace, &eset);
-            if (err != Err::OK) return err;
-            if (eset) return Err::OK;
-            scope = (Scope*) nspace;
-        }
-
-        SyntaxNode* node = Ast::Find::inScope(scope, (const String*) def->dtype);
-
-        if (!node) {
-            Diag::report(ctx->unit->ast, def->base.span, Err::UNKNOWN_DATA_TYPE);
-            return Err::UNKNOWN_DATA_TYPE;
-        }
-
+        // TODO : simplify by adding NT -> TK lookup
         switch (node->type) {
             case NT_TYPE_DEFINITION: {
                 *type = (void*) node;
@@ -1231,8 +2025,13 @@ namespace Validator {
             }
 
             default: {
-                Diag::report(ctx->unit->ast, def->base.span, Err::UNEXPECTED_ERROR);
-                return Err::UNEXPECTED_ERROR;
+                Diag::report(ctx->unit->ast, def->base.span, Err::INVALID_DATA_TYPE,
+                    Diag::Format {
+                        "Symbol '%.*s' is not a data type."
+                    },
+                    def->dtype->len, def->dtype->buff);
+
+                return Err::INVALID_DATA_TYPE;
             }
         }
 
@@ -1240,6 +2039,7 @@ namespace Validator {
     }
 
     Err::Err linkErrorSet(ValidationContext* ctx, Function* fcn) {
+        /*
         QualifiedName* const errName = fcn->errorSetName;
 
         if (!errName) {
@@ -1288,66 +2088,20 @@ namespace Validator {
             fcn->errorSet = eset;
 
         }
-
+        */
         return Err::OK;
     }
 
-    Err::Err linkVariable(ValidationContext* ctx, Variable* var) {
-        // in case of scopeNames var is the last name (ex. point.x, var is then x)
-        // scopeNames are sorted from left to right as written
-        if (var->name.len == 0) return Err::OK;
-
-        Variable* tmpVar;
-
-        Scope* scope = var->base.scope;
-        if (var->name.pathSize > 0) {
-            Namespace* nspace = NULL;
-            ErrorSet* eset = NULL;
-            const Err::Err err = validateQualifiedName(ctx, scope, &var->name, &nspace, &eset);
-            if (err != Err::OK) return err;
-            if (eset) {
-                tmpVar = Ast::Find::inArray(eset->vars, eset->varCount, (String*) &var->name);
-                if (!tmpVar) {
-                    Diag::report(ctx->unit->ast, var->base.span, Err::UNKNOWN_ERROR_SET);
-                    return Err::UNKNOWN_ERROR_SET;
-                }
-                Ast::Node::copyRef(var, tmpVar);
-                return Err::OK;
-            }
-            scope = (Scope*) nspace;
-
-            // if namespace, we dont care about order
-
-            SyntaxNode* node = Ast::Find::inArray(scope->children, scope->childrenCount, (String*) &var->name);
-            if (node && node->type == NT_VARIABLE) {
-                Ast::Node::copyRef(var, (Variable*) node);
-                return Err::OK;
+    Err::Err applyVariableLinkage(ValidationContext* ctx, Variable* var, SyntaxNode* definition) {
+        switch (definition->type) {
+            case NT_VARIABLE_DEFINITION: {
+                var->def = (VariableDefinition*) definition;
+                break;
             }
 
-        }
-
-        tmpVar = findDefinition(ctx, scope, &var->name, var->base.definitionIdx);
-        if (tmpVar) {
-            Ast::Node::copyRef(var, tmpVar);
-            return Err::OK;
-        }
-
-        tmpVar = Ast::Find::inArray(Ast::Internal::variables, Ast::Internal::IV_COUNT, (String*) &var->name);
-        if (tmpVar) {
-            Ast::Node::copyRef(var, tmpVar);
-            return Err::OK;
-        }
-
-        SyntaxNode* node = Ast::Find::inScope(scope, (String*) &var->name);
-        if (!node) {
-            Diag::report(ctx->unit->ast, var->base.span, Err::UNKNOWN_VARIABLE, var->name.len, var->name.buff);
-            return Err::UNKNOWN_VARIABLE;
-        }
-
-        switch (node->type) {
             case NT_ENUMERATOR: {
                 var->value.typeKind = Type::DT_ENUM;
-                var->value.enm = (Enumerator*) node;
+                var->value.enm = (Enumerator*) definition;
                 break;
             }
 
@@ -1358,10 +2112,11 @@ namespace Validator {
             }
 
             case NT_TYPE_DEFINITION: {
-                Err::Err err = validate(ctx, (TypeDefinition*) node);
+                // TODO : deprecated behaviour
+                Err::Err err = validate(ctx, (TypeDefinition*) definition);
                 if (err != Err::OK) return err;
 
-                var->value.i64 = ((TypeDefinition*) node)->typeInfo->base.size;
+                var->value.i64 = ((TypeDefinition*) definition)->typeInfo->base.size;
                 var->value.hasValue = true;
                 var->value.typeKind = Type::DT_I64;
 
@@ -1369,12 +2124,28 @@ namespace Validator {
             }
 
             default: {
-                Diag::report(ctx->unit->ast, var->base.span, Err::UNEXPECTED_ERROR);
+                Diag::report(ctx->unit->ast, var->base.span, Err::UNEXPECTED_ERROR,
+                    Diag::Format {
+                        "Symbol '%.*s' is a %s and cannot be used as a variable."
+                    },
+                    var->name.len, var->name.buff, Ast::Node::str(definition->type)
+                );
+
                 return Err::UNEXPECTED_ERROR;
             }
         }
 
         return Err::OK;
+    }
+
+    Err::Err linkVariable(ValidationContext* ctx, Variable* var) {
+        if (var->name.len == 0) return Err::OK;
+
+        SyntaxNode* node;
+        Err::Err err = resolveQualifiedName(ctx, var->base.scope, &var->name, &node);
+        if (err != Err::OK) return err;
+
+        return applyVariableLinkage(ctx, var, node);
     }
 
     // link goto statements
@@ -1390,35 +2161,47 @@ namespace Validator {
     }
 
     Err::Err linkCall(ValidationContext* ctx, Variable* callOp) {
+        Err::Err err;
+
         FunctionCall* call = (FunctionCall*) (callOp->expression);
         if (call->fcn) return Err::OK;
 
-        Function* fcn;
-        const int err = findClosestFunction(ctx, callOp, &fcn);
-        if (err < 0) {
-            // check for function pointer
-            Variable* var = findDefinition(ctx, callOp->base.scope, &call->name, callOp->base.definitionIdx);
-            if (!var) {
-                Diag::report(ctx->unit->ast, callOp->base.span, (Err::Err) err);
-                return (Err::Err) err;
+        Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
+
+        SymbolIndexEntry* entry;
+        err = resolveQualifiedNameAsIndexEntry(ctx, callOp->base.scope, &call->name, &entry);
+        if (err != Err::OK) return err;
+
+        Arena::rollback(&ctx->tmpArena, marker);
+
+        Type::Kind outTypeKind;
+        Function* fcn = findClosestFunction(entry, callOp);
+        if (!fcn) {
+            if (
+                entry->kind == SymbolIndexEntry::SINGLE &&
+                entry->node->type == NT_VARIABLE_DEFINITION
+            ) {
+                // assuming function pointer
+                Variable* var = (Variable*) entry->node;
+
+                call->fptr = var;
+                call->fcn = NULL;
+                outTypeKind = var->value.fcn->outArg->var->value.typeKind;
+            } else {
+                // TODO : proper error
+                Diag::report(ctx->unit->ast, callOp->base.span, Err::SYMBOL_NOT_FOUND);
+                return (Err::Err) Err::SYMBOL_NOT_FOUND;
             }
 
-            call->fptr = var;
-            call->fcn = NULL;
-            call->outArg = new Variable();
-            call->outArg->value.hasValue = false;
-            call->outArg->value.typeKind =
-                var->value.fcn->outArg->var->value.typeKind;
-
-            return Err::OK;
+        } else {
+            call->fptr = NULL;
+            call->fcn = fcn;
+            outTypeKind = fcn->prototype.outArg->var->value.typeKind;
         }
 
-        call->fptr = NULL;
-        call->fcn = fcn;
         call->outArg = new Variable();
         call->outArg->value.hasValue = false;
-        call->outArg->value.typeKind =
-            fcn->prototype.outArg->var->value.typeKind;
+        call->outArg->value.typeKind = outTypeKind;
 
         return Err::OK;
     }
@@ -1478,48 +2261,6 @@ namespace Validator {
         return Err::OK;
     }
 
-    Err::Err checkDuplicateNames(ValidationContext* ctx) {
-        DArray::Container* scopes = &ctx->unit->reg->scopes;
-
-        for (int i = 0; i < scopes->size; i++) {
-            Scope* const sc = *(Scope**) DArray::get(scopes, i);
-            const uint32_t count = sc->definitionCount;
-
-            if (count < 2) continue;
-            if (count <= Config::LINEAR_SEARCH_THRESHOLD) {
-                for (uint32_t i = 0; i < count; i++) {
-                    SyntaxNode* node = sc->definitions[i];
-
-                    String name = Ast::Node::getName(node);
-                    if (name.len == 0) continue;
-
-                    if (Ast::Find::inArray(sc->definitions, i, &name)) {
-                        Diag::report(ctx->unit->ast, node->span, Err::SYMBOL_ALREADY_DEFINED);
-                        return Err::SYMBOL_ALREADY_DEFINED;
-                    }
-                }
-
-                continue;
-            }
-
-            for (uint32_t i = 0; i < sc->definitionCount; i++) {
-                SyntaxNode* node = sc->definitions[i];
-
-                String name = Ast::Node::getName(node);
-                if (name.len == 0) continue;
-
-                if (!Set::insert(&ctx->searchSet, (uint8_t*) name.buff)) {
-                    Diag::report(ctx->unit->ast, node->span, Err::SYMBOL_ALREADY_DEFINED);
-                    return Err::SYMBOL_ALREADY_DEFINED;
-                }
-            }
-
-            Set::clear(&ctx->searchSet);
-        }
-
-        return Err::OK;
-    }
-
 
 
 
@@ -1528,6 +2269,54 @@ namespace Validator {
 
     // ======================
     // TYPE RESOLUTION STUFF
+
+    Err::Err computeTypeInfo(ValidationContext* ctx, Value* val, Type::TypeInfo** outInfo) {
+        const Type::Kind typeKind = val->typeKind;
+
+        if (Type::isPrimitive(typeKind)) {
+            *outInfo = Type::basicTypes + typeKind;
+        } else if (typeKind == Type::DT_CUSTOM) {
+            computeTypeInfo(ctx, val->def);
+            *outInfo = (Type::TypeInfo*) val->def->typeInfo;
+        } else if (typeKind == Type::DT_ARRAY) {
+            Array* arr = val->arr;
+
+            // array with runtime length is interpreted as slice
+            if (arr->flags ^ IS_CMP_TIME || !arr->length) {
+                *outInfo = (Type::TypeInfo*) Type::basicTypes + Type::DT_SLICE;
+            } else {
+                Type::TypeInfoEx* aInfo = (Type::TypeInfoEx*) alloc(alc, sizeof(Type::TypeInfoEx));
+                Type::TypeInfo* eInfo;
+
+                const uint64_t len = arr->length->value.u64;
+
+                Value tmpVal = {
+                    .typeKind = arr->base.pointsToKind,
+                    .hasValue = 0,
+                    .any = arr->base.pointsTo
+                };
+
+                Err::Err err = computeTypeInfo(ctx, &tmpVal, (Type::TypeInfo**) &eInfo);
+                if (err != Err::OK) return err;
+
+                aInfo->base.kind = Type::DT_ARRAY;
+                aInfo->base.size = len * eInfo->size;
+                aInfo->base.align = eInfo->align;
+                aInfo->base.rank = Type::basicTypes[Type::DT_ARRAY].rank;
+
+                aInfo->arr.element = eInfo;
+                aInfo->arr.elementCount = len;
+
+                *outInfo = (Type::TypeInfo*) aInfo;
+            }
+
+            arr->type = (Type::TypeInfoEx*) *outInfo;
+        } else {
+            return Err::NOT_YET_IMPLEMENTED;
+        }
+
+        return Err::OK;
+    }
 
     Err::Err computeTypeInfo(ValidationContext* ctx, TypeDefinition* td) {
         if (td->state == TS_READY) return Err::OK;
@@ -1554,48 +2343,9 @@ namespace Validator {
         for (int i = 0; i < td->varCount; i++) {
             Variable* var = td->vars[i];
 
-            Type::TypeInfo* mInfo = NULL;
-            Type::Kind typeKind = var->value.typeKind;
-
-            if (Type::isPrimitive(typeKind)) {
-
-                mInfo = Type::basicTypes + typeKind;
-
-            } else if (typeKind == Type::DT_CUSTOM) {
-
-                computeTypeInfo(ctx, td);
-                mInfo = (Type::TypeInfo*) td->typeInfo;
-
-            } else if (typeKind == Type::DT_ARRAY) {
-
-                // if length is NULL, we are basicly dealing with
-                // a runtime length, and we can interpret our dtype
-                // as slice
-                /*
-                if (!arr->length) {
-                    *size = 16;
-                    *align = 8;
-                    return Err::OK;
-                }
-
-                arr->length = unwrap(arr->length);
-                const uint64_t len = arr->length->value.u64;
-
-                uint64_t elementSize;
-                uint64_t elementAlign;
-                Value tmpVal = toValue(&arr->base);
-                // TODO : cache
-                err = getDtypeInfo(&tmpVal, &elementSize, &elementAlign);
-                if (err != Err::OK) return err;
-
-                *size = len * elementSize;
-                *align = elementAlign;
-                */
-            } else {
-
-                return Err::NOT_YET_IMPLEMENTED;
-
-            }
+            Type::TypeInfo* mInfo;
+            Err::Err err = computeTypeInfo(ctx, &var->value, &mInfo);
+            if (err != Err::OK) return err;
 
             sInfo->members[i].type = mInfo;
             sInfo->members[i].offset = offset;
@@ -1612,7 +2362,33 @@ namespace Validator {
         td->typeInfo->base.rank = 0;
         td->typeInfo->base.kind = Type::DT_CUSTOM;
 
+        td->state = TS_READY;
+
         return Err::OK;
+    }
+
+    // Wraps rvar in a Cast expression using the type described by target.
+    // Assumes the cast has already been validated.
+    void wrapInCast(ValidationContext* ctx, Value* target, Variable* rvar) {
+        // clone the current node to preserve also metadata
+        // TODO: maybe no need to do a full copy
+        Variable* innerOperand = Ast::Node::copy(rvar);
+
+        Cast* castEx = Ast::Node::makeCast();
+        castEx->operand = innerOperand;
+
+        if (target->typeKind != Type::DT_ARRAY) {
+            castEx->target = target->typeKind;
+        } else {
+            castEx->target = target->arr->base.pointsToKind;
+        }
+
+        rvar->expression = (Expression*) castEx;
+        rvar->value = *target;
+    }
+
+    Value toValue(Type::Kind kind) {
+        return { .typeKind = kind, .hasValue = 0, .any = NULL };
     }
 
     Err::Err applyImplicitCast(ValidationContext* ctx, Value* lval, Variable* rvar) {
@@ -1654,27 +2430,13 @@ namespace Validator {
             return Err::OK;
         }
 
-        // clone the current node to preserve also metadata
-        // TODO: maybe no need to do a full copy
-        Variable* innerOperand = Ast::Node::copy(rvar);
-
-        Cast* castEx = Ast::Node::makeCast();
-        castEx->operand = innerOperand;
-
-        if (lval->typeKind != Type::DT_ARRAY) {
-            castEx->target = lval->typeKind;
-        } else {
-            castEx->target = lval->arr->base.pointsToKind;
-        }
-
-        rvar->expression = (Expression*) castEx;
-        rvar->value = *lval;
+        wrapInCast(ctx, lval, rvar);
 
         return Err::OK;
     }
 
     inline void inheritType(Variable* dest, Value* source) {
-        if (isPrimitive(source->typeKind)) {
+        if (isBasic(source->typeKind)) {
             dest->value.typeKind = source->typeKind;
         } else {
             dest->value = *source;
@@ -1713,7 +2475,6 @@ namespace Validator {
     }
 
     Err::Err resolveMember(ValidationContext* ctx, BinaryExpression* bex, Variable* var) {
-
         Variable* parent = bex->left;
         Variable* member = bex->right;
 
@@ -1750,12 +2511,24 @@ namespace Validator {
             // dealloc(alc, member);
 
             return Err::OK;
+        }
 
+        if (parentType == Type::DT_ENUM) {
+            Enumerator* en = parent->value.enm;
+            Variable* attribute = Ast::Find::inArray(en->vars, en->varCount, memberName);
+            if (!attribute) {
+                Diag::report(ctx->unit->ast, en->base.span, Err::UNKNOWN_VARIABLE, "Unable to find member of enum!", member->base.span, 0);
+                return Err::UNEXPECTED_SYMBOL;
+            }
+
+            member->def = attribute->def;
+            var->value = attribute->value;
+
+            return Err::OK;
         }
 
         TypeDefinition* td;
         if (parentType == Type::DT_POINTER) {
-
             Pointer* ptr = parent->value.ptr;
 
             if (ptr->pointsToKind != Type::DT_CUSTOM || !ptr->pointsTo) {
@@ -1765,16 +2538,14 @@ namespace Validator {
 
             bex->base.opType = OP_DEREFERENCE_MEMBER_SELECTION;
             td = (TypeDefinition*) ptr->pointsTo;
-
         } else if (parentType == Type::DT_CUSTOM) {
-
             td = (TypeDefinition*) parent->value.any;
-
         } else {
-
-            Diag::report(ctx->unit->ast, td->base.span, Err::INVALID_TYPE_CONVERSION, "Invalid type for member selection!", bex->right->base.span, bex->right->name.len);
+            Diag::report(ctx->unit->ast, bex->right->base.span, Err::INVALID_TYPE_CONVERSION,
+                Diag::Format{
+                    "Invalid type '%*.s' for member selection!"
+                }, 0, 0); // TODO
             return Err::INVALID_TYPE_CONVERSION;
-
         }
 
         Variable* attribute = NULL;
@@ -1792,55 +2563,9 @@ namespace Validator {
         var->value.any = attribute->value.any;
 
         return Err::OK;
-
-        /*
-        if (dtypeA == DT_ENUM) {
-
-            Enumerator* en = parent->value.enm;
-            Variable* var = ctx->reg->Find.inArray(&en->vars, memberName);
-            if (!var) {
-                Diag::report(unit->ast, "Unable to find member of enum!", member->base.span, 0);
-                return Err::UNEXPECTED_SYMBOL;
-            }
-
-            return Err::OK;
-
-        }
-
-        if (dtypeA == DT_POINTER) {
-
-            Variable* var = (Variable*) bex->right;
-            Pointer* ptr = (Pointer*) customDtypeA;
-
-            if (ptr->pointsToEnum != DT_CUSTOM || !ptr->pointsTo) {
-                Diag::report(unit->ast, "Invalid type of dereferenced pointer for member selection!", var->base.span, var->name.len);
-                return Err::INVALID_TYPE_CONVERSION;
-            }
-
-            bex->base.opType = OP_DEREFERENCE_MEMBER_SELECTION;
-            customDtypeA = (TypeDefinition*)(ptr->pointsTo);
-
-        } else if (dtypeA != DT_CUSTOM) {
-            Diag::report(unit->ast, "Invalid type for member selection!", bex->right->base.span, bex->right->name.len);
-            return Err::INVALID_TYPE_CONVERSION;
-        }
-
-        Variable* var = (Variable*)bex->right;
-        Variable* ans = ctx->reg->Find.inArray(&customDtypeA->vars, (String*)&var->name);
-        if (!ans) {
-            Diag::report(unit->ast, Err::str(Err::INVALID_ATTRIBUTE_NAME), var->base.span, var->name.len, var->name.len, var->name.buff);
-            return Err::INVALID_ATTRIBUTE_NAME;
-        }
-
-        ctx->reg->Node.copy(var, ans);
-
-        rdtype = ans->value.typeKind;
-        break;
-        */
     }
 
     Err::Err resolveResultType(ValidationContext* ctx, BinaryExpression* bex, Variable* var) {
-
         Type::Kind lDtype = bex->left->value.typeKind;
         Type::Kind rDtype = bex->right->value.typeKind;
 
@@ -1848,7 +2573,6 @@ namespace Validator {
         // operands ranks but in few cases operator can
         // influence the output type (arr[i])
         if (bex->base.opType == OP_SUBSCRIPT) {
-
             // TODO : move from this to a direct check, as we
             //   may need different behavior for each type later
             if (!isIndexable(lDtype)) {
@@ -1860,15 +2584,12 @@ namespace Validator {
             var->value.typeKind = ptr->pointsToKind;
 
             return Err::OK;
-
         } else if (bex->base.opType == OP_MEMBER_SELECTION) {
-
             // we also may want to change the operator to
             // OP_DEREFERENCE_MEMEBER_SELECTION here if needed,
             // so its simpler to compile
             resolveMember(ctx, bex, var);
             return Err::OK;
-
         }
 
         // TODO:
@@ -1881,7 +2602,6 @@ namespace Validator {
         }
 
         return Err::OK;
-
     }
 
     Err::Err resolveResultType(ValidationContext* ctx, FunctionCall* fex, Variable* var) {
@@ -1894,74 +2614,6 @@ namespace Validator {
 
     // ======================
     // VALIDATION FUNCTIONS
-
-    // assuming size > 0
-    Err::Err validateQualifiedName(ValidationContext* ctx, Scope* sc, QualifiedName* name, Namespace** nspace, ErrorSet** eset) {
-        Namespace* tmpNspace = NULL;
-        INamed* names = name->path;
-        // INamedLoc* names = (INamedLoc*) namesContainer->base.buffer;
-
-        int i = 0;
-        const int len = name->pathSize;
-
-        for (; i < len; i++) {
-
-            String name = *((String*) (names + i));
-            tmpNspace = Ast::Find::inScopeNamespace(sc, &name);
-
-            if (!tmpNspace) {
-
-                ErrorSet* tmpEset = Ast::Find::inScopeErrorSet(sc, &name);
-                if (!tmpEset) {
-
-                    // check implicit errors
-                    // TODO
-
-                    /*
-                    if (sc->fcn && sc->fcn->errorSet) {
-                        tmpEset = sc->fcn->errorSet;
-                    } else {
-                        Diag::report(unit->ast, Err::str(Err::UNKNOWN_NAMESPACE), sc->base.span, name.len, name.buff);
-                        return Err::UNKNOWN_NAMESPACE;
-                    }
-                    */
-
-                }
-
-                // *eset = tmpEset;
-
-                // need to test that other fields align with error set
-                i++;
-                for (; i < len; i++) {
-
-                    Variable* tmp = Ast::Find::inArray(tmpEset->vars, tmpEset->varCount, &name);
-                    if (!tmp) {
-                        Diag::report(ctx->unit->ast, tmpEset->base.span, Err::UNKNOWN_NAMESPACE);
-                        return Err::UNKNOWN_NAMESPACE;
-                    }
-
-                    if (tmp->value.typeKind == Type::DT_ERROR && !(tmp->value.hasValue)) {
-                        tmpEset = tmp->value.err;
-                    } else if (i + 1 < len) {
-                        Diag::report(ctx->unit->ast, tmpEset->base.span, Err::UNKNOWN_ERROR_SET, tmp->base.span);
-                        return Err::UNKNOWN_ERROR_SET;
-                    }
-
-                }
-
-                *eset = tmpEset;
-
-                break;
-
-            }
-
-            sc = (Scope*) tmpNspace;
-
-        }
-
-        *nspace = (Namespace*) tmpNspace;
-        return Err::OK;
-    }
 
     // used within validateTypeInitialization
     // think about better name
@@ -2277,10 +2929,39 @@ namespace Validator {
         return (Err::Err) ((int64_t) ans - 1);
     }
 
+    // uses ctx->tmpArena
+    String resolveTypeName(Validator::ValidationContext* ctx, void* type, Type::Kind typeKind) {
+        constexpr int bufferSize = 512;
+
+        char* buffer = (char*) Arena::push(&ctx->tmpArena, bufferSize);
+        String str = { buffer, bufferSize };
+
+        IO::Stream stream = {
+            .kind  = IO::Stream::SK_ARENA,
+            .buffer = str
+        };
+
+        writeTypeName(&stream, type, typeKind);
+        Arena::rollback(&ctx->tmpArena, str.buff - buffer);
+
+        return str;
+    }
+
+    bool matchLengths(Array* arrL, Array* arrR) {
+        return arrL && arrR && arrL->length && arrR->length &&
+               arrL->length->value.hasValue && arrR->length->value.hasValue &&
+               arrL->length->value.u64 == arrR->length->value.u64;
+    }
+
+    // TODO : unite all dtype->like structures and add spans, so
+    //        precise errors can be reported
+    // TODO : move from 'ref' convention
     Err::Err validateImplicitCast(ValidationContext* ctx, void* dtype, void* dtypeRef, Type::Kind typeKind, Type::Kind typeKindRef) {
         if (validateImplicitCast(typeKind, typeKindRef) >= 0) {
             return Err::OK;
         }
+
+        if (dtype == dtypeRef) return Err::OK;
 
         if (typeKindRef == Type::DT_ARRAY && typeKind == Type::DT_STRING) {
 
@@ -2307,20 +2988,21 @@ namespace Validator {
             return Err::OK;
 
         } else if (typeKindRef == Type::DT_ARRAY && typeKind == Type::DT_ARRAY) {
+            Array* arrL = (Array*) dtypeRef;
+            Array* arrR = (Array*) dtype;
 
-            Array* arrRef = (Array*) dtypeRef;
-            Array* arr = (Array*) dtype;
+            if (arrL->flags & IS_CMP_TIME && arrR->flags & IS_CMP_TIME) {
+                // if both compile time, we have to verify lengths
+                if (!matchLengths(arrL, arrR)) {
+                    Diag::report(ctx->unit->ast, NULL, Err::INVALID_ARRAY_LENGTH,
+                        Diag::Format { "Array length mismatch.\n" });
+                    return Err::INVALID_ARRAY_LENGTH;
+                }
+            }
 
-            int levelRef = 0;
-            const Type::Kind arrDtypeRef = (Type::Kind) getFirstNonArrayDtype(arrRef, -1, &levelRef);
-
-            const int maxLevel = levelRef;
-            levelRef = 0;
-            const Type::Kind arrDtype = (Type::Kind) getFirstNonArrayDtype(arr, maxLevel, &levelRef);
-
-            return validateImplicitCast(arrDtype, arrDtypeRef);
-
-
+            return validateImplicitCast(ctx,
+                arrL->base.pointsTo, arrR->base.pointsTo,
+                arrL->base.pointsToKind, arrR->base.pointsToKind);
         } else if (typeKindRef == Type::DT_ARRAY) {
 
             Array* arr = (Array*) dtypeRef;
@@ -2330,7 +3012,14 @@ namespace Validator {
 
         }
 
-        Diag::report(ctx->unit->ast, NULL, Err::INVALID_TYPE_CONVERSION, "tmp", "tmp");
+        Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
+
+        String dtypeName = resolveTypeName(ctx, dtype, typeKind);
+        String dtypeRefName = resolveTypeName(ctx, dtypeRef, typeKindRef);
+        Diag::report(ctx->unit->ast, NULL, Err::INVALID_TYPE_CONVERSION, dtypeName.len, dtypeName.buff, dtypeRefName.len, dtypeRefName.buff);
+
+        Arena::rollback(&ctx->tmpArena, marker);
+
         return Err::INVALID_TYPE_CONVERSION;
     }
 
@@ -2434,441 +3123,20 @@ namespace Validator {
     // ================
     //  MISCELLANEOUS
 
-    // TODO
-    int computeSizeOfDataType(Reg::Unit* unit, TypeDefinition* const def) {
-
-        if (def->typeInfo->base.size > 0) return def->typeInfo->base.size;
-
-        const int isUnion = def->base.type == NT_UNION;
-
-        int accSize = 0;
-        for (int i = 0; i < def->varCount; i++) {
-
-            Variable* const var = def->vars[i];
-
-            int size = 0;
-            switch (var->value.typeKind) {
-
-                case Type::DT_CUSTOM: {
-                    size = computeSizeOfDataType(unit, var->value.def);
-                    break;
-                }
-
-                case Type::DT_ARRAY: {
-
-                    Array* const arr = var->value.arr;
-                    // evaluate(arr->length);
-
-                    if (!(arr->length->value.hasValue)) {
-                        Diag::report(unit->ast, var->base.span, Err::COMPILE_TIME_KNOWN_EXPRESSION_REQUIRED, "Was unable to compute array length while computing size of the %.*s!");
-                        return Err::COMPILE_TIME_KNOWN_EXPRESSION_REQUIRED;
-                    }
-
-                    int chunkSize = 0;
-                    if (arr->base.pointsToKind == Type::DT_CUSTOM) {
-                        chunkSize = computeSizeOfDataType(unit, (TypeDefinition*) arr->base.pointsTo);
-                    } else {
-                        chunkSize = Type::basicTypes[arr->base.pointsToKind].size;
-                    }
-
-                    size = chunkSize * arr->length->value.i64;
-
-                    break;
-                }
-
-                default: {
-                    size = Type::basicTypes[var->def->var->value.typeKind].size;
-                    break;
-                }
-
-            }
-
-            if (isUnion) accSize = size > accSize ? size : accSize;
-            else accSize += size;
-
-        }
-
-        def->typeInfo->base.size = accSize;
-        return accSize;
-
-    }
-
     // level has to be 0, if its output matters
-    int getFirstNonArrayDtype(Array* arr, const int maxLevel, int* level) {
+    Type::Kind getFirstNonArrayDtype(Array* arr, const int maxLevel, int* level, void** outTypeData) {
+        const Type::Kind typeKind = arr->base.pointsToKind;
 
-        const int dtype = arr->base.pointsToKind;
-
-        if (maxLevel > 0 && *level >= maxLevel) return dtype;
-        if (dtype != Type::DT_ARRAY) return dtype;
+        if (
+            (maxLevel > 0 && *level >= maxLevel) ||
+            (typeKind != Type::DT_ARRAY)
+        ) {
+            if (outTypeData) *outTypeData = arr->base.pointsTo;
+            return typeKind;
+        }
 
         if (level) *level = *level + 1;
-        return getFirstNonArrayDtype((Array*) arr->base.pointsTo, maxLevel, level);
-
-    }
-
-
-    Variable* findErrorInErrorSet(ErrorSet* eset, QualifiedName* var) {
-
-        Namespace* tmpNspace;
-
-        int i = 0;
-        const int len = var->pathSize;
-
-        for (i = 0; i < len; i++) {
-
-            INamed* nm = var->path + i;
-            Variable* tmp = Ast::Find::inArray(eset->vars, eset->varCount, nm);
-            if (!tmp) return NULL;
-
-            eset = tmp->value.err;
-
-        }
-
-        return Ast::Find::inArray(eset->vars, eset->varCount, (String*) &var);
-
-    }
-
-    // scope cannot be NULL
-    Variable* findDefinition(ValidationContext* ctx, Scope* scope, QualifiedName* const inVar, int idx) {
-
-        const String name = { inVar->buff, (uint64_t) inVar->len };
-        // int idx = inVar->parentIdx;
-
-        while (scope) {
-
-            SyntaxNode* node = Ast::Find::inArray(scope->definitions, scope->definitionCount, (String*) &name);
-            if (node) {
-
-                if (
-                    node->definitionIdx < idx ||
-                    scope->base.flags & IS_UNORDERED
-                ) {
-                    switch (node->type) {
-
-                        case NT_VARIABLE_DEFINITION : {
-                            return ((VariableDefinition*) node)->var;
-                            //Variable* var = (Variable*) node;
-                            //if (Utils::match(var, inVar)) return var;
-                        }
-
-                        default: {
-
-                        }
-
-                    }
-                } else {
-                    // Declaration after usage
-                    Diag::report(ctx->unit->ast, node->span, Err::DECLARATION_AFTER_USE);
-                    return NULL;
-                }
-
-            } else {
-
-                // TODO
-                /*
-                for (int i = 0; i < scope->usings.size; i++) {
-
-                    Using* usng = (Using*) DArray::get(&scope->usings.base, i);
-                    if (usng->var->type != NT_FUNCTION) continue;
-
-                    Variable* err = findErrorInErrorSet(((Function*) (usng->var))->errorSet, inVar);
-                    if (err) return err;
-
-                }
-                */
-
-            }
-
-            idx = scope->base.definitionIdx;
-            scope = scope->base.scope;
-
-        }
-
-        return NULL;
-
-    }
-
-    inline int isUniqueInCollection(Reg::Unit* unit, DArray::Container* collection, INamed* named, Span* span, MemberOffset mName) {
-
-        for (int i = 0; i < collection->size; i++) {
-
-            SyntaxNode* const item = (SyntaxNode*) DArray::get(collection, i);
-            if (item->flags & IS_UNIQUE) continue;
-
-            INamed* itemName = (INamed*) getMember(item, mName);
-            if (Strings::compare(*named, *itemName)) {
-                Diag::report(unit->ast, span, Err::SYMBOL_ALREADY_DEFINED, named->len);
-                return Err::SYMBOL_ALREADY_DEFINED;
-            }
-            //item->flags |= IS_UNIQUE;
-
-        }
-
-        return Err::OK;
-
-    }
-
-    int match(FunctionPrototype* const fptrA, FunctionPrototype* const fptrB) {
-
-        if (fptrA->inArgCount != fptrB->inArgCount) return 0;
-
-        for (int i = 0; i < fptrA->inArgCount; i++) {
-            const Type::Kind defA = fptrA->inArgs[i]->var->value.typeKind;
-            const Type::Kind defB = fptrB->inArgs[i]->var->value.typeKind;
-            if (defA != defB) return 0;
-        }
-
-        return 1;
-
-    }
-
-    Function* findExactFunction(Scope* scope, INamed* const name, FunctionPrototype* const fptr) {
-
-        while (scope) {
-
-            if (scope->base.type != NT_NAMESPACE) {
-                continue;
-            }
-
-            Namespace* nspace = (Namespace*) scope;
-            Function* fcns    = ((Function*) nspace->fcns);
-
-            for (int i = 0; i < nspace->fcnCount; i++) {
-                if (!Strings::compare((String*) &(fcns + i)->name, name) || !match(fptr, &(fcns + i)->prototype)) {
-                    continue;
-                }
-                return fcns + i;
-            }
-
-            scope = scope->base.scope;
-
-        }
-
-        return NULL;
-
-    }
-
-    // working with global array fCandidates
-    void findCandidateFunctions(ValidationContext* ctx, Scope* scope, FunctionCall* call) {
-
-        DArray::clear(&ctx->fCandidates);
-
-        const String callName = { call->name.buff, call->name.len };
-
-        if (call->name.pathSize > 0) {
-            Namespace* nspace = NULL;
-            ErrorSet* eset = NULL;
-
-            Logger::mute = 1;
-            const Err::Err err = validateQualifiedName(ctx, scope, &call->name, &nspace, &eset);
-            Logger::mute = 0;
-
-            if (err < 0 || eset || !nspace) return;
-            scope = (Scope*) nspace;
-        }
-
-        while (scope) {
-
-            for (int i = 0; i < scope->childrenCount; i++) {
-                if (!scope->children[i] || scope->children[i]->type != NT_FUNCTION) {
-                    continue;
-                }
-
-                Function* fcn = (Function*) scope->children[i];
-                const String fcnName = { fcn->name.buff, fcn->name.len };
-
-                if (!cstrcmp(callName, fcnName)) {
-                    continue;
-                }
-
-                const int fcnInCnt = fcn->prototype.inArgCount;
-                const int callInCnt = call->inArgCount;
-                const int lastArgDtype = fcnInCnt > 0 ? 0 : 0;// TODO (fcns + i)->prototype.inArgs[fcnInCnt - 1]->var->value.typeKind : DT_UNDEFINED;
-
-                if (
-                    fcnInCnt == callInCnt ||
-                    (fcnInCnt < callInCnt && lastArgDtype == Type::DT_MULTIPLE_TYPES)
-                ) {
-                    FunctionScore tmp = { fcn, 0 };
-                    DArray::push(&ctx->fCandidates, &tmp);
-                }
-            }
-
-            scope = scope->base.scope;
-
-        }
-
-    }
-
-    int findClosestFunction(ValidationContext* ctx, Variable* callOp, Function** outFcn) {
-
-        Scope* scope = callOp->base.scope;
-        FunctionCall* call = (FunctionCall*) callOp->expression;
-        const int callInCnt = call->inArgCount;
-
-        findCandidateFunctions(ctx, scope, call);
-
-        for (int j = 0; j < ctx->fCandidates.size; j++) {
-
-            Function* fcn = ((FunctionScore*) DArray::get(&ctx->fCandidates, j))->fcn;
-            ensureValidated(ctx, (SyntaxNode*) fcn, (SyntaxNode*) callOp);
-
-            int score = (fcn->prototype.inArgCount == 0) ? 100 : 0;
-            const int fcnInCnt = fcn->prototype.inArgCount;
-
-            int k = 0;
-            for (int i = 0; i < fcn->prototype.inArgCount; i++) {
-
-                if (k >= callInCnt) {
-                    score = 0;
-                    break;
-                }
-
-                Variable* fArg = fcn->prototype.inArgs[i]->var;
-                Variable* cArg = call->inArgs[k];
-
-                k++;
-
-                const int fDtype = fArg->value.typeKind;
-                const int cDtype = cArg->value.typeKind;// evaluateDataTypes(cArg);
-
-                if (
-                    (fDtype == Type::DT_CUSTOM && cDtype != Type::DT_CUSTOM) ||
-                    (fDtype != Type::DT_CUSTOM && cDtype == Type::DT_CUSTOM)
-                    ) {
-                    score = 0;
-                    break;
-                }
-                else if (fDtype == Type::DT_CUSTOM) {
-                    if (fArg->value.def != cArg->value.def) {
-                        score = 0;
-                        break;
-                    }
-                }
-
-                if (fDtype == Type::DT_MULTIPLE_TYPES) {
-                    break;
-                }
-
-                if (fDtype == cDtype) {
-                    score += FOS_EXACT_MATCH;
-                    continue;
-                }
-
-                if (Type::isSignedInt(cDtype) && Type::isSignedInt(fDtype)) {
-                    if (cDtype < fDtype) {
-                        score += FOS_PROMOTION;
-                    }
-                    else {
-                        score += FOS_SIZE_DECREASE;
-                    }
-                    continue;
-                }
-
-                if (Type::isUnsignedInt(cDtype) && Type::isUnsignedInt(fDtype)) {
-                    if (cDtype < fDtype) {
-                        score += FOS_PROMOTION;
-                    }
-                    else {
-                        score += FOS_SIZE_DECREASE;
-                    }
-                    continue;
-                }
-
-                if (
-                    Type::isSignedInt(cDtype) && Type::isUnsignedInt(fDtype) ||
-                    Type::isSignedInt(cDtype) && Type::isUnsignedInt(fDtype)
-                ) {
-
-                    if ((cDtype - fDtype <= Type::DT_U64 - Type::DT_I64)) {
-                        score += FOS_SIGN_CHANGE;
-                    } else {
-                        score += FOS_SIZE_DECREASE;
-                    }
-
-                    continue;
-
-                }
-
-                if (Type::isFloat(cDtype) && Type::isFloat(fDtype)) {
-                    if ((cDtype - fDtype <= Type::DT_U64 - Type::DT_I64)) {
-                        score += FOS_PROMOTION;
-                    }
-                    else {
-                        score += FOS_SIZE_DECREASE;
-                    }
-                    continue;
-                }
-
-                if (Type::isInt(cDtype) && Type::isFloat(fDtype)) {
-                    score += FOS_SIGN_CHANGE;
-                    continue;
-                }
-
-                if (Type::isFloat(cDtype) && Type::isInt(fDtype)) {
-                    score += FOS_SIZE_DECREASE;
-                    continue;
-                }
-
-                if (validateImplicitCast((Type::Kind)cDtype, (Type::Kind)fDtype)) {
-                    score += FOS_IMPLICIT_CAST;
-                    continue;
-                }
-
-                if (fDtype == Type::DT_ARRAY && cDtype == Type::DT_STRING) {
-                    // TODO: for now as quick patch
-                    score += FOS_IMPLICIT_CAST;
-                    continue;
-                }
-
-                break;
-
-            }
-
-            if (score != 0) {
-                FunctionScore* fscore = (FunctionScore*) ctx->fCandidates.buffer;
-                fscore[j].score = score;
-            } else {
-                FunctionScore* tmp = (FunctionScore*) DArray::get(&ctx->fCandidates, ctx->fCandidates.size - 1);
-                DArray::set(&ctx->fCandidates, j, tmp);
-                DArray::pop(&ctx->fCandidates);
-                j--;
-            }
-
-        }
-
-        int bestIdx = 0;
-        int bestScore = 0;
-        int sameScoreCnt = 0;
-        for (int i = 0; i < ctx->fCandidates.size; i++) {
-            const int score = ((FunctionScore*) DArray::get(&ctx->fCandidates, i))->score;
-            if (score > bestScore) {
-                bestScore = score;
-                bestIdx = i;
-            } else if (score == bestScore) {
-                sameScoreCnt++;
-                continue;
-            }
-            sameScoreCnt = 0;
-        }
-
-        if (bestScore > 0 && sameScoreCnt == 0) {
-            *outFcn = ((FunctionScore*) DArray::get(&ctx->fCandidates, bestIdx))->fcn;
-            return Err::OK;
-        } else {
-
-            if (bestScore <= 0 ) {
-                //Diag::report(unit->ast, Err::str(Err::NO_MATCHING_FUNCTION_FOUND));
-                return Err::NO_MATCHING_FUNCTION_FOUND;
-            }
-
-            //Diag::report(unit->ast, Err::str(Err::MORE_THAN_ONE_OVERLOAD_MATCH), callOp->span, 1);
-            return Err::MORE_THAN_ONE_OVERLOAD_MATCH;
-
-        }
-
-        return Err::OK;
-
+        return getFirstNonArrayDtype((Array*) arr->base.pointsTo, maxLevel, level, outTypeData);
     }
 
 }

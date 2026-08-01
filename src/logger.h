@@ -2,13 +2,13 @@
 
 #include "globals.h"
 #include "ansi_colors.h"
+#include "io.h"
+#include <cstdarg>
 #include <stdint.h>
-#include <stdio.h>
 
 
 
-
-// Internaly we use own buffer to write logs to.
+// Internally we use own buffer to write logs to.
 // This buffer can be accessed between log calls
 // to retrieve output string. This is done because
 // compiler may need to store errors in memory to
@@ -57,18 +57,8 @@ namespace Logger {
         bool    showUnderline = true;
     };
 
-    struct FlushStream {
-        enum {
-            FS_C_STREAM
-        } kind;
-
-        union {
-            FILE* cstream;
-        };
-    };
-
-    extern uint32_t     flushStreamCount;
-    extern FlushStream* flushStreams;
+    extern uint32_t    flushStreamCount;
+    extern IO::Stream* flushStreams;
 
     extern SpanStyle defaultSpanStyle;
 
@@ -76,35 +66,45 @@ namespace Logger {
     extern uint64_t mute;      // Thread id bitmask
 
     // Functions to render and auto flush to all flush streams
-    void log(Type type, const char* const message, Span* loc, ...);
-    void log(Type type, const char* const message);
+    void vlog(Type type, const char* const message, Span* loc, va_list args);
+    void log (Type type, const char* const message, Span* loc, ...);
+    void log (Type type, const char* const message);
 
     // Functions to render to internal buffer only
-    void logNoFlush(Type type, const char* const message, Span* loc, ...);
-    void logNoFlush(Type type, const char* const message);
+    void vlogNoFlush(Type type, const char* const message, Span* loc, va_list args);
+    void logNoFlush (Type type, const char* const message, Span* loc, ...);
+    void logNoFlush (Type type, const char* const message);
 
     // Functions to render and flush only to the provided stream
-    void log(FlushStream* stream, Type type, const char* const message, Span* loc, ...);
-    void log(FlushStream* stream, Type type, const char* const message);
+    void vlog(IO::Stream* stream, Type type, const char* const message, Span* loc, va_list args);
+    void log (IO::Stream* stream, Type type, const char* const message, Span* loc, ...);
+    void log (IO::Stream* stream, Type type, const char* const message);
 
     // prints span strictly as defined
     // returns the max digits used for line numbers
     int printSpanStrict(Span* span);
     int printSpanStrictNoFlush(Span* span);
-    int printSpanStrict(FlushStream* stream, Span* span);
+    int printSpanStrict(IO::Stream* stream, Span* span);
 
     // normalizes spans to full line boundaries
     // returns the max digits used for line numbers
     // Note: adds context lines around based on config
     int printSpan(Span* span, SpanStyle* style);
     int printSpanNoFlush(Span* span, SpanStyle* style);
-    int printSpan(FlushStream* stream, Span* span, SpanStyle* style);
+    int printSpan(IO::Stream* stream, Span* span, SpanStyle* style);
+
+    void write(const char* const str);
+    void write(const char* str, uint32_t len);
+    void writef(const char* fmt, ...);
 
     // Flushes internal buffer to all streams
     void flush();
 
     // Flushes only to the provided stream
-    void flush(FlushStream* stream);
+    void flush(IO::Stream* stream);
+
+    //
+    String getInternalBuffer();
 
     // String of last logged string valid till the next
     // log call on the same thread.

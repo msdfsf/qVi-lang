@@ -23,7 +23,6 @@ enum Keyword {
     KW_UNION,
     KW_IF,
     KW_ELSE,
-    KW_FOR,
     KW_WHILE,
     KW_LOOP,
     KW_WHEN,
@@ -45,7 +44,7 @@ enum Keyword {
     KW_TRUE,
     KW_FALSE,
     KW_AS,
-    KW_TO,
+    KW_BY,
     KW_NULL,
     KW_COUNT
 };

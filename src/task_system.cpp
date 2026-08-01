@@ -17,6 +17,7 @@
 #include "task_system.h"
 #include "allocator.h"
 #include "array_list.h"
+#include "backend.h"
 #include "dynamic_arena.h"
 #include "file_system.h"
 #include "interpreter.h"
@@ -24,7 +25,7 @@
 #include "registry.h"
 #include "config.h"
 #include "syntax.h"
-#include "translator.h"
+#include "compiler.h"
 #include "validator.h"
 #include "task_status.h"
 
@@ -60,6 +61,12 @@ namespace TaskSystem {
 
         //
         Function*          fcn;
+
+        struct {
+            Reg::Unit*             unit;
+            Backend::Driver*       driver;
+            Backend::BuildContext* ctx;
+        } backend;
 
         // generic
         void*              ptr;
@@ -132,7 +139,6 @@ namespace TaskSystem {
 
             DArray::clear(&ctx->nodeStack);
             DArray::clear(&ctx->defStack);
-            Arena::clear(&ctx->errBuff);
 
             ctx->varId &= THREAD_MASK;
             ctx->arrId &= THREAD_MASK;
@@ -230,6 +236,9 @@ namespace TaskSystem {
 
                 clearTaskState(&worker->state, task.kind);
                 task.fcn(&worker->state, task.arg);
+                
+                gTaskCount.fetch_sub(1, std::memory_order_relaxed);
+                gTaskCount.notify_one();
 
                 // For our sanity, we ensure that all local tasks are completed
                 // before moving on...
@@ -324,8 +333,8 @@ namespace TaskSystem {
         FileSystem::FileInfo* finfo = FileSystem::getFileInfo(arg.file);
         finfo->status.store(FileSystem::FS_READY, std::memory_order_release);
 
-        gTaskCount.fetch_sub(1, std::memory_order_relaxed);
-        gTaskCount.notify_one();
+        // gTaskCount.fetch_sub(1, std::memory_order_relaxed);
+        // gTaskCount.notify_one();
     }
 
     void dispatchParse(FileSystem::Handle fhnd) {
@@ -359,8 +368,8 @@ namespace TaskSystem {
         FileSystem::FileInfo* finfo = FileSystem::getFileInfo(arg.file);
         finfo->status.store(FileSystem::FS_READY, std::memory_order_release);
 
-        gTaskCount.fetch_sub(1, std::memory_order_relaxed);
-        gTaskCount.notify_one();
+        // gTaskCount.fetch_sub(1, std::memory_order_relaxed);
+        // gTaskCount.notify_one();
     }
 
     void dispatchPreValidation(FileSystem::Handle fhnd) {
@@ -387,8 +396,8 @@ namespace TaskSystem {
         FileSystem::FileInfo* finfo = FileSystem::getFileInfo(arg.file);
         finfo->status.store(FileSystem::FS_READY, std::memory_order_release);
 
-        gTaskCount.fetch_sub(1, std::memory_order_relaxed);
-        gTaskCount.notify_one();
+        // gTaskCount.fetch_sub(1, std::memory_order_relaxed);
+        // gTaskCount.notify_one();
     }
 
     void dispatchValidation(FileSystem::Handle fhnd) {
@@ -446,7 +455,7 @@ namespace TaskSystem {
             releaseFunction(arg.fcn);
         }
 
-        gTaskCount.fetch_sub(1, std::memory_order_relaxed);
+        // gTaskCount.fetch_sub(1, std::memory_order_relaxed);
     }
 
     void runCompileTimeBuildLocal(TaskState* state, TaskArgument arg) {
@@ -497,8 +506,25 @@ namespace TaskSystem {
 
 
 
-    void dispatchCodegen(Translator* translator, FileSystem::Handle file) {
+    void runBackend(TaskState* state, TaskArgument arg) {
+        arg.backend.driver->execute(arg.backend.ctx, arg.backend.unit);
+    }
 
+    void dispatchBackend(FileSystem::Handle file, Backend::Driver* driver, Backend::BuildContext* ctx) {
+        using namespace FileSystem;
+
+        FileInfo* finfo = getFileInfo(file);
+
+        gTaskCount.fetch_add(1, std::memory_order_relaxed);
+
+        Task task;
+        task.arg.backend.unit = Reg::get(file);
+        task.arg.backend.driver = driver;
+        task.arg.backend.ctx = ctx;
+        task.kind = TK_COMPILE_TIME_BUILD;
+        task.fcn = &runBackend;
+
+        enqueue(task);
     }
 
     void beginGroup() {

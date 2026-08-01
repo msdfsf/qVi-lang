@@ -111,29 +111,27 @@ namespace Arena {
 
     }
 
-    void rollback(Container* arena, Marker marker, bool freeMemory) {
+    Marker getMarker(Container* arena) {
+        return { .block = arena->tail, .pos = arena->logicalPos };
+    }
 
+    void rollback(Container* arena, Marker marker, bool freeMemory) {
         arena->tail = marker.block;
         arena->tail->pos = marker.pos;
 
         if (freeMemory) {
-
             Block* block = arena->tail->next;
             while (block) {
                 Block* next = block->next;
                 free(block);
                 block = next;
             }
-
         }
-
     }
 
     void rollback(Container* arena, void* ptr, bool freeMemory) {
-
         Block* block = arena->tail;
         while (block) {
-
             uint8_t* start = block->data;
             uint8_t* end = start + arena->blockPayloadSize;
 
@@ -149,9 +147,25 @@ namespace Arena {
                 releaseBlock(block->next);
                 block->next = NULL;
             }
-
         }
+    }
 
+    void rollback(Container* arena, uint64_t size, bool freeMemory) {
+        Block* block = arena->tail;
+        while (block) {
+            if (arena->tail->pos > size) {
+                arena->tail->pos -= size;
+                return;
+            }
+
+            arena->tail->pos = 0;
+            block = block->prev;
+
+            if (freeMemory) {
+                releaseBlock(block->next);
+                block->next = NULL;
+            }
+        }
     }
 
     void clear(Container* arena) {

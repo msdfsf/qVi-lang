@@ -1,11 +1,11 @@
 #include "logger.h"
 #include "ansi_colors.h"
 #include "globals.h"
+#include "io.h"
 #include "utils.h"
 
 #include <cstdarg>
 #include <cstdint>
-#include <stdio.h>
 #include <stdarg.h>
 #include <cstdlib>
 
@@ -23,13 +23,26 @@ thread_local char     gBuffer[gBufferSize];
 thread_local uint32_t gBufferIndex = 0;
 thread_local uint32_t gBufferPreviousLength = 0;
 
+thread_local IO::Stream gBufferStream = {
+    .kind = IO::Stream::SK_BUFFER,
+    .buffer = String(gBuffer, gBufferSize)
+};
+
+inline uint32_t getBufferIndex() {
+    return (uint32_t) (gBufferStream.buffer.buff - gBuffer);
+}
+
+void resetBuffer() {
+    gBufferStream.buffer.buff = gBuffer;
+    gBufferStream.buffer.len  = gBufferSize;
+}
 
 
 
 namespace Logger {
 
-    uint32_t     flushStreamCount = 0;
-    FlushStream* flushStreams = NULL;
+    uint32_t    flushStreamCount = 0;
+    IO::Stream* flushStreams = NULL;
 
     SpanStyle defaultSpanStyle = SpanStyle();
 
@@ -49,56 +62,55 @@ namespace Logger {
 
 
 
-    // Low level rutines that gather all
+    // Low level routines that gather all
     // needed info from configuration
-    void write(const char* str, uint32_t len) {
-        const uint32_t size = gBufferSize - gBufferIndex;
-        len = len < size ? len : size;
-
-        memcpy(gBuffer + gBufferIndex, str, len);
-        gBufferIndex += len;
+    void write(const char* data, uint32_t len) {
+        IO::write(&gBufferStream, data, len);
     }
 
     void write(const char* const str) {
-        write(str, strlen(str));
-    }
-
-    void writefv(const char* fmt, va_list args) {
-        const uint32_t size = gBufferSize - gBufferIndex;
-
-        const int len = vsnprintf(gBuffer + gBufferIndex, size, fmt, args);
-        gBufferIndex += len >= 0 ? (len > size ? size : len) : 0;
+        IO::write(&gBufferStream, str);
     }
 
     void writef(const char* fmt, ...) {
         va_list args;
         va_start(args, fmt);
-        writefv(fmt, args);
+        IO::writefv(&gBufferStream, fmt, args);
         va_end(args);
     }
 
+    void writefv(const char* fmt, va_list args) {
+        IO::writefv(&gBufferStream, fmt, args);
+    }
 
 
-    void flush(FlushStream* stream) {
-        if (stream->kind == FlushStream::FS_C_STREAM) {
-            fwrite(gBuffer, 1, gBufferIndex, stream->cstream);
+
+    void flush(IO::Stream* stream) {
+        uint32_t currentLen = getBufferIndex();
+        if (currentLen > 0) {
+            IO::write(stream, gBuffer, currentLen);
         }
-        gBufferPreviousLength = gBufferIndex;
-        gBufferIndex = 0;
+
+        gBufferPreviousLength = currentLen;
+        resetBuffer();
     }
 
     void flush() {
-        for (int i = 0; i < flushStreamCount; i++) {
-            FlushStream* stream = flushStreams + i;
-            if (stream->kind == FlushStream::FS_C_STREAM) {
-                fwrite(gBuffer, 1, gBufferIndex, stream->cstream);
-            }
+        uint32_t currentLen = getBufferIndex();
+        if (currentLen == 0) return;
+
+        for (uint32_t i = 0; i < flushStreamCount; i++) {
+            IO::write(&flushStreams[i], gBuffer, currentLen);
         }
-        gBufferPreviousLength = gBufferIndex;
-        gBufferIndex = 0;
+
+        gBufferPreviousLength = currentLen;
+        resetBuffer();
     }
 
 
+    String getInternalBuffer() {
+        return gBuffer;
+    }
 
     char* getLastString(int* len) {
         *len = gBufferPreviousLength;
@@ -112,7 +124,7 @@ namespace Logger {
 
 
 
-    int printSpanStrictNoFlush(Span* span) {
+    int printSpanStrict(IO::Stream* stream, Span* span) {
         const char* str = span->str;
         const uint64_t size = span->end.idx - span->start.idx;
         const uint64_t endIdx = span->end.idx;
@@ -125,33 +137,32 @@ namespace Logger {
         while (idx < endIdx) {
             const char ch = str[idx];
             if (ch == '\n') {
-                writef(AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
-                write(str + prevIdx, idx - prevIdx);
+                IO::writef(stream, AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
+                IO::write(stream, str + prevIdx, idx - prevIdx + 1);
                 lineNum++;
-                prevIdx = idx;
+                prevIdx = idx + 1;
             }
             idx++;
         }
 
         if (idx - prevIdx > 0) {
-            writef(AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
-            write(str + prevIdx, idx - prevIdx);
+            IO::writef(stream, AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
+            IO::write(stream, str + prevIdx, idx - prevIdx + 1);
         }
 
-        writef(AC_RESET "\n");
+        IO::writef(stream, AC_RESET "\n");
 
         return maxLineDigits;
     };
 
     int printSpanStrict(Span* span) {
-        const int tmp = printSpanStrictNoFlush(span);
+        const int tmp = printSpanStrict(&gBufferStream, span);
         flush();
         return tmp;
     }
 
-    int printSpanStrict(FlushStream* stream, Span* span) {
-        const int tmp = printSpanStrictNoFlush(span);
-        flush(stream);
+    int printSpanStrictNoFlush(Span* span) {
+        const int tmp = printSpanStrict(&gBufferStream, span);
         return tmp;
     }
 
@@ -190,7 +201,7 @@ namespace Logger {
         bool lineInSpan = false;
         while (idx <= endIdx) {
             if (str[idx] == '\n' || idx == endIdx) {
-                write(str + lastCommitedIdx + 1, idx - lastCommitedIdx);
+                write(str + (lastCommitedIdx + 1), idx - lastCommitedIdx);
 
                 if (style->showUnderline && lineInSpan) {
                     const uint32_t start = span->start.idx > lineStartIdx ?
@@ -211,27 +222,22 @@ namespace Logger {
 
                 lineStartIdx = idx + 1;
                 lastCommitedIdx = idx;
-                
+
                 idx++;
                 continue;
             }
 
             if (idx == span->start.idx) {
                 lineInSpan = true;
-                write(str + lastCommitedIdx + 1, idx - lastCommitedIdx - 1);
+                write(str + (lastCommitedIdx + 1), idx - lastCommitedIdx - 1);
                 write(style->colorHighlight);
-                
-                if (idx == span->end.idx) {
-                    write(str + idx, 1);
-                    write(style->colorText);
-                    lastCommitedIdx = idx;
-                } else {
-                    lastCommitedIdx = idx - 1;
-                }
-            } else if (idx == span->end.idx) {
-                write(str + lastCommitedIdx + 1, idx - lastCommitedIdx - 1);
-                write(style->colorText);
                 lastCommitedIdx = idx - 1;
+            }
+
+            if (idx == span->end.idx) {
+                write(str + (lastCommitedIdx + 1), idx - lastCommitedIdx);
+                write(style->colorText);
+                lastCommitedIdx = idx;
             }
 
             idx++;
@@ -248,7 +254,7 @@ namespace Logger {
         return tmp;
     }
 
-    int printSpan(FlushStream* stream, Span* span, SpanStyle* style) {
+    int printSpan(IO::Stream* stream, Span* span, SpanStyle* style) {
         const int tmp = printSpanNoFlush(span, style);
         flush(stream);
         return tmp;
@@ -287,7 +293,7 @@ namespace Logger {
 
             if (span) {
                 uint32_t lineStart = Utils::findLineStart(span->str, span->start.idx);
-                writef("(%i, %i) : ", span->end.ln, span->start.idx - lineStart + 1);
+                writef("(%i, %i) : ", span->start.ln, span->start.idx - lineStart + 1);
             } else if (type.level != PLAIN) {
                 write(" : ");
             }
@@ -308,6 +314,24 @@ namespace Logger {
         write("\n");
     }
 
+    void logNoFlush(Type type, const char* const message, Span* span, ...) {
+        va_list args;
+        va_start(args, span);
+
+        vlogNoFlush(type, message, span, args);
+
+        va_end(args);
+    }
+
+    void logNoFlush(Type type, const char* const message) {
+        logNoFlush(type, message, NULL);
+    }
+
+    void vlog(Type type, const char* const message, Span* span, va_list args) {
+        vlogNoFlush(type, message, span, args);
+        flush();
+    }
+
     void log(Type type, const char* const message, Span* span, ...) {
         va_list args;
         va_start(args, span);
@@ -322,7 +346,12 @@ namespace Logger {
         log(type, message, NULL);
     }
 
-    void log(FlushStream* stream, Type type, const char* const message, Span* span, ...) {
+    void vlog(IO::Stream* stream, Type type, const char* const message, Span* span, va_list args) {
+        vlogNoFlush(type, message, span, args);
+        flush(stream);
+    }
+
+    void log(IO::Stream* stream, Type type, const char* const message, Span* span, ...) {
         va_list args;
         va_start(args, span);
 
@@ -332,23 +361,9 @@ namespace Logger {
         va_end(args);
     }
 
-    void log(FlushStream* stream, Type type, const char* const message) {
+    void log(IO::Stream* stream, Type type, const char* const message) {
         log(stream, type, message, NULL);
     }
-
-    void logNoFlush(Type type, const char* const message, Span* span, ...) {
-        va_list args;
-        va_start(args, span);
-
-        vlogNoFlush(type, message, span, args);
-
-        va_end(args);
-    }
-
-    void logNoFlush(Type type, const char* const message) {
-        logNoFlush(type, message, NULL);
-    }
-
 
 
 

@@ -106,37 +106,30 @@ namespace Lex {
 
     }
 
-    unsigned int hash(const char* str, int len) {
-        unsigned int hash = 5381 ^ 0x2c3d4e5f;
+    uint32_t hash(const char* str, int len) {
+        uint32_t hash = 0x811C9DC5 ^ 0x4CF6218A;
         int idx = 0;
         while (idx < len) {
-            hash = ((hash << 5) + hash) + (uint8_t) str[idx++];
+            hash = hash ^ (uint8_t) str[idx++];
+            hash = hash * 0x01000193;
         }
-        return hash % KW_TABLE_SIZE;
+        return hash;
     }
 
     inline Keyword keywordLookup(const char* str, const int len) {
-
-        const unsigned int h = hash(str, len);
-        if (h >= KW_TABLE_SIZE) return KW_VOID;
-
+        const unsigned int h = hash(str, len) % KW_TABLE_SIZE;
         Keyword keyword = (Keyword) keywordTable[h];
 
         const int ans = cstrcmp(keywordStringTable[keyword], String { (char*) str, (uint64_t) len });
         return ans ? keyword : KW_VOID;
-
     }
 
     inline Directive directiveLookup(const char* str, const int len) {
-
-        const unsigned int h = hash(str, len) + 1;
-        if (h >= KW_TABLE_SIZE) return CD_NONE;
-
+        const unsigned int h = hash(str, len) % CD_TABLE_SIZE + 1;
         Directive directive = (Directive) directivesTable[h];
 
         const int ans = cstrcmp(directivesStringTable[directive], String { (char*) str, (uint64_t) len });
         return ans ? directive : CD_NONE;
-
     }
 
     static inline bool isWhitespace(char ch) {
@@ -743,6 +736,7 @@ namespace Lex {
     Token nextToken(Span* const span, TokenValue* val) {
 
         Token token;
+        token.encoded = 0;
 
         const char* const str = span->str;
 
@@ -1032,13 +1026,6 @@ namespace Lex {
 
             }
 
-            case '_': {
-
-                token = { .kind = TK_SKIP };
-                break;
-
-            }
-
             case ',': {
 
                 token = { .kind = TK_LIST_SEPARATOR };
@@ -1065,6 +1052,13 @@ namespace Lex {
                 token = { .kind = TK_END };
                 break;
 
+            }
+
+            case '_': {
+                if (!isIdentifierChar(str[startPos.idx + 1])) {
+                    token = { .kind = TK_SKIP };
+                    break;
+                }
             }
 
             default: {

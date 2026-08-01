@@ -4,8 +4,10 @@
 
 #include "data_types.h"
 #include "dynamic_arena.h"
+#include "io.h"
 #include "operators.h"
 #include "ordered_dict.h"
+#include "registry.h"
 #include "syntax.h"
 #include "diagnostic.h"
 #include "validator.h"
@@ -542,12 +544,16 @@ namespace Interpreter {
     }
 
     Err::Err compile(CompilerState* state, Function* fcn);
+    Err::Err compile(CompilerState* state, Reg::Unit* unit);
 
     Err::Err eval(Validator::ValidationContext* ctx, Variable* var);
     Err::Err exec(AstContext* ast, Function* fcn, Variable** args, uint64_t argCount, Variable* out);
+    Err::Err exec(Reg::Unit* unit);
 
-    void print(Function* fcn, uint64_t depth = 0);
-    void print(ExeBlock* block);
+    void print(IO::Stream* stream, Reg::Unit* unit);
+    void print(IO::Stream* stream, ExeBlock* block);
+    void print(IO::Stream* stream, Function* fcn, uint64_t depth = 0);
+
     const char* toStr(Opcode opcode);
 
     uintptr_t getExeFramePointer(uint32_t alignment, uint32_t* stackSize);

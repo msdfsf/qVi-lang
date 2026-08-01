@@ -2,261 +2,311 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>LSP Meta-Generator Pro + Seed Finder</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
-
+    <title>Perfect Hash Optimizer</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #1e1e1e; color: #d4d4d4; margin: 0; display: flex; height: 100vh; overflow: hidden; }
-        .sidebar { width: 420px; background: #252526; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 15px; box-sizing: border-box; }
-        h3 { margin-top: 0; color: #fff; font-size: 11px; border-bottom: 1px solid #333; padding-bottom: 5px; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1.5px; opacity: 0.7;}
-        .config-section { margin-bottom: 15px; background: #2d2d2d; padding: 10px; border-radius: 4px; border: 1px solid #333; }
-        .config-group { display: flex; align-items: center; margin-bottom: 6px; justify-content: space-between; font-size: 11px; }
-        .config-group input, .config-group select { background: #3c3c3c; border: 1px solid #555; color: #fff; padding: 3px; width: 130px; border-radius: 2px; }
+        :root {
+            --bg-deep: #0d1117;
+            --bg-surface: #161b22;
+            --bg-input: #010409;
+            --accent: #58a6ff;
+            --accent-glow: rgba(88, 166, 255, 0.2);
+            --text-main: #c9d1d9;
+            --text-dim: #8b949e;
+            --border: #30363d;
+            --success: #3fb950;
+            --success-bg: rgba(63, 185, 80, 0.1);
+        }
 
-        #filter { background: #3c3c3c; border: 1px solid #555; color: #fff; padding: 6px; width: 100%; box-sizing: border-box; margin-bottom: 8px; border-radius: 3px; font-size: 12px; }
-        .list-box { flex-grow: 1; overflow-y: auto; border: 1px solid #333; background: #1a1a1a; border-radius: 4px; }
-        .item { padding: 4px 8px; cursor: pointer; border-bottom: 1px solid #222; font-size: 11px; display: flex; align-items: center; }
-        .item:hover { background: #2a2d2e; }
-        .item.selected { background: #094771; color: #fff; }
-        .item input { margin-right: 8px; pointer-events: none; }
+        * { box-sizing: border-box; transition: all 0.2s ease; }
 
-        .content { flex-grow: 1; display: flex; flex-direction: column; background: #1e1e1e; position: relative;}
-        .toolbar { padding: 8px 20px; background: #2d2d2d; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; z-index: 10; }
-        #output-container { flex-grow: 1; overflow: auto; background: #1e1e1e; }
-        pre { margin: 0; padding: 20px; font-family: 'Consolas', monospace; font-size: 12px; line-height: 1.4; }
-        code { background: transparent !important; padding: 0 !important; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background-color: var(--bg-deep);
+            color: var(--text-main);
+            line-height: 1.5;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            padding: 40px 20px;
+        }
 
-        #raw-output { position: absolute; left: -9999px; top: -9999px; }
-        button { background: #0e639c; color: white; border: none; padding: 5px 12px; cursor: pointer; border-radius: 2px; font-size: 11px; }
-        button:hover { background: #1177bb; }
-        .status-tag { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: #444; color: #aaa; }
-        .btn-mini { padding: 2px 6px; font-size: 10px; background: #444; margin-left: 5px;}
+        .wrapper { width: 100%; max-width: 1000px; }
+
+        header {
+            margin-bottom: 30px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 20px;
+        }
+
+        h1 { font-size: 24px; font-weight: 600; margin: 0; letter-spacing: -0.5px; color: var(--accent); }
+        p { color: var(--text-dim); margin: 8px 0 0 0; font-size: 14px; }
+
+        /* Configuration Grid */
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            background: var(--bg-surface);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            margin-bottom: 20px;
+        }
+
+        .field-group { display: flex; flex-direction: column; }
+        label { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px; }
+
+        textarea, input, select {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-main);
+            padding: 10px 12px;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 13px;
+        }
+
+        textarea:focus, input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+        textarea { width: 100%; height: 100px; resize: vertical; margin-bottom: 20px; }
+
+        button#genBtn {
+            width: 100%;
+            padding: 14px;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            margin-bottom: 30px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        button#genBtn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        button#genBtn:disabled { background: var(--border); cursor: not-allowed; transform: none; }
+
+        /* Results Area */
+        #stats {
+            background: var(--success-bg);
+            border: 1px solid var(--success);
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 13px;
+            display: none;
+            color: var(--success);
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+
+        .terminal {
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .terminal-header {
+            background: rgba(255,255,255,0.05);
+            padding: 10px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .terminal-header span { font-size: 11px; font-weight: 600; color: var(--text-dim); font-family: monospace; }
+
+        .copy-btn {
+            font-size: 11px;
+            color: var(--accent);
+            text-decoration: none;
+            padding: 4px 10px;
+            border: 1px solid var(--accent);
+            border-radius: 4px;
+            font-weight: 600;
+        }
+
+        .copy-btn:hover { background: var(--accent-glow); }
+
+        pre {
+            margin: 0;
+            padding: 20px;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            min-height: 200px;
+            color: #d1d5db;
+        }
+
     </style>
 </head>
 <body>
 
-<div class="sidebar">
-    <h3>Data Types</h3>
-    <div class="config-section">
-        <div class="config-group"><label>Namespace</label><input type="text" id="ns_name" value="Lsp::T"></div>
-        <div class="config-group"><label>String View</label><input type="text" id="t_string" value="JsonString"></div>
+<div class="wrapper">
+    <header>
+        <h1>Keyword Table Generator</h1>
+        <p>Generates minimal collision-free hash table for language keywords.</p>
+    </header>
+
+    <div class="field-group">
+        <label>Input Keywords</label>
+        <textarea id="keywordsInput" spellcheck="false">void, int, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, const, embed, muton, auton, fcn, def, struct, union, if, else, while, loop, when, case, goto, enum, return, continue, break, using, scope, namespace, alloc, free, error, catch, import, from, true, false, as, by, null</textarea>
     </div>
 
-    <h3>Hash Router</h3>
-    <div class="config-section">
-        <div class="config-group">
+    <div class="config-grid">
+        <div class="field-group">
             <label>Algorithm</label>
-            <select id="h_algo" onchange="generateCode()">
-                <option value="fnv1a">FNV-1a (32-bit)</option>
-                <option value="djb2">DJB2 (Classic)</option>
-                <option value="sdbm">SDBM (Linear)</option>
+            <select id="hashInput">
+                <option value="AUTO">Smallest Overall (Auto)</option>
+                <option value="fnv1a">FNV-1a</option>
+                <option value="murmur3">MurmurHash3</option>
+                <option value="djb2a">DJB2a</option>
             </select>
         </div>
-        <div class="config-group"><label>Table Size (2^n)</label><input type="number" id="h_size" value="256" step="2"></div>
-        <div class="config-group">
-            <label>Current Seed</label>
-            <div>
-                <input type="number" id="h_seed" value="0" style="width: 60px;">
-                <button class="btn-mini" onclick="findSeed()">Find Perfect</button>
-            </div>
+        <div class="field-group">
+            <label>Seeds Per Size</label>
+            <input type="number" id="seedAttempts" value="1000">
         </div>
-        <div class="config-group"><label>Status:</label><span id="hash_status" class="status-tag">Ready</span></div>
+        <div class="field-group">
+            <label>Output Prefix</label>
+            <input type="text" id="enumPrefixInput" value="KW">
+        </div>
     </div>
 
-    <h3>Switches</h3>
-    <div class="config-section">
-        <div class="config-group"><label>Schemas</label><input type="checkbox" id="sw_schema" checked onchange="generateCode()"></div>
-        <div class="config-group"><label>Hash Enum/Router</label><input type="checkbox" id="sw_hash" checked onchange="generateCode()"></div>
-    </div>
+    <button id="genBtn" onclick="runOptimization()">Optimize Lookup Table</button>
 
-    <input type="file" id="fileInput" accept=".json" style="font-size: 10px; margin-bottom: 8px;">
-    <input type="text" id="filter" placeholder="Search structures..." oninput="renderList()">
-    <div class="list-box" id="list"></div>
-</div>
+    <div id="stats"></div>
 
-<div class="content">
-    <div class="toolbar">
-        <span id="stats" style="font-size: 11px; color: #777;">Load metaModel.json</span>
-        <button onclick="copyToClipboard()">Copy Code</button>
+    <div class="terminal">
+        <div class="terminal-header">
+            <span>KEYWORD_HASH_TABLE.H</span>
+            <a href="javascript:void(0)" class="copy-btn" onclick="copyCode()">Copy Code</a>
+        </div>
+        <pre id="output">// Optimizer idle. Enter keywords and run...</pre>
     </div>
-    <div id="output-container">
-        <pre><code id="output" class="language-cpp"></code></pre>
-    </div>
-    <textarea id="raw-output"></textarea>
 </div>
 
 <script>
-    let model = null;
-    let selectedNodes = new Set();
-
-    document.querySelectorAll('input').forEach(el => el.oninput = generateCode);
-
-    document.getElementById('fileInput').addEventListener('change', function(e) {
-        const reader = new FileReader();
-        reader.onload = function() {
-            model = JSON.parse(reader.result);
-            document.getElementById('stats').innerText = `${model.requests.length + model.notifications.length} methods found`;
-            renderList(); findSeed();
-        };
-        reader.readAsText(e.target.files[0]);
-    });
-
-    const HashAlgos = {
-        fnv1a: {
-            init: 2166136261,
-            calc: (h, c) => Math.imul(h ^ c, 16777619) >>> 0,
-            cpp: `        uint32_t h = 2166136261U;\n        for (int i = 0; i < val.len; i++) {\n            h ^= (uint8_t)val.data[i];\n            h *= 16777619U;\n        }`
+    const ALGORITHMS = {
+        fnv1a: (str, seed) => {
+            let h = 0x811c9dc5 ^ seed;
+            for (let i = 0; i < str.length; i++) {
+                h ^= str.charCodeAt(i);
+                h = Math.imul(h, 0x01000193);
+            }
+            return h >>> 0;
         },
-        djb2: {
-            init: 5381,
-            calc: (h, c) => ((h << 5) + h + c) >>> 0,
-            cpp: `        uint32_t h = 5381U;\n        for (int i = 0; i < val.len; i++) {\n            h = ((h << 5) + h) + (uint8_t)val.data[i];\n        }`
+        murmur3: (str, seed) => {
+            let h1 = seed ^ 0x811c9dc5;
+            for (let i = 0; i < str.length; i++) {
+                let k1 = str.charCodeAt(i);
+                k1 = Math.imul(k1, 0xcc9e2d51);
+                k1 = (k1 << 15) | (k1 >>> 17);
+                k1 = Math.imul(k1, 0x1b873593);
+                h1 ^= k1;
+                h1 = (h1 << 13) | (h1 >>> 19);
+                h1 = Math.imul(h1, 5) + 0xe6546b64;
+            }
+            h1 ^= str.length;
+            h1 ^= h1 >>> 16; h1 = Math.imul(h1, 0x85ebca6b);
+            h1 ^= h1 >>> 13; h1 = Math.imul(h1, 0xc2b2ae35);
+            h1 ^= h1 >>> 16;
+            return h1 >>> 0;
         },
-        sdbm: {
-            init: 0,
-            calc: (h, c) => (c + (h << 6) + (h << 16) - h) >>> 0,
-            cpp: `        uint32_t h = 0;\n        for (int i = 0; i < val.len; i++) {\n            h = (uint8_t)val.data[i] + (h << 6) + (h << 16) - h;\n        }`
+        djb2a: (str, seed) => {
+            let h = 5381 ^ seed;
+            for (let i = 0; i < str.length; i++) {
+                h = ((h << 5) + h) ^ str.charCodeAt(i);
+            }
+            return h >>> 0;
         }
     };
 
-    function calculateHash(str, algoKey, seed) {
-        const algo = HashAlgos[algoKey];
-        let h = algo.init >>> 0;
-        for (let i = 0; i < str.length; i++) h = algo.calc(h, str.charCodeAt(i));
-        return (h ^ (seed >>> 0)) >>> 0;
+    function getCppSource(algo, seed) {
+        const s = "0x" + (seed >>> 0).toString(16).toUpperCase();
+        if(algo === 'fnv1a') return `uint32_t hash(const char* str) {\n    uint32_t h = 0x811C9DC5 ^ ${s};\n    while (*str) { h ^= (uint8_t)*str++; h *= 0x01000193; }\n    return h;\n}`;
+        if(algo === 'murmur3') return `uint32_t hash(const char* str) {\n    uint32_t h = ${s} ^ 0x811C9DC5; uint32_t len = 0;\n    while(str[len]) {\n        uint32_t k = (uint8_t)str[len++]; k *= 0xCC9E2D51; k = (k << 15) | (k >> 17); k *= 0x1B873593;\n        h ^= k; h = (h << 13) | (h >> 19); h = h * 5 + 0xE6546B64;\n    }\n    h ^= len; h ^= h >> 16; h *= 0x85EBCA6B; h ^= h >> 13; h *= 0xC2B2AE35; h ^= h >> 16;\n    return h;\n}`;
+        if(algo === 'djb2a') return `uint32_t hash(const char* str) {\n    uint32_t h = 5381 ^ ${s};\n    while (*str) { h = ((h << 5) + h) ^ (uint8_t)*str++; }\n    return h;\n}`;
     }
 
-    function findSeed() {
-        if (!model) return;
-        const algoKey = document.getElementById('h_algo').value;
-        const tableSize = parseInt(document.getElementById('h_size').value);
-        const methods = [...model.requests, ...model.notifications].map(m => m.method);
-        const statusEl = document.getElementById('hash_status');
+    async function runOptimization() {
+        const btn = document.getElementById('genBtn');
+        const output = document.getElementById('output');
+        const stats = document.getElementById('stats');
+        const raw = document.getElementById('keywordsInput').value;
+        const keywords = [...new Set(raw.split(/[,\s]+/).map(s => s.trim()).filter(s => s.length > 0))];
+        const maxSeedAttempts = parseInt(document.getElementById('seedAttempts').value);
+        const mode = document.getElementById('hashInput').value;
 
-        statusEl.innerText = "Searching...";
+        btn.disabled = true;
+        output.textContent = "// Searching for minimal perfect hash...";
+        stats.style.display = "none";
 
-        // Try random candidates
-        setTimeout(() => {
-            let foundSeed = null;
-            // Try 20,000 random seeds
-            for (let i = 0; i < 20000; i++) {
-                let seed = Math.floor(Math.random() * 0xFFFFFFFF);
-                let buckets = new Array(tableSize).fill(false);
-                let collision = false;
-                for (let m of methods) {
-                    let idx = calculateHash(m, algoKey, seed) & (tableSize - 1);
-                    if (buckets[idx]) { collision = true; break; }
-                    buckets[idx] = true;
+        await new Promise(r => setTimeout(r, 60));
+
+        const algosToTry = mode === "AUTO" ? Object.keys(ALGORITHMS) : [mode];
+        let best = { size: Infinity, algo: '', seed: 0, table: [] };
+
+        for (let size = keywords.length; size < keywords.length * 4; size++) {
+            if (size >= best.size) break;
+            for (const algoName of algosToTry) {
+                const hashFn = ALGORITHMS[algoName];
+                for (let attempt = 0; attempt < maxSeedAttempts; attempt++) {
+                    const seed = (attempt === 0) ? 0x811C9DC5 : (Math.random() * 0xFFFFFFFF) >>> 0;
+                    let table = Array(size).fill(null);
+                    let collision = false;
+                    for (let k = 0; k < keywords.length; k++) {
+                        const h = hashFn(keywords[k], seed) % size;
+                        if (table[h] !== null) { collision = true; break; }
+                        table[h] = k;
+                    }
+                    if (!collision) {
+                        best = { size, algo: algoName, seed, table: [...table] };
+                        break;
+                    }
                 }
-                if (!collision) { foundSeed = seed; break; }
+                if (best.size === size) break;
             }
-
-            if (foundSeed !== null) {
-                document.getElementById('h_seed').value = foundSeed;
-                statusEl.innerText = "PERFECT"; statusEl.style.background = "#060";
-            } else {
-                statusEl.innerText = "COLLISION (Try larger size)"; statusEl.style.background = "#900";
-            }
-            generateCode();
-        }, 10);
-    }
-
-    function toSnakeCase(str) {
-        return str.replace(/([a-z])([A-Z])/g, '$1_$2').replace(/([A-Z])([A-Z][a-z])/g, '$1_$2').toUpperCase().replace(/[^A-Z0-9]/g, '_');
-    }
-
-    function renderList() {
-        if (!model) return;
-        const filter = document.getElementById('filter').value.toLowerCase();
-        const container = document.getElementById('list');
-        container.innerHTML = '';
-        const items = [...model.structures, ...model.enumerations].sort((a,b)=>a.name.localeCompare(b.name));
-        items.forEach(item => {
-            if (item.name.toLowerCase().includes(filter)) {
-                const div = document.createElement('div');
-                div.className = `item ${selectedNodes.has(item.name) ? 'selected' : ''}`;
-                div.innerHTML = `<input type="checkbox" ${selectedNodes.has(item.name)?'checked':''}>${item.name}`;
-                div.onclick = () => toggleNode(item.name);
-                container.appendChild(div);
-            }
-        });
-    }
-
-    function generateCode() {
-        if (!model) return;
-        const cfg = {
-            string: document.getElementById('t_string').value,
-            hSize: parseInt(document.getElementById('h_size').value),
-            hSeed: parseInt(document.getElementById('h_seed').value),
-            hAlgo: document.getElementById('h_algo').value,
-            ns: document.getElementById('ns_name').value
-        };
-        const sw = { schema: document.getElementById('sw_schema').checked, hash: document.getElementById('sw_hash').checked };
-
-        let code = `namespace ${cfg.ns} {\n\n`;
-
-        if (sw.hash) {
-            const methods = [...model.requests, ...model.notifications].map(m => m.method);
-
-            code += `    enum RequestMethod {\n        RM_NONE = -1,\n`;
-            methods.forEach(m => {
-                const idx = calculateHash(m, cfg.hAlgo, cfg.hSeed) & (cfg.hSize - 1);
-                code += `        RM_${toSnakeCase(m).padEnd(35)} = ${idx},\n`;
-            });
-            code += `    };\n\n`;
-
-            code += `    static RequestMethod toRequestMethod(${cfg.string} val) {\n`;
-            code += `        if (val.len == 0) return RM_NONE;\n`;
-            code += HashAlgos[cfg.hAlgo].cpp + "\n";
-            code += `        uint32_t index = (h ^ ${cfg.hSeed}U) & (${cfg.hSize - 1});\n`;
-            code += `        switch (index) {\n`;
-            methods.forEach(m => {
-                const idx = calculateHash(m, cfg.hAlgo, cfg.hSeed) & (cfg.hSize - 1);
-                code += `            case ${idx}: return (RequestMethod)${idx};\n`;
-            });
-            code += `            default: return RM_NONE;\n`;
-            code += `        }\n    }\n\n`;
         }
 
-        selectedNodes.forEach(name => {
-            const s = model.structures.find(s => s.name === name);
-            if (s) {
-                code += `    struct ${s.name} {\n`;
-                s.properties.forEach(p => code += `        void* ${p.name.padEnd(20)};\n`);
-                code += `    };\n`;
-                if (sw.schema) {
-                    code += `    template<> struct Schema<${s.name}> { static constexpr auto fields = std::make_tuple(\n`;
-                    code += s.properties.map(p => `        make_field("${p.name}", &${s.name}::${p.name})`).join(',\n') + `\n    ); };\n\n`;
-                }
-            }
+        if (best.size === Infinity) {
+            output.textContent = "// Error: Search space exhausted.";
+            btn.disabled = false;
+            return;
+        }
+
+        const prefix = document.getElementById('enumPrefixInput').value;
+        let code = '';
+        keywords.forEach(kw => code += `const char* ${prefix}S_${kw.toUpperCase()} = "${kw}";\n`);
+        code += `\nconst char* keywordStringTable[KW_COUNT] = {\n`;
+        keywords.forEach(kw => code += `    ${prefix}S_${kw.toUpperCase()},\n`);
+        code += `    ${prefix}_COUNT\n};\n\n`;
+        code += `constexpr int ${prefix}_TABLE_SIZE = ${best.size};\n`;
+        code += `constexpr std::array<int, ${prefix}_TABLE_SIZE> makeKeywordTable() {\n`;
+        code += `    std::array<int, ${prefix}_TABLE_SIZE> table = {};\n\n`;
+        best.table.forEach((idx, i) => {
+            if (idx !== null) code += `    table[${i}] = ${prefix}_${keywords[idx].toUpperCase()};\n`;
         });
+        code += `\n    return table;\n}\n\n`;
+        code += `constexpr auto keywordTable = makeKeywordTable();\n\n`;
+        code += getCppSource(best.algo, best.seed);
 
-        code += `} // namespace ${cfg.ns}`;
-        const out = document.getElementById('output');
-        out.textContent = code;
-        hljs.highlightElement(out);
-        document.getElementById('raw-output').value = code;
+        output.textContent = code;
+        stats.style.display = "block";
+        stats.innerHTML = `✓ Found <strong>${best.algo}</strong> table | Size: <strong>${best.size}</strong> | Density: <strong>${((keywords.length/best.size)*100).toFixed(1)}%</strong> | Seed: <strong>0x${best.seed.toString(16).toUpperCase()}</strong>`;
+        btn.disabled = false;
     }
 
-    function toggleNode(name) {
-        if (selectedNodes.has(name)) selectedNodes.delete(name);
-        else selectedNodes.add(name);
-        renderList(); generateCode();
-    }
-
-    function selectAll(val) {
-        if(!model) return;
-        selectedNodes.clear();
-        if(val) { model.structures.forEach(s => selectedNodes.add(s.name)); model.enumerations.forEach(e => selectedNodes.add(e.name)); }
-        renderList(); generateCode();
-    }
-
-    function copyToClipboard() {
-        const ta = document.getElementById('raw-output');
-        ta.select();
-        document.execCommand('copy');
+    function copyCode() {
+        const text = document.getElementById('output').textContent;
+        navigator.clipboard.writeText(text);
+        const btn = document.querySelector('.copy-btn');
+        btn.textContent = "Copied!";
+        setTimeout(() => btn.textContent = "Copy Code", 2000);
     }
 </script>
 

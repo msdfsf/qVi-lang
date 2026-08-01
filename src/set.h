@@ -24,6 +24,11 @@ namespace Set {
         HM_STRING_STRUCT_FNV1A = HM_STRING_STRUCT_START,
     };
 
+    enum KeyStorage {
+        KS_POINTER,
+        KS_VALUE,
+    };
+
     enum SlotType {
         ST_EMPTY,
         ST_OCCUPIED,
@@ -43,6 +48,7 @@ namespace Set {
         uint64_t keyOffset;
 
         HashMethod hashMethod;
+        KeyStorage keyStorage;
     };
 
     void init(Container* set, uint64_t tableSize);

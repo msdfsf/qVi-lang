@@ -1,5 +1,5 @@
 int[] arr = [ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 int i = 0;
-loop arr using i {
+loop arr as [i] {
     "%i: %i\n" i, arr[i];
 }

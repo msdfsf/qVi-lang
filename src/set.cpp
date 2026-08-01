@@ -74,6 +74,15 @@ namespace Set {
         }
     };
 
+    uint64_t getKey(Container* const set, uint64_t data) {
+        if (set->keyStorage == KS_POINTER) {
+            return (uint64_t) * (uint64_t**)(data + set->keyOffset);
+        }
+        else {
+            return (uint64_t)(uint64_t**)(data + set->keyOffset);
+        }
+    }
+
     inline Slot* allocTable(const uint64_t size) {
         Slot* table = (Slot*) malloc(size * sizeof(Slot));
         if (!table) {
@@ -100,7 +109,8 @@ namespace Set {
         const uint64_t mask = set->tableSize - 1;
         for (uint64_t i = 0; i < oldTableSize; i++) {
             if (oldTable[i].type == ST_OCCUPIED) {
-                uint64_t idx = hash(set->hashMethod, oldTable[i].data);
+                const uint64_t key = getKey(set, (uint64_t) oldTable[i].data);
+                uint64_t idx = hash(set->hashMethod, key) & mask;
 
                 while (set->table[idx].type != ST_EMPTY) {
                     idx = (idx + 1) & mask;
@@ -123,6 +133,7 @@ namespace Set {
         set->tableSize = tableSize;
         set->usedSize = 0;
         set->hashMethod = HM_MURMUR3;
+        set->keyStorage = KS_POINTER;
 
     }
 
@@ -130,23 +141,26 @@ namespace Set {
         free(set->table);
     }
 
-    uint64_t getKey(uint64_t data, uint64_t offset) {
-        return (uint64_t) *(uint64_t**) (data + offset);
-    }
-
     bool cmpKeys(Container* set, uint64_t keyA, uint64_t keyB) {
         return (
             keyA == keyB || (
                 keyA && keyB &&
-                set->hashMethod >= HM_STRING_START &&
-                strcmp((char*) keyA, (char*) keyB) == 0
+                (
+                    set->hashMethod >= HM_STRING_START &&
+                    set->hashMethod < HM_STRING_STRUCT_START &&
+                    strcmp((char*) keyA, (char*) keyB) == 0
+                ) ||
+                (
+                    set->hashMethod >= HM_STRING_STRUCT_START &&
+                    cstrcmp((String*) keyA, (String*) keyB)
+                )
             )
         );
     }
 
     bool insert(Container* set, uint8_t* data) {
 
-        const uint64_t key = getKey((uint64_t) data, set->keyOffset);
+        const uint64_t key = getKey(set, (uint64_t) data);
 
         if (set->usedSize * 10 >= set->tableSize * 7) {
             if (set->tableSize * 2 > set->tableSize) {
@@ -165,7 +179,7 @@ namespace Set {
             if (slot.type == ST_EMPTY) break;
 
             if (slot.type == ST_OCCUPIED) {
-                uint64_t slotKey = getKey(slot.data, set->keyOffset);
+                uint64_t slotKey = getKey(set, slot.data);
                 if (cmpKeys(set, slotKey, key)) return false;
             } else {
                 if (deletedIdx == UINT64_MAX) {
@@ -199,7 +213,7 @@ namespace Set {
             if (slot.type == ST_EMPTY) break;
 
             if (slot.type == ST_OCCUPIED) {
-                uint64_t slotKey = getKey(slot.data, set->keyOffset);
+                uint64_t slotKey = getKey(set, slot.data);
                 if (cmpKeys(set, slotKey, key)) {
                     // Whatever
                     set->table[idx].type = ST_DELETED;
@@ -227,7 +241,7 @@ namespace Set {
             if (slot.type == ST_EMPTY) break;
 
             if (slot.type == ST_OCCUPIED) {
-                uint64_t slotKey = getKey(slot.data, set->keyOffset);
+                uint64_t slotKey = getKey(set, slot.data);
                 if (cmpKeys(set, slotKey, key)) {
                     return (uint8_t*) slot.data;
                 }

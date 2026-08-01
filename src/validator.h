@@ -7,24 +7,25 @@
 #include "set.h"
 #include "syntax.h"
 #include "diagnostic.h"
+#include <cstdint>
 
 
 
 namespace Validator {
 
-    enum Score {
-        FOS_IMPLICIT_CAST = 1,
-        FOS_SIZE_DECREASE,
-        FOS_SIGN_CHANGE,
-        FOS_TO_FLOAT,
-        FOS_PROMOTION,
-        FOS_EXACT_MATCH,
+    // LOOK AT : Spacing defines max argument count
+    enum ScoreWeight : uint64_t {
+        FOS_IMPLICIT_CAST   = 1ULL << 0,
+        FOS_SIZE_DECREASE   = 1ULL << 8,
+        FOS_SIGN_CHANGE     = 1ULL << 16,
+        FOS_TO_FLOAT        = 1ULL << 24,
+        FOS_PROMOTION       = 1ULL << 32,
+        FOS_EXACT_MATCH     = 1ULL << 40,
+        FOS_NON_VAR_BONUS   = 1ULL << 48
     };
 
-    // TODO : better name?
     struct FunctionScore {
-        Function* fcn;
-        int score;
+        uint64_t value;
     };
 
     // TODO : better name?
@@ -46,6 +47,7 @@ namespace Validator {
         DArray::Container gatheringStackB;
 
         Arena::Container stringArena;
+        Arena::Container tmpArena;
 
         SyntaxNode* currentLoop;
         Function* currentFunction;
@@ -81,6 +83,7 @@ namespace Validator {
     Err::Err resolveResultType(ValidationContext* ctx, BinaryExpression* bex, Variable* var);
     Err::Err resolveResultType(ValidationContext* ctx, FunctionCall* fex, Variable* var);
     Err::Err applyImplicitCast(ValidationContext* ctx, Value* lval, Variable* rvar);
+    Err::Err computeTypeInfo  (ValidationContext* ctx, Value* val, Type::TypeInfo** outInfo);
     Err::Err computeTypeInfo  (ValidationContext* ctx, TypeDefinition* td);
     void     castLiteral      (ValidationContext* ctx, Value* val, Type::Kind toDtype);
 
@@ -102,20 +105,32 @@ namespace Validator {
     Err::Err validate(ValidationContext* ctx, Statement* node);
     Err::Err validate(ValidationContext* ctx, ErrorSet* node);
 
-    Err::Err validateQualifiedName(ValidationContext* ctx, Scope* scope, QualifiedName* name, Namespace** nspaceOut, ErrorSet** esetOut);
     Err::Err validateCall(ValidationContext* ctx, Variable* callOp);
-
-
 
     Err::Err validateImplicitCast(const Type::Kind dtype, const Type::Kind dtypeRef);
     Err::Err validateImplicitCast(ValidationContext* ctx, void* dtype, void* dtypeRef, Type::Kind dtypeEnum, Type::Kind dtypeEnumRef);
     Err::Err validateAttributeCast(Variable* var, Variable* attribute);
     Err::Err validatePointerAssignment(AstContext* ast, const Value* const val);
 
-    Function* findExactFunction  (Scope* scope, INamed* const name, FunctionPrototype* const fptr);
-    int       findClosestFunction(ValidationContext* ctx, Variable* callOp, Function** outFcn);
-    Variable* findDefinition     (ValidationContext* ctx, Scope* scope, QualifiedName* const inVar, int idx);
+    Err::Err applyVariableLinkage(ValidationContext* ctx, Variable* var, SyntaxNode* definition);
 
-    int getFirstNonArrayDtype(Array* arr, int maxLevel = -1, int* level = NULL);
+    SymbolIndexEntry* findSymbolAsIndexEntry(ValidationContext* ctx, Scope* scope, String name);
+    SymbolIndexEntry* findSymbolAsIndexEntryRecursive(ValidationContext* ctx, Scope* startScope, String name);
+    SyntaxNode*       findSymbol(ValidationContext* ctx, Scope* scope, String name);
+    SyntaxNode*       findSymbolRecursive(ValidationContext* ctx, Scope* startScope, String name);
+
+    Err::Err resolveQualifiedPath(ValidationContext* ctx, Scope* startScope, QualifiedName* qname, Scope** outScope);
+    Err::Err resolveQualifiedNameAsIndexEntry(ValidationContext* ctx, Scope* startScope, QualifiedName* name, SymbolIndexEntry** outEntry, bool reportErrors = true);
+
+    Function*   findExactFunction  (Scope* scope, INamed* const name, FunctionPrototype* const fptr);
+    Function*   findClosestFunction(SymbolIndexEntry* entry, Variable* callOp);
+    SyntaxNode* findInternalSymbol (const String* name);
+
+    Value toValue(Type::Kind kind);
+
+    bool areInOrder(Span* before, Span* after);
+    bool isOrderingValid(SymbolIndexEntry* entry, QualifiedName* name);
+
+    Type::Kind getFirstNonArrayDtype(Array* arr, int maxLevel = -1, int* level = NULL, void** outType = NULL);
 
 }

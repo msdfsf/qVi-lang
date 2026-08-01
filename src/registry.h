@@ -4,6 +4,8 @@
 #include "array_list.h"
 
 
+
+namespace Interpreter { struct ExeBlock; }
 namespace Extern { struct Library; }
 
 struct AstContext;
@@ -14,6 +16,8 @@ namespace Reg {
     struct Unit {
         AstContext*  ast;
         AstRegistry* reg;
+
+        Interpreter::ExeBlock* exe;
 
         // contains Extern::Library*
         DArray::Container* libs;

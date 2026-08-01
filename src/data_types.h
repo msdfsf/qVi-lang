@@ -1,5 +1,6 @@
 #pragma once
 
+#include "io.h"
 #include "string.h"
 #include <cstdint>
 
@@ -97,11 +98,11 @@ namespace Type {
     };
 
     struct TypeInfoEx {
-        TypeInfo base;
         union {
-           StructInfo  str; // TODO : better name?
-           ArrayInfo   arr;
-           PointerInfo ptr;
+            TypeInfo base;
+            StructInfo  str; // TODO : better name?
+            ArrayInfo   arr;
+            PointerInfo ptr;
         };
     };
 
@@ -148,4 +149,7 @@ namespace Type {
     }
 
     const char* str(Kind kind);
+
+    void writeTypeName(IO::Stream* stream, void* type, Type::Kind typeKind);
+
 };

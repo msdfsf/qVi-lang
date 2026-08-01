@@ -14,12 +14,15 @@
 
 #pragma once
 
+#include "backend.h"
 #include "file_system.h"
 #include "parser.h"
 #include "syntax.h"
-#include "translator.h"
+#include <cstdint>
 
 
+
+namespace Compiler { enum BuildCommand : uint8_t; }
 
 namespace TaskSystem {
 
@@ -35,7 +38,7 @@ namespace TaskSystem {
     void dispatchPreValidation(FileSystem::Handle file);
     void dispatchValidation(FileSystem::Handle file);
     void dispatchCompileTimeBuild(Function* fcn, bool waitForExecution);
-    void dispatchCodegen(Translator* translator, FileSystem::Handle file);
+    void dispatchBackend(FileSystem::Handle file, Backend::Driver* driver, Backend::BuildContext* ctx);
 
     // Suppose to start a new synchronization group.
     // Ex. resets internal counters to synchronize parallel tasks

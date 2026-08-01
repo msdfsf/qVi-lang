@@ -727,6 +727,10 @@ namespace Interpreter {
             return Err::OK;
         }
 
+        if (!ex) {
+            return Err::OK;
+        }
+
         switch (ex->type) {
 
             case EXT_UNARY : {
@@ -763,7 +767,7 @@ namespace Interpreter {
                 Function* const fcn = call->fcn;
 
                 TaskSystem::dispatchCompileTimeBuild(fcn, true);
-                Interpreter::print(fcn);
+                // Interpreter::print(fcn);
 
                 for (uint32_t i = 0; i < call->inArgCount; i++) {
                     err = eval(ctx, call->inArgs[i]);

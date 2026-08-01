@@ -52,10 +52,13 @@ void Ast::init() {
     //
 
     Function* fPrintf = Internal::functions + Internal::IF_PRINTF;
+    Ast::Node::init(fPrintf);
+
     fPrintf->base.scope = SyntaxNode::root;
     fPrintf->name.buff = (char*) Internal::IFS_PRINTF;
     fPrintf->name.len = sizeof(Internal::IFS_PRINTF) - 1;
     fPrintf->internalIdx = Internal::IF_PRINTF;
+    fPrintf->base.semStatus = TaskStatus::TS_READY;
 
     fPrintf->prototype.inArgs = (VariableDefinition**) alloc(alc, 2 * sizeof(VariableDefinition*));
 
@@ -80,10 +83,13 @@ void Ast::init() {
 
 
     Function* fAlloc = Internal::functions + Internal::IF_ALLOC;
+    Ast::Node::init(fAlloc);
+
     fAlloc->base.scope = SyntaxNode::root;
     fAlloc->name.buff = (char*) Internal::IFS_ALLOC;
     fAlloc->name.len = sizeof(Internal::IFS_ALLOC) - 1;
     fAlloc->internalIdx = Internal::IF_ALLOC;
+    fAlloc->base.semStatus = TaskStatus::TS_READY;
 
     fAlloc->prototype.inArgs = (VariableDefinition**) alloc(alc, sizeof(VariableDefinition*));
 
@@ -98,10 +104,13 @@ void Ast::init() {
 
 
     Function* fFree = Internal::functions + Internal::IF_FREE;
+    Ast::Node::init(fFree);
+
     fFree->base.scope = SyntaxNode::root;
     fFree->name.buff = (char*) Internal::IFS_FREE;
     fFree->name.len = sizeof(Internal::IFS_FREE) - 1;
     fFree->internalIdx = Internal::IF_FREE;
+    fFree->base.semStatus = TaskStatus::TS_READY;
 
     fFree->prototype.inArgs = (VariableDefinition**) alloc(alc, 2 * sizeof(VariableDefinition*));
 
@@ -560,6 +569,77 @@ String Ast::Node::getName(SyntaxNode* node) {
     }
 }
 
+void Ast::Node::getName(SyntaxNode* node, String** str) {
+    if (!node) {
+        *str = NULL;
+        return;
+    }
+
+    // TODO : ?
+    if (node->ogNode) node = node->ogNode;
+
+    switch (node->type) {
+        case NT_VARIABLE: {
+            *str = (String*) &((Variable*) node)->name;
+            return;
+        }
+
+        case NT_VARIABLE_DEFINITION: {
+            Variable* var = ((VariableDefinition*) node)->var;
+            if (var) *str = (String*) &var->name;
+            else *str = NULL;
+            return;
+        }
+
+        case NT_FUNCTION: {
+            *str = (String*) &((Function*) node)->name;
+            return;
+        }
+
+        case NT_TYPE_DEFINITION: {
+            *str = (String*) &((TypeDefinition*) node)->name;
+            return;
+        }
+
+        case NT_UNION: {
+            *str = (String*) &((Union*) node)->base.name;
+            return;
+        }
+
+        case NT_ENUMERATOR: {
+            *str = (String*) &((Enumerator*) node)->name;
+            return;
+        }
+
+        case NT_NAMESPACE: {
+            *str = (String*) &((Namespace*) node)->name;
+            return;
+        }
+
+        case NT_LABEL: {
+            *str = (String*) &((Label*) node)->name;
+            return;
+        }
+
+        case NT_ERROR: {
+            *str = (String*) &((ErrorSet*) node)->name;
+            return;
+        }
+
+        case NT_IMPORT: {
+            ImportStatement* imp = (ImportStatement*) node;
+            if (imp->param.len > 0) *str = &imp->param;
+            else *str = &imp->fname;
+            return;
+        }
+
+        default: {
+            *str = NULL;
+            return;
+        }
+    }
+}
+
 // TODO : it seems name spans are not tracked
 Span* Ast::Node::getNameSpan(SyntaxNode* node) {
     if (!node) return NULL;
@@ -788,6 +868,7 @@ void Ast::Node::init(Scope* node) {
     node->definitionCount = 0;
     node->children = NULL;
     node->childrenCount = 0;
+    node->base.flags = IS_UNORDERED;
 
     ::init(&node->base);
     node->base.type = NT_SCOPE;
@@ -869,6 +950,7 @@ void Ast::Node::init(Function* node) {
     ::init(&node->name);
     init(&node->prototype);
     ::init(&node->base);
+    node->base.flags |= IS_UNORDERED;
     node->base.type = NT_FUNCTION;
 }
 _defineMake(Function, NT_FUNCTION);
@@ -911,21 +993,13 @@ void Ast::Node::init(WhileLoop* node) {
 }
 _defineMake(WhileLoop, NT_WHILE_LOOP);
 
-void Ast::Node::init(ForLoop* node) {
-    node->initEx = NULL;
-    node->actionEx = NULL;
-    node->bodyScope = NULL;
-    node->initEx = NULL;
-    ::init(&node->base);
-    node->base.type = NT_FOR_LOOP;
-}
-_defineMake(ForLoop, NT_FOR_LOOP);
-
 void Ast::Node::init(Loop* node) {
+    node->arg.array = NULL;
     node->array = NULL;
+    node->index.var = NULL;
+    node->stride = NULL;
+    node->condition = NULL;
     node->bodyScope = NULL;
-    node->idx = NULL;
-    node->idxDef = NULL;
     ::init(&node->base);
     node->base.type = NT_LOOP;
 }
@@ -975,6 +1049,8 @@ void Ast::Node::init(TypeDefinition* node) {
     node->vars = NULL;
     node->varCount = 0;
     node->typeInfo = NULL;
+    ::init(&node->base);
+    node->base.flags |= IS_UNORDERED;
     node->base.type = NT_TYPE_DEFINITION;
 }
 _defineMake(TypeDefinition, NT_TYPE_DEFINITION);
@@ -1102,6 +1178,7 @@ _defineMake(Pointer, AT_POINTER);
 void Ast::Node::init(Array* node) {
     node->flags = 0;
     node->length = NULL;
+    node->type = NULL;
     init(&node->base);
 }
 _defineMake(Array, AT_ARRAY);
@@ -1166,7 +1243,6 @@ _defineCopy(ForeignFunction,     AT_FOREIGN_FUNCTION);
 _defineCopy(Branch,              NT_BRANCH);
 _defineCopy(SwitchCase,          NT_SWITCH_CASE);
 _defineCopy(WhileLoop,           NT_WHILE_LOOP);
-_defineCopy(ForLoop,             NT_FOR_LOOP);
 _defineCopy(Loop,                NT_LOOP);
 _defineCopy(ReturnStatement,     NT_RETURN_STATEMENT);
 _defineCopy(ContinueStatement,   NT_CONTINUE_STATEMENT);
@@ -1269,8 +1345,6 @@ const char* Ast::Node::str(NodeType type) {
             return "NT_SWITCH_CASE";
         case NT_WHILE_LOOP:
             return "NT_WHILE_LOOP";
-        case NT_FOR_LOOP:
-            return "NT_FOR_LOOP";
         case NT_LOOP:
             return "NT_LOOP";
         case NT_RETURN_STATEMENT:

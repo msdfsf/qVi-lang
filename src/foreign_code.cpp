@@ -177,7 +177,7 @@ namespace Extern {
 
         if (level == LL_INSPECT) {
             hnd = LoadLibraryExW((wchar_t*) wname.buff, NULL,
-                LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | DONT_RESOLVE_DLL_REFERENCES);
+                DONT_RESOLVE_DLL_REFERENCES);
         } else if (level == LL_EXECUTE) {
             hnd = LoadLibraryW((wchar_t*) wname.buff);
         } else {
@@ -193,7 +193,7 @@ namespace Extern {
             Diag::report(ctx->unit->ast, NULL, Err::LIBRARY_LOAD_FAILED,
                 Diag::Format {
                     "Failed to map native library into compiler memory.\n"
-                    "  Target: %*.s\n"
+                    "  Target: %.*s\n"
                     "  System Error: %s"
                 },
                 name.len, name.buff, osErrBuff
@@ -213,7 +213,7 @@ namespace Extern {
             Diag::report(ctx->unit->ast, NULL, Err::LIBRARY_LOAD_FAILED,
                 Diag::Format{
                     "Failed to resolve full library path.\n"
-                    "  Target: %*.s\n"
+                    "  Target: %.*s\n"
                     "  System Error: %s"
                 },
                 name.len, name.buff, osErrBuff

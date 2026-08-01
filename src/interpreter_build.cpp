@@ -7,6 +7,7 @@
 #include "globals.h"
 #include "interpreter.h"
 #include "operators.h"
+#include "ordered_dict.h"
 #include "supplement/runtime.h"
 #include "syntax.h"
 #include "logger.h"
@@ -16,7 +17,6 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <execution>
 #include <float.h>
 
 
@@ -35,7 +35,8 @@ namespace Interpreter {
         Arena::init(&state->rawData, size);
 
         OrderedDict::init(&state->localsInfoMap, size);
-        state->localsInfoMap.flags |= OrderedDict::COPY_STRINGS;
+        state->localsInfoMap.flags |= OrderedDict::KEY_IS_INDEX;
+        // state->localsInfoMap.flags |= OrderedDict::COPY_STRINGS;
 
         DArray::init(&state->lines, size, sizeof(LineInfo));
 
@@ -57,7 +58,7 @@ namespace Interpreter {
 
     bool isFixedArray(Array* arr) {
         // in hpes that length will always be pre-unwrapped
-        return arr->length->value.hasValue;
+        return arr->length && arr->length->value.hasValue;
     }
 
     // LOOK_AT : seems unnecessary
@@ -212,7 +213,7 @@ namespace Interpreter {
             }
 
             case Type::DT_ARRAY: {
-                return Type::basicTypes + dtype;
+                return (Type::TypeInfo*) ((Array*) data)->type;
             }
 
             case Type::DT_STRING: {
@@ -242,86 +243,10 @@ namespace Interpreter {
         return getDtype(val->any, val->typeKind);
     }
 
-    // TODO :
-    //   The entire 'type system' feels weird.
-    //   Conceptually, it feels correct to create explicit Type objects only
-    //   for fundamental types (int/float), user-defined structs/unions,
-    //   and enums.
-    //
-    //   In the case of fixed-length arrays, defining a unique Type object for each
-    //   size (int[5] vs int[6]) feels wasteful and incorrect. However,
-    //   avoiding this leads to a fragmented implementation where we cannot
-    //   simply inspect the Type object itself but must juggle extra metadata
-    //   (like AST nodes) to calculate basic properties like size.
-    //
-    //   I might refactor the 'type system' later, perhaps by adding cache nodes,
-    //   a lookup mechanism, or something else to make the code feel better.
-    //   But until then, I shall excuse myself and simply write what works to
-    //   get the job done.
-    inline Err::Err getDtypeInfo(Value* val, uint64_t* size, uint64_t* align) {
-
-        Err::Err err = Err::OK;
-
-        const Type::Kind dtypeEnum = val->typeKind;
-
-        if (isPrimitive(dtypeEnum) || dtypeEnum == Type::DT_POINTER) {
-            Type::TypeInfo* const dtype = Type::basicTypes + dtypeEnum;
-            *size = dtype->size;
-            *align = dtype->align;
-            return err;
-        }
-
-        if (dtypeEnum == Type::DT_ARRAY) {
-
-            Array* arr = val->arr;
-
-            // if length is NULL, we are basicly dealing with
-            // a runtime length, and we can interpret our dtype
-            // as slice
-            if (!arr->length) {
-                *size = 16;
-                *align = 8;
-                return Err::OK;
-            }
-
-            arr->length = unwrap(arr->length);
-            const uint64_t len = arr->length->value.u64;
-
-            uint64_t elementSize;
-            uint64_t elementAlign;
-            Value tmpVal = toValue(&arr->base);
-            // TODO : cache
-            err = getDtypeInfo(&tmpVal, &elementSize, &elementAlign);
-            if (err != Err::OK) return err;
-
-            *size = len * elementSize;
-            *align = elementAlign;
-
-            return err;
-
-        }
-
-        if (dtypeEnum == Type::DT_CUSTOM) {
-
-            TypeDefinition* const typeDef = val->def;
-            *size = typeDef->typeInfo->base.size;
-            *align = typeDef->typeInfo->base.align;
-
-            return err;
-
-        }
-
-        // TODO
-        return Err::NOT_YET_IMPLEMENTED;
-
-    }
-
     inline uint64_t getDtypeSize(Value* val) {
         // TODO : for now this
-        uint64_t size;
-        uint64_t align;
-        getDtypeInfo(val, &size, &align);
-        return size;
+        Type::TypeInfo* info = getDtype(val);
+        return info->size;
     }
 
     inline uint64_t getDtypeAlign(Value* val) {
@@ -342,13 +267,8 @@ namespace Interpreter {
     }
 
     inline Err::Err pushLocal(CompilerState* state, Variable* var, uint64_t* offset) {
-
-        uint64_t size;
-        uint64_t align;
-        Err::Err err = getDtypeInfo(&var->value, &size, &align);
-        if (err != Err::OK) return err;
-
-        const uint64_t vmwordsCount = BYTES_TO_WORDS(size);
+        Type::TypeInfo* info = getDtype(&var->value);
+        const uint64_t vmwordsCount = BYTES_TO_WORDS(info->size);
 
         *offset = state->locals.logicalPos;
 
@@ -363,14 +283,13 @@ namespace Interpreter {
         // store debug info
         LocalVarInfo* header = (LocalVarInfo*) alloc(alc, sizeof(LocalVarInfo));
         header->var = var;
-        header->size = size;
-        header->align = align;
+        header->size = info->size;
+        header->align = info->align;
 
-        String key = String((char*) offset, sizeof(uint64_t));
-        OrderedDict::set(&state->localsInfoMap, key, header);
+        // String key = String((char*) offset, sizeof(uint64_t));
+        OrderedDict::set(&state->localsInfoMap, *offset, header);
 
         return Err::OK;
-
     }
 
     inline uint8_t* pushOpcode(CompilerState* state, Opcode opcode) {
@@ -919,16 +838,7 @@ namespace Interpreter {
 
             const Type::Kind dtypeEnum = val->typeKind;
             if (dtypeEnum == Type::DT_ARRAY && isFixedArray(val->arr)) {
-
-                // TODO : this is just bullshit
-                uint64_t elementSize;
-                uint64_t elementAlign;
-
-                Value tmpVal;
-                tmpVal.any = node->value.arr->base.pointsTo;
-                tmpVal.typeKind = node->value.arr->base.pointsToKind;
-                getDtypeInfo(&tmpVal, &elementSize, &elementAlign);
-
+                Type::TypeInfoEx* info = val->arr->type;
 
                 pushOpcode(state, OC_LEA);
                 pushOperand(state, offset);
@@ -938,7 +848,6 @@ namespace Interpreter {
                 }
 
                 return Err::OK;
-
             }
 
             Opcode op = selectGetOpcode(dtypeEnum);
@@ -1085,14 +994,7 @@ namespace Interpreter {
     }
 
     Err::Err compileInPlace(CompilerState* state, ArrayInitialization* init, Variable* target) {
-
-        uint64_t elementSize;
-        uint64_t elementAlign;
-        Value element;
-        element.any = target->value.arr->base.pointsTo;
-        element.typeKind = target->value.arr->base.pointsToKind;
-        getDtypeInfo(&element, &elementSize, &elementAlign);
-
+        Type::TypeInfoEx* info = target->value.arr->type;
         const uint64_t offset = target->def->vmOffset;
 
         for (int i = 0; i < init->attributeCount; i++) {
@@ -1104,19 +1006,18 @@ namespace Interpreter {
             pushOperand(state, i);
 
             pushOpcode(state, OC_PTR_IDX);
-            pushOperand(state, elementSize);
+            pushOperand(state, info->arr.element->size);
 
             Variable* var = init->attributes[i];
             Err::Err err = compile(state, var);
             if (err != Err::OK) return err;
 
-            const Opcode storeOpcode = selectStoreOpcode(element.typeKind);
+            const Opcode storeOpcode = selectStoreOpcode(info->arr.element->kind);
             pushOpcode(state, storeOpcode);
 
         }
 
         return Err::OK;
-
     }
 
     // TODO : doesnt work for <val> +/- ptr, add OC_SWAP?
@@ -1138,14 +1039,11 @@ namespace Interpreter {
             return false;
         }
 
-        uint64_t size;
-        uint64_t align;
         Value val = toValue(var->value.ptr);
-        Err::Err err = getDtypeInfo(&val, &size, &align);
-        if (err != Err::OK) return false;
+        Type::TypeInfo* info = getDtype(&val);
 
         pushOpcode(state, OC_PUSH_I64);
-        pushOperand(state, size);
+        pushOperand(state, info->size);
 
         pushOpcode(state, OC_MUL_U64);
 
@@ -1414,7 +1312,9 @@ namespace Interpreter {
                         .flags = 0
                     };
 
-                    if (isRoot) {
+                    // even in root target can be general expression,
+                    // ex. assignment x.y[i] = arr ...;
+                    if (isRoot && target->def) {
                         pushDescriptor(state, desc);
                         pushOperand(state, target->def->vmOffset);
                         state->vecResult.isTmp = false;
@@ -1641,10 +1541,6 @@ namespace Interpreter {
         return Err::OK;
     }
 
-    Err::Err compile(CompilerState* state, ForLoop* scope) {
-        return Err::OK;
-    }
-
     Err::Err compile(CompilerState* state, Loop* scope) {
         return Err::OK;
     }
@@ -1705,11 +1601,38 @@ namespace Interpreter {
         }
     }
 
+    void commitCompileState(CompilerState* state, ExeBlock* exe, SyntaxNode* target) {
+        exe->bytecodeSize = state->bytecode.logicalPos;
+        exe->bytecode = (uint8_t*) alloc(alc, Arena::getFlatSize(&state->bytecode), 1);
+        Arena::flatCopy(&state->bytecode, exe->bytecode);
+
+        exe->localsSize = state->locals.logicalPos;
+        exe->locals = (vmword*) alloc(alc, Arena::getFlatSize(&state->locals), state->maxAlign);
+        memset(exe->locals, 0, exe->localsSize * sizeof(vmword));
+        Arena::flatCopy(&state->locals, (uint8_t*) exe->locals);
+
+        exe->rawDataSize = state->rawData.logicalPos;
+        exe->rawData = (uint8_t*) alloc(alc, Arena::getFlatSize(&state->rawData), 1);
+        Arena::flatCopy(&state->rawData, exe->rawData);
+
+        exe->node = target;
+        exe->localsInfoMap = OrderedDict::tightCopy(&state->localsInfoMap);
+
+        exe->linesSize = state->lines.size;
+        exe->lines = (LineInfo*) alloc(alc, exe->linesSize * sizeof(LineInfo));
+        memcpy(exe->lines, state->lines.buffer, exe->linesSize * sizeof(LineInfo));
+
+        exe->fixedSize = state->fixedSize;
+        exe->defaultArgsSize = state->defaultArgsSize;
+    }
+
     Err::Err compile(CompilerState* state, Function* fcn) {
         Err::Err err;
 
         if (!fcn->exe) {
             fcn->exe = (ExeBlock*) alloc(alc, sizeof(ExeBlock));
+        } else {
+            return Err::OK;
         }
 
         fcn->exe->argMappingsCount = fcn->prototype.inArgCount;
@@ -1762,37 +1685,13 @@ namespace Interpreter {
         }
 
         commitLineInfo(state);
-
-        fcn->exe->bytecodeSize = state->bytecode.logicalPos;
-        fcn->exe->bytecode = (uint8_t*) alloc(alc, Arena::getFlatSize(&state->bytecode), 1);
-        Arena::flatCopy(&state->bytecode, fcn->exe->bytecode);
-
-        fcn->exe->localsSize = state->locals.logicalPos;
-        fcn->exe->locals = (vmword*) alloc(alc, Arena::getFlatSize(&state->locals), state->maxAlign);
-        memset(fcn->exe->locals, 0, fcn->exe->localsSize * sizeof(vmword));
-        Arena::flatCopy(&state->locals, (uint8_t*) fcn->exe->locals);
-
-        fcn->exe->rawDataSize = state->rawData.logicalPos;
-        fcn->exe->rawData = (uint8_t*) alloc(alc, Arena::getFlatSize(&state->rawData), 1);
-        Arena::flatCopy(&state->rawData, fcn->exe->rawData);
-
-        fcn->exe->node = fcn;
-        fcn->exe->localsInfoMap = OrderedDict::tightCopy(&state->localsInfoMap);
-
-        fcn->exe->linesSize = state->lines.size;
-        fcn->exe->lines = (LineInfo*) alloc(alc, fcn->exe->linesSize * sizeof(LineInfo));
-        memcpy(fcn->exe->lines, state->lines.buffer, fcn->exe->linesSize * sizeof(LineInfo));
-
-        fcn->exe->fixedSize = state->fixedSize;
-        fcn->exe->defaultArgsSize = state->defaultArgsSize;
+        commitCompileState(state, fcn->exe, (SyntaxNode*) fcn);
 
         return Err::OK;
     }
 
     Err::Err compile(CompilerState* state, SyntaxNode* node) {
-
         switch (node->type) {
-
             case NT_SCOPE :
                 return compile(state, (Scope*) node);
             case NT_VARIABLE_DEFINITION :
@@ -1819,8 +1718,6 @@ namespace Interpreter {
                 return compile(state, (SwitchCase*) node);
             case NT_WHILE_LOOP :
                 return compile(state, (WhileLoop*) node);
-            case NT_FOR_LOOP :
-                return compile(state, (ForLoop*) node);
             case NT_LOOP :
                 return compile(state, (Loop*) node);
             case NT_RETURN_STATEMENT :
@@ -1841,9 +1738,44 @@ namespace Interpreter {
             default:
                 // TODO
                 return Err::CANNOT_EVALUATE;
+        }
+    }
 
+    Err::Err compile(CompilerState* state, Reg::Unit* unit) {
+        if (!unit->exe) {
+            unit->exe = (ExeBlock*) alloc(alc, sizeof(ExeBlock));
         }
 
+        unit->exe->argMappingsCount = 0;
+        unit->exe->argMappings = NULL;
+        unit->exe->isVariadic = false;
+
+        state->defaultArgsSize = state->locals.logicalPos;
+
+        // Assumption that if no scope, we are external function
+        if (unit->ast->root) {
+            // We want to process all function beforehand, so we
+            // dont have to handle saving/restoring state at each
+            // nested 'exe block' compilation...
+            // TODO : We may want to create a task group here later...
+            for (int i = 0; i < unit->reg->fcns.size; i++) {
+                Function* inner = *(Function**) DArray::get(&unit->reg->fcns, i);
+                TaskSystem::dispatchCompileTimeBuild(inner, true);
+            }
+
+            Err::Err err = compile(state, unit->ast->root);
+            if (err != Err::OK) return err;
+
+            state->fixedSize += state->locals.logicalPos;
+
+            pushOpcode(state, OC_RET);
+            pushOperand(state, 0);
+        }
+
+        commitLineInfo(state);
+        commitCompileState(state, unit->exe, NULL);
+
+        return Err::OK;
     }
 
 }

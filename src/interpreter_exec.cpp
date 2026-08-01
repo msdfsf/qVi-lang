@@ -2,6 +2,7 @@
 #include "data_types.h"
 #include "dynamic_arena.h"
 #include "interpreter.h"
+#include "registry.h"
 #include "supplement/runtime.h"
 
 #include <cstdint>
@@ -1406,7 +1407,32 @@ namespace Interpreter {
         DROP(sp, ansSize);
         vmword* ans = sp;
 
-        return StackToVariable(ast, (uint8_t*) ans, ansSize, out);
+        return out ? StackToVariable(ast, (uint8_t*)ans, ansSize, out) : Err::OK;
+    }
+
+    Err::Err exec(Reg::Unit* unit) {
+        Function* main = Ast::Node::makeFunction();
+        main->name.buff = NULL;
+        main->name.len = 0;
+        main->exe = unit->exe;
+        main->base.scope = unit->ast->root;
+
+        main->prototype.inArgCount = 0;
+        main->prototype.inArgs = NULL;
+        main->prototype.outArg = NULL;
+
+        Scope mainScopeMem;
+        Ast::Node::init(&mainScopeMem);
+        main->bodyScope = &mainScopeMem;
+        main->bodyScope->base.scope = unit->ast->root;
+
+        Err::Err err = Interpreter::exec(unit->ast, main, NULL, 0, NULL);
+        if (err != Err::OK) {
+            Diag::report(unit->ast, nullptr, Err::UNEXPECTED_ERROR,
+                Diag::Format { "Runtime error during top-level execution." });
+        }
+
+        return Err::OK;
     }
 
 }

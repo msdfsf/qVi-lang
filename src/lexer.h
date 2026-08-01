@@ -88,7 +88,6 @@ namespace Lex {
     static const char* KWS_UNION = "union";
     static const char* KWS_IF = "if";
     static const char* KWS_ELSE = "else";
-    static const char* KWS_FOR = "for";
     static const char* KWS_WHILE = "while";
     static const char* KWS_LOOP = "loop";
     static const char* KWS_WHEN = "when";
@@ -110,7 +109,7 @@ namespace Lex {
     static const char* KWS_TRUE = "true";
     static const char* KWS_FALSE = "false";
     static const char* KWS_AS = "as";
-    static const char* KWS_TO = "to";
+    static const char* KWS_BY = "by";
     static const char* KWS_NULL = "null";
 
     static const char* CDS_NONE = "none";
@@ -145,7 +144,6 @@ namespace Lex {
         KWS_UNION,
         KWS_IF,
         KWS_ELSE,
-        KWS_FOR,
         KWS_WHILE,
         KWS_LOOP,
         KWS_WHEN,
@@ -167,7 +165,7 @@ namespace Lex {
         KWS_TRUE,
         KWS_FALSE,
         KWS_AS,
-        KWS_TO,
+        KWS_BY,
         KWS_NULL,
     };
 
@@ -176,61 +174,59 @@ namespace Lex {
         CDS_TEST,
     };
 
-    constexpr int KW_TABLE_SIZE = 107;
+    constexpr int KW_TABLE_SIZE = 83;
     constexpr std::array<int, KW_TABLE_SIZE> makeKeywordTable() {
-
         std::array<int, KW_TABLE_SIZE> table = {};
 
-        table[7] = KW_IF;
-        table[9] = KW_INT;
-        table[11] = KW_FCN;
-        table[13] = KW_ALLOC;
-        table[16] = KW_NULL;
-        table[17] = KW_IMPORT;
-        table[18] = KW_BREAK;
-        table[19] = KW_CATCH;
-        table[20] = KW_NAMESPACE;
+        table[0] = KW_CATCH;
+        table[1] = KW_AUTON;
+        table[7] = KW_FALSE;
+        table[8] = KW_CASE;
+        table[11] = KW_CONTINUE;
+        table[13] = KW_FROM;
+        table[14] = KW_ALLOC;
+        table[15] = KW_U16;
+        table[16] = KW_ELSE;
+        table[17] = KW_UNION;
+        table[18] = KW_ENUM;
+        table[19] = KW_I8;
         table[21] = KW_CONST;
-        table[23] = KW_I64;
-        table[25] = KW_CASE;
-        table[29] = KW_I32;
-        table[31] = KW_DEF;
-        table[32] = KW_STRUCT;
-        table[35] = KW_LOOP;
-        table[36] = KW_U8;
-        table[37] = KW_U64;
-        table[41] = KW_AUTON;
-        table[42] = KW_CONTINUE;
-        table[43] = KW_U32;
-        table[47] = KW_WHEN;
-        table[50] = KW_WHILE;
-        table[52] = KW_TRUE;
-        table[55] = KW_FREE;
-        table[58] = KW_TO;
-        table[60] = KW_GOTO;
-        table[67] = KW_EMBED;
-        table[68] = KW_I8;
-        table[69] = KW_RETURN;
-        table[72] = KW_FROM;
-        table[73] = KW_F64;
-        table[74] = KW_I16;
-        table[77] = KW_AS;
-        table[79] = KW_F32;
-        table[84] = KW_FALSE;
-        table[87] = KW_USING;
-        table[88] = KW_U16;
-        table[90] = KW_FOR;
-        table[93] = KW_MUTON;
-        table[95] = KW_UNION;
-        table[97] = KW_ELSE;
-        table[102] = KW_ENUM;
-        table[103] = KW_VOID;
-        table[104] = KW_SCOPE;
-        table[105] = KW_ERROR;
+        table[22] = KW_MUTON;
+        table[23] = KW_FREE;
+        table[26] = KW_WHILE;
+        table[27] = KW_SCOPE;
+        table[28] = KW_GOTO;
+        table[31] = KW_I16;
+        table[34] = KW_WHEN;
+        table[36] = KW_EMBED;
+        table[37] = KW_DEF;
+        table[38] = KW_INT;
+        table[40] = KW_BY;
+        table[47] = KW_BREAK;
+        table[48] = KW_NULL;
+        table[50] = KW_LOOP;
+        table[51] = KW_ERROR;
+        table[52] = KW_I32;
+        table[53] = KW_U64;
+        table[54] = KW_I64;
+        table[56] = KW_U8;
+        table[57] = KW_NAMESPACE;
+        table[59] = KW_USING;
+        table[60] = KW_STRUCT;
+        table[61] = KW_AS;
+        table[62] = KW_FCN;
+        table[63] = KW_F32;
+        table[69] = KW_VOID;
+        table[72] = KW_U32;
+        table[73] = KW_IF;
+        table[77] = KW_TRUE;
+        table[78] = KW_IMPORT;
+        table[81] = KW_RETURN;
+        table[82] = KW_F64;
 
         return table;
+    }
 
-    };
     constexpr auto keywordTable = makeKeywordTable();
 
     constexpr int CD_TABLE_SIZE = 1;
@@ -308,6 +304,7 @@ namespace Lex {
     constexpr TokenKind TK_ARRAY_BEGIN = TK_OP_SUBSCRIPT;
     constexpr TokenKind TK_THE_REST = TK_OP_CONCATENATION;
     constexpr TokenKind TK_SLICE = TK_STATEMENT_BEGIN;
+    constexpr TokenKind TK_RANGE = TK_STATEMENT_BEGIN;
 
     // CAUTION: Keyword enum must be aligned with
     //          corresponding token representations
@@ -336,7 +333,6 @@ namespace Lex {
         TD_KW_UNION,
         TD_KW_IF,
         TD_KW_ELSE,
-        TD_KW_FOR,
         TD_KW_WHILE,
         TD_KW_LOOP,
         TD_KW_WHEN,
@@ -358,7 +354,7 @@ namespace Lex {
         TD_KW_TRUE,
         TD_KW_FALSE,
         TD_KW_AS,
-        TD_KW_TO,
+        TD_KW_BY,
         TD_KW_NULL,
 
         TD_CD_BEGIN,

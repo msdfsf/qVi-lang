@@ -79,6 +79,7 @@
 #include "globals.h"
 #include "keywords.h"
 #include "lexer.h"
+#include "logger.h"
 #include "operators.h"
 #include "string.h"
 #include "syntax.h"
@@ -99,6 +100,10 @@ namespace Parser {
         // Recovery inside a scope
         // Looking for starting keywords or '}'
         ST_SCOPE,
+
+        // Recovery to the start of execution block
+        // Looking for ':', '{'
+        ST_SEEK_BLOCK_BEGIN,
 
         ST_FCN_NAME,
         ST_FCN_SCOPE_BEGIN,
@@ -150,55 +155,27 @@ namespace Parser {
     // === Error related stuff
     //
 
-    inline void errorBuffInit(ParseContext* ctx) {
-        Arena::init(&ctx->errBuff, 128);
-    }
-
-    inline void errorBuffRelease(ParseContext* ctx) {
-        Arena::release(&ctx->errBuff);
-    }
-
-    inline void errorBuffClear(ParseContext* ctx) {
-        Arena::clear(&ctx->errBuff);
-    }
-
-    inline void errorBuffPush(ParseContext* ctx, const char* const str) {
-        const size_t strSize = cstrlen(str);
-        char* buff = (char*) Arena::push(&ctx->errBuff, strSize);
-        memcpy(buff + 1, str, strSize);
-    }
-
-    inline void tokenToErrorBuff(ParseContext* ctx, Lex::TokenKind token) {
-
+    inline void logToken(Lex::TokenKind token) {
         const char* const str = Lex::toStr(token);
-        const size_t strSize = cstrlen(str);
-
-        char* buff = (char*) Arena::push(&ctx->errBuff, 2 + strSize);
-
-        buff[0] = '\'';
-        memcpy(buff + 1, str, strSize);
-        buff[strSize + 1] = '\'';
-
+        Logger::write("'");
+        Logger::write(str, cstrlen(str));
+        Logger::write("'");
     }
 
     // returns 'true' if any token was added to the buffer
-    inline bool endTokenToErrorBuff(ParseContext* ctx, End end) {
-
+    inline bool logEndToken(ParseContext* ctx, End end) {
         if (end.a != Lex::TK_NONE) {
-            tokenToErrorBuff(ctx, end.a);
+            logToken(end.a);
         }
 
         if (end.b != Lex::TK_NONE) {
             if (end.a != Lex::TK_NONE) {
-                char* buff = (char*) Arena::push(&ctx->errBuff, 2);
-                buff[0] = ',';
-                buff[1] = ' ';
+                Logger::write(", ");
             }
-            tokenToErrorBuff(ctx, end.b);
+            logToken(end.b);
         }
 
         return (end.a != Lex::TK_NONE || end.b != Lex::TK_NONE);
-
     }
 
 
@@ -267,7 +244,6 @@ namespace Parser {
 
         memset(ctx, 0, sizeof(ParseContext));
 
-        errorBuffInit(ctx);
         DArray::init(&ctx->nodeStack, 1024, sizeof(void*));
         DArray::init(&ctx->defStack, 1024, sizeof(void*));
     }
@@ -275,7 +251,6 @@ namespace Parser {
     void release(ParseContext* ctx) {
         Lex::release();
 
-        errorBuffRelease(ctx);
         DArray::release(&ctx->nodeStack);
         DArray::release(&ctx->defStack);
         freeSpanStamp(ctx->fileSpan);
@@ -379,6 +354,10 @@ namespace Parser {
             case ST_SCOPE: {
                 return Lex::syncToken(span, Lex::TK_KEYWORD, Lex::TK_SCOPE_END);
             }
+
+            case ST_SEEK_BLOCK_BEGIN: {
+                return Lex::syncToken(span, Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN);
+            }
         }
     }
 
@@ -419,9 +398,17 @@ namespace Parser {
                 }
 
                 case Lex::TK_SCOPE_BEGIN : {
-                    Scope* currentScope = ctx->currentScope;
+                    Scope* scope = Ast::Node::makeScope();
+                    scope->base.scope = currentScope;
 
+                    ctx->currentScope = scope;
                     token = parseScope(ctx, &lspan, SC_COMMON, SE_DEFAULT);
+                    ctx->currentScope = currentScope;
+
+                    if (type == SC_GLOBAL) {
+                        DArray::push(&ctx->nodeStack, (void**) &scope);
+                    }
+
                     break;
                 }
 
@@ -739,6 +726,7 @@ namespace Parser {
             def->dtype = Ast::Node::makeQualifiedName();
             def->dtype->buff = dtypeName.buff;
             def->dtype->len = dtypeName.len;
+            def->dtype->span = getSpanStamp(span);
 
             DArray::push(&ctx->unit->reg->customDataTypesReferences, &def);
         } else if (type == Type::DT_FUNCTION) {
@@ -916,13 +904,18 @@ namespace Parser {
 
         } else {
 
-            errorBuffClear(ctx);
-            if (endTokenToErrorBuff(ctx, endToken)) {
-                errorBuffPush(ctx, ", ");
-            }
-            tokenToErrorBuff(ctx, Lex::TK_EQUAL);
+            Logger::logNoFlush(
+                { .level = Logger::ERROR, .tag = ctx->unit->ast->tag },
+                "Unexpected token!", span
+            );
 
-            Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, ctx->errBuff);
+            Logger::write("Following tokens expected: ");
+            if (logEndToken(ctx, endToken)) {
+                Logger::write(", ");
+            }
+            logToken(Lex::TK_EQUAL);
+
+            Diag::commit(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL);
             return sync(span, SyncType::ST_GLOBAL);
 
         }
@@ -963,6 +956,9 @@ namespace Parser {
             DArray::push(&ctx->defStack, &def);
             DArray::push(&ctx->nodeStack, &def);
             DArray::push(&ctx->unit->reg->variableDefinitions, &def);
+
+            def->base.scope = ctx->currentScope;
+            def->var->base.scope = ctx->currentScope;
         }
 
         setDefinitionIdx(ctx, (SyntaxNode*)def->var);
@@ -1022,6 +1018,7 @@ namespace Parser {
                     var->base.span = getSpanStamp(&lspan);
                     var->name.buff = tokenVal.str->buff;
                     var->name.len = tokenVal.str->len;
+                    var->name.span = var->base.span;
                     DArray::push(&ctx->nodeStack, &var);
 
                 } else {
@@ -1112,6 +1109,7 @@ namespace Parser {
                 varDef->dtype = Ast::Node::makeQualifiedName();
                 varDef->dtype->buff = tokenVal.str->buff;
                 varDef->dtype->len = tokenVal.str->len;
+                varDef->dtype->span = getSpanStamp(span);
 
             } else if (token.kind == Lex::TK_KEYWORD) {
 
@@ -1136,6 +1134,7 @@ namespace Parser {
                 if (outVar->def) {
                     varDef->dtype = Ast::Node::makeQualifiedName();
                     varDef->dtype = outVar->def->dtype;
+                    varDef->dtype->span = getSpanStamp(span);
                 }
 
                 span->end = startPos;
@@ -1313,8 +1312,6 @@ namespace Parser {
                 return parseIfStatement(ctx, span);
             case KW_WHEN:
                 return parseSwitchStatement(ctx, span);
-            case KW_FOR:
-                return parseForLoop(ctx, span);
             case KW_WHILE:
                 return parseWhileLoop(ctx, span);
             case KW_GOTO:
@@ -1330,7 +1327,7 @@ namespace Parser {
             case KW_BREAK:
                 return parseBreakStatement(ctx, span);
             case KW_LOOP:
-                return parseForEachLoop(ctx, span);
+                return parseLoop(ctx, span);
             case KW_NAMESPACE:
                 return parseNamespace(ctx, span);
             case KW_ALLOC:
@@ -1429,6 +1426,15 @@ namespace Parser {
         // TODO : twice here?
         assignId(&fcn->name.id, &ctx->varId);
 
+        ctx->currentFunction = fcn;
+
+        Scope* currentScope = ctx->currentScope;
+
+        Scope* paramScope = Ast::Node::makeScope();
+        paramScope->base.scope = ctx->currentScope;
+
+
+
         token = Lex::nextToken(&lspan);
         if (token.kind != Lex::TK_PARENTHESIS_BEGIN) {
             if (token.kind == Lex::TK_SCOPE_BEGIN) goto fcnParseScope;
@@ -1441,7 +1447,10 @@ namespace Parser {
         }
 
         // parse input
+        ctx->currentScope = paramScope;
+
         csmark = markStack(&ctx->nodeStack);
+        dsmark = markStack(&ctx->defStack);
         while (1) {
             token = Lex::nextToken(&lspan, &tokenVal);
             if (token.kind == Lex::TK_PARENTHESIS_END) break;
@@ -1457,6 +1466,7 @@ namespace Parser {
             if (token.kind == Lex::TK_PARENTHESIS_END) break;
         }
         fcn->prototype.inArgs = (VariableDefinition**) commitStack(&ctx->nodeStack, csmark, &fcn->prototype.inArgCount);
+        paramScope->definitions = commitStack(&ctx->defStack, dsmark, &paramScope->definitionCount);
 
         // [using 'Error Set']
         token = Lex::nextToken(&lspan, &tokenVal);
@@ -1477,8 +1487,13 @@ namespace Parser {
         if (token.kind != Lex::TK_ARROW) {
             if (token.kind == Lex::TK_SCOPE_BEGIN) goto fcnParseScope;
 
+            // function signature only allowed for 'foreign' functions
+            if (token.kind == Lex::TK_STATEMENT_END && ctx->foreignContext) {
+                goto defer;
+            }
+
             // LOOK AT : maybe better name for this situation, something like "unexpected char sequence"
-            Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL, "'->' expected\n");
+            Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL, "'->'");
             token = sync(&lspan, { Lex::TK_ARROW }, { Lex::TK_SCOPE_BEGIN });
             if (token.kind == Lex::TK_SCOPE_BEGIN) goto fcnParseScope;
         }
@@ -1511,24 +1526,23 @@ namespace Parser {
                 DArray::push(&ctx->defStack, &fcn->prototype.inArgs[i]);
             }
 
-            const ScopeEnd scopeEnd = (ScopeEnd)(token.kind == Lex::TK_STATEMENT_BEGIN);
-            Scope* currentScope = ctx->currentScope;
-            currentScope->base.flags |= IS_UNORDERED;
+            const ScopeEnd scopeEnd = (ScopeEnd) (token.kind == Lex::TK_STATEMENT_BEGIN);
 
-            Scope* newScope = Ast::Node::makeScope();
-            newScope->base.scope = ctx->currentScope;
+            Scope* bodyScope = Ast::Node::makeScope();
+            bodyScope->base.scope = paramScope;
 
-            ctx->currentScope = newScope;
+            ctx->currentScope = bodyScope;
             token = parseScope(ctx, &lspan, SC_COMMON, scopeEnd, dsmark);
-            ctx->currentScope = currentScope;
 
-            ctx->currentFunction = NULL;
-
-            fcn->bodyScope = newScope;
+            fcn->bodyScope = bodyScope;
         }
 
-        defer:
+    defer:
+        ctx->currentScope = currentScope;
+        ctx->currentFunction = NULL;
+
         DArray::push(&ctx->nodeStack, &fcn);
+        DArray::push(&ctx->defStack, &fcn);
         DArray::push(&ctx->unit->reg->fcns, &fcn);
 
         fcn->base.span = finalizeSpan(&lspan, span);
@@ -1627,12 +1641,12 @@ namespace Parser {
         branch->scopeCount = count + hasElse;
         branch->expressionCount = count;
         for (int i = 0; i < count; i++) {
-            branch->scopes[2 * i] = (Scope*) buffer[2 * i];
-            branch->expressions[2 * i + 1] = (Variable*) buffer[2 * i + 1];
+            branch->scopes[i] = (Scope*) buffer[2 * i];
+            branch->expressions[i + 1] = (Variable*) buffer[2 * i + 1];
         }
 
         if (hasElse) {
-            branch->scopes[2 * count] = (Scope*) buffer[2 * count];
+            branch->scopes[count] = (Scope*) buffer[2 * count];
         }
 
         ctx->nodeStack.size = smark;
@@ -1720,8 +1734,8 @@ namespace Parser {
         switchCase->caseCount = count;
         switchCase->caseExpCount = count;
         for (int i = 0; i < count; i++) {
-            switchCase->cases[2 * i] = (Scope*) buffer[2 * i];
-            switchCase->casesExp[2 * i + 1] = (Variable*) buffer[2 * i + 1];
+            switchCase->cases[i] = (Scope*) buffer[2 * i];
+            switchCase->casesExp[i] = (Variable*) buffer[2 * i + 1];
         }
 
         ctx->nodeStack.size = smark;
@@ -1730,89 +1744,6 @@ namespace Parser {
         DArray::push(&ctx->nodeStack, &switchCase);
 
         switchCase->base.span = finalizeSpan(&lspan, span);
-        return token;
-    }
-
-    // TODO: TODO
-    Lex::Token parseForLoop(ParseContext* ctx, Span* const span) {
-        SpanEx lspan = markSpanStart(span);
-
-        // TODO : something about empty expressions, maybe make them null or something...
-        Lex::Token token;
-        Lex::TokenValue tokenVal;
-
-        ForLoop* loop = Ast::Node::makeForLoop();
-
-        Scope* currentScope = ctx->currentScope;
-        Scope* outerScope = Ast::Node::makeScope();
-        outerScope->base.scope = ctx->currentScope;
-        ctx->currentScope = outerScope;
-        // setParentIdx(outerScope);
-
-        Variable* initEx = Ast::Node::makeVariable();
-        initEx->base.scope = outerScope;
-
-        // can be either variable initialization or expression
-        Pos startPos = lspan.end;
-        token = Lex::nextToken(&lspan, &tokenVal);
-        if (token.kind == Lex::TK_KEYWORD && Lex::isDtype(token)) {
-            token = parseVariableDefinition(ctx, &lspan, { token, tokenVal }, End { Lex::TK_STATEMENT_END }, INCLUDE_TO_SCOPE, NULL);
-        } else {
-            token = parseExpression(ctx, &lspan, initEx, startPos, End { Lex::TK_STATEMENT_END }, EMPTY_EXPRESSION_ALLOWED);
-        }
-
-        Scope* bodyScope = Ast::Node::makeScope();
-        bodyScope->base.scope = outerScope;
-        // setParentIdx(bodyScope);
-
-        Variable* conditionEx = Ast::Node::makeVariable();
-        conditionEx->base.scope = outerScope;
-
-        token = parseExpression(ctx, &lspan, conditionEx, INVALID_POS, End { Lex::TK_STATEMENT_END }, EMPTY_EXPRESSION_ALLOWED);
-
-        // can be assignment
-        Variable* actionEx;
-        ctx->currentScope = outerScope;
-        token = parseExpression(ctx, &lspan, &actionEx, INVALID_POS, End { Lex::TK_SCOPE_BEGIN, Lex::TK_STATEMENT_BEGIN }, EMPTY_EXPRESSION_ALLOWED);
-        ctx->currentScope = currentScope;
-
-        SyntaxNode* tmpLoop = ctx->currentLoop;
-        ctx->currentLoop = (SyntaxNode*) loop;
-
-        if (token.kind == Lex::TK_SCOPE_BEGIN || token.kind == Lex::TK_STATEMENT_BEGIN) {
-            ScopeEnd scopeEnd = (ScopeEnd) (token.kind == Lex::TK_STATEMENT_BEGIN);
-            ctx->currentScope = bodyScope;
-            token = parseScope(ctx, &lspan, SC_COMMON, scopeEnd);
-            ctx->currentScope = currentScope;
-            if (token.kind < 0) return token;
-        } else {
-            Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL);
-            return Lex::toToken(Err::UNEXPECTED_SYMBOL);
-        }
-
-        ctx->currentLoop = tmpLoop;
-
-        loop->base.scope = ctx->currentScope;
-        loop->bodyScope = bodyScope;
-        loop->initEx = initEx;
-        loop->conditionEx = conditionEx;
-        loop->actionEx = actionEx;
-
-        //DArray::push(&outerScope->children, &loop);
-        //DArray::push(&scope->children, &outerScope);
-
-        if (conditionEx->expression) {
-            DArray::push(&ctx->unit->reg->branchExpressions, &conditionEx);
-        } else {
-            /* TODO: may lead to something...
-            loop->conditionEx = NULL;
-            freeSpanStamp(conditionEx->base.span);
-            delete conditionEx;
-            */
-        }
-
-        ctx->currentScope = currentScope;
-        loop->base.span = finalizeSpan(&lspan, span);
         return token;
     }
 
@@ -1854,95 +1785,182 @@ namespace Parser {
         return token;
     }
 
-    Lex::Token parseForEachLoop(ParseContext* ctx, Span* const span) {
+    // [ index ], index := <Variable> | <Assignment> | <Definition>
+    Lex::Token parseIndexAlias(ParseContext* ctx, Span* span, SyntaxNode** out) {
+        Lex::TokenValue tokenVal;
+        Lex::Token token = Lex::nextToken(span, &tokenVal);
+
+        // As we allow only integer types, we can simplify checks
+        if (Type::isInt(Lex::toDtype(token))) {
+            token = parseVariableDefinition(ctx, span, { token, tokenVal },
+                End { Lex::TK_ARRAY_END }, INCLUDE_TO_SCOPE, (VariableDefinition**) out);
+        } else if (
+            token.kind == Lex::TK_IDENTIFIER &&
+            Lex::peekToken(span).kind == Lex::TK_EQUAL
+        ) {
+            // TODO : assuming assignment
+            token = parseVariableAssignment(ctx, span, INVALID_POS, { Lex::TK_ARRAY_END });
+        } else {
+            // assuming variable
+            Variable* var = Ast::Node::makeVariable();
+            var->name = *((QualifiedName*) tokenVal.any);
+            var->name.span = getSpanStamp(span);
+            var->base.span = getSpanStamp(span);
+            var->base.scope = ctx->currentScope;
+
+            *out = (SyntaxNode*) var;
+
+            token = Lex::nextToken(span);
+        }
+
+        return token;
+    }
+
+    // start? : end, start := <Expression>, end := <Expression>
+    // returns if outLeftExp not null, returns 'start' expression if its not a range
+    Lex::Token parseRange(ParseContext* ctx, Span* span, Range** range, Variable** outLeftExp) {
+        Lex::Token token;
+
+        Variable* leftExp;
+        token = parseExpression(ctx, span, &leftExp, INVALID_POS, { Lex::TK_RANGE },
+            ALLOW_UNEXPECTED_END | EMPTY_EXPRESSION_ALLOWED);
+
+        if (token.kind != Lex::TK_RANGE) {
+            *outLeftExp = leftExp;
+            return token;
+        }
+
+        Variable* rightExp;
+        token = parseExpression(ctx, span, &rightExp, INVALID_POS,
+            { Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN }, USE_KEYWORD_AS_END);
+
+        *range = (Range*) alloc(alc, sizeof(Range));
+        (*range)->bidx = leftExp;
+        (*range)->eidx = rightExp;
+
+        return token;
+    }
+
+    Lex::Token parseLoop(ParseContext* ctx, Span* const span) {
         SpanEx lspan = markSpanStart(span);
 
         Lex::TokenValue tokenVal;
-        Lex::Token token = Lex::nextToken(span, &tokenVal);
+        Lex::Token token;
 
         Loop* loop = Ast::Node::makeLoop();
 
         Scope* currentScope = ctx->currentScope;
         Scope* outerScope = Ast::Node::makeScope();
         outerScope->base.scope = ctx->currentScope;
-        // setParentIdx(outerScope);
-
         loop->base.scope = outerScope;
 
-        Variable* newVar;
-        token = parseExpression(ctx, &lspan, &newVar, INVALID_POS, End { Lex::TK_STATEMENT_END }, USE_KEYWORD_AS_END);
+        ctx->currentScope = outerScope;
+        StackMark smark = markStack(&ctx->nodeStack);
+        StackMark dmark = markStack(&ctx->defStack);
 
-        // TODO
-        newVar->base.span = getSpanStamp(span);
+        // TODO : check to a function
+        End end = { Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN };
 
-        if (token.kind != Lex::TK_KEYWORD && token.detail != KW_USING) {
-            Diag::report(ctx->unit->ast, span, Err::INVALID_VARIABLE_NAME, "Variable name is matching key word name!");
+        // Arg - optional - Range or Array expression
+        Variable* array = NULL;
+        token = parseRange(ctx, &lspan, &loop->arg.range, &array);
+        if (array) {
+            loop->arg.array = array;
+            loop->arg.kind = Loop::Arg::ARRAY;
+        } else {
+            loop->arg.kind = Loop::Arg::RANGE;
         }
 
-        loop->array = newVar;
+        if (isEndToken(token, end))               goto parseBody;
+        else if (Lex::isKeyword(token, KW_AS))    goto parseAs;
+        else if (Lex::isKeyword(token, KW_BY))    goto parseBy;
+        else if (Lex::isKeyword(token, KW_WHILE)) goto parseWhile;
+        else goto errorExit;
 
-        // var or var def (only basic dtypes)
-        token = Lex::nextToken(&lspan, &tokenVal);
-        if (token.kind == Lex::TK_KEYWORD) {
-            // var def
-
-            if (!Lex::isInt((Keyword) token.detail)) {
-                Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, "Only integral datatypes allowed!");
+        parseAs: {
+            // As - optional - name[index]
+            token = Lex::nextToken(&lspan, &tokenVal);
+            if (token.kind != Lex::TK_IDENTIFIER && token.kind != Lex::TK_ARRAY_BEGIN) {
+                Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL,
+                    "alias name or '[' index definition after 'as'."
+                );
+                // TODO : new sync type
+                token = sync(&lspan, ST_SCOPE);
+                goto exit;
             }
 
-            loop->idx = NULL;
-            loop->idxDef = Ast::Node::makeVariableDefinition();
-            loop->idxDef->var->value.typeKind = Lex::toDtype(token);
+            if (token.kind == Lex::TK_IDENTIFIER) {
+                // name
+                loop->array = Ast::Node::makeVariableDefinition();
 
-            ctx->currentScope = outerScope;
-            token = parseVariableDefinition(ctx, &lspan, { token, tokenVal }, End { Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN }, INCLUDE_TO_SCOPE | USE_KEYWORD_AS_END, &(loop->idxDef));
+                Variable* alias = loop->array->var;
+                alias->base.scope = outerScope;
+                // TODO : function identifierToQualifiedName
+                alias->name.buff = tokenVal.str->buff;
+                alias->name.len = tokenVal.str->len;
+
+                token = Lex::nextToken(&lspan, &tokenVal);
+            }
+
+            if (token.kind == Lex::TK_ARRAY_BEGIN) {
+                // [index]
+                parseIndexAlias(ctx, &lspan, (SyntaxNode**) &loop->index);
+                token = Lex::nextToken(&lspan, &tokenVal);
+            }
+
+
+            if (isEndToken(token, end))               goto parseBody;
+            else if (Lex::isKeyword(token, KW_BY))    goto parseBy;
+            else if (Lex::isKeyword(token, KW_WHILE)) goto parseWhile;
+            else goto errorExit;
+        }
+
+        parseBy: {
+            // By - optional - Integer expression
+            token = parseExpression(ctx, &lspan, &loop->stride, INVALID_POS, end, USE_KEYWORD_AS_END);
+
+            if (isEndToken(token, end))               goto parseBody;
+            else if (Lex::isKeyword(token, KW_WHILE)) goto parseBy;
+            else goto errorExit;
+        }
+
+        parseWhile: {
+            // While - optional - Bool expression
+            token = parseExpression(ctx, &lspan, &loop->condition, INVALID_POS, end);
+        }
+
+        parseBody: {
+            outerScope->children = commitStack(&ctx->nodeStack, smark, &outerScope->childrenCount);
+            outerScope->definitions = commitStack(&ctx->defStack, dmark, &outerScope->definitionCount);
+
+            loop->bodyScope = Ast::Node::makeScope();
+            loop->bodyScope->base.scope = loop->base.scope;
+
+            SyntaxNode* tmpLoop = ctx->currentLoop;
+            ctx->currentLoop = (SyntaxNode*) loop;
+
+            ScopeEnd scopeEnd = (ScopeEnd) (token.kind == Lex::TK_STATEMENT_BEGIN);
+            ctx->currentScope = loop->bodyScope;
+            token = parseScope(ctx, &lspan, SC_COMMON, scopeEnd);
             ctx->currentScope = currentScope;
 
-            if (loop->idxDef->var->expression == NULL) {
-                loop->idxDef->var->value.hasValue = 1;
-                loop->idxDef->var->value.i64 = 0;
-                loop->idxDef->var->value.typeKind = Type::DT_INT;
-            }
+            ctx->currentLoop = tmpLoop;
 
-        } else {
-            // var
+            DArray::push(&ctx->unit->reg->loops, &loop);
+            DArray::push(&ctx->nodeStack, &loop);
 
-            loop->idxDef = NULL;
-            loop->idx = Ast::Node::makeVariable();
-            loop->idx->base.scope = outerScope;
-            loop->idx->name.buff = tokenVal.str->buff;
-            loop->idx->name.len = tokenVal.str->len;
-
-            token = Lex::nextToken(&lspan);
-
+            loop->base.span = finalizeSpan(&lspan, span);
         }
 
-        // maybe 'to <var>'
-        if (Lex::isKeyword(token, KW_TO)) {
-            token = parseExpression(ctx, &lspan, loop->to, INVALID_POS, End { Lex::TK_SCOPE_BEGIN, Lex::TK_STATEMENT_BEGIN });
-            loop->to->base.scope = outerScope;
+        exit: {
+            return token;
         }
 
-        loop->bodyScope = Ast::Node::makeScope();
-        loop->bodyScope->base.scope = loop->base.scope;
-        // setParentIdx(loop->bodyScope);
-
-        SyntaxNode* tmpLoop = ctx->currentLoop;
-        ctx->currentLoop = (SyntaxNode*) loop;
-
-        ScopeEnd scopeEnd = (ScopeEnd) (token.kind == Lex::TK_STATEMENT_BEGIN);
-
-        ctx->currentScope = loop->bodyScope;
-        token = parseScope(ctx, &lspan, SC_COMMON, scopeEnd);
-        ctx->currentScope = currentScope;
-
-        ctx->currentLoop = tmpLoop;
-
-        DArray::push(&ctx->unit->reg->loops, &loop);
-        DArray::push(&ctx->nodeStack, &loop);
-
-        loop->base.span = finalizeSpan(&lspan, span);
-        return token;
+        errorExit: {
+            Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL,
+                "Unexpected token '%.*s' in loop declaration.", tokenVal.str->len, tokenVal.str->buff);
+            return sync(&lspan, ST_SEEK_BLOCK_BEGIN);
+        }
     }
 
     Lex::Token parseGotoStatement(ParseContext* ctx, Span* const span) {
@@ -2045,6 +2063,7 @@ namespace Parser {
         ctx->currentScope = currentScope;
 
         DArray::push(&ctx->nodeStack, &nsc);
+        DArray::push(&ctx->defStack, &nsc);
 
         nsc->scope.base.span = finalizeSpan(&lspan, span);
         return token;
@@ -2159,6 +2178,7 @@ namespace Parser {
 
         Enumerator* enumerator = Ast::Node::makeEnumerator();
         enumerator->dtype = Type::DT_INT;
+        enumerator->base.scope = ctx->currentScope;
 
         token = Lex::nextToken(&lspan, &tokenVal);
         if (token.kind != Lex::TK_IDENTIFIER) {
@@ -2248,6 +2268,7 @@ namespace Parser {
 
         DArray::push(&ctx->unit->reg->enumerators, &enumerator);
         DArray::push(&ctx->nodeStack, &enumerator);
+        DArray::push(&ctx->defStack, &enumerator);
 
         enumerator->base.span = finalizeSpan(&lspan, span);
 
@@ -2255,7 +2276,6 @@ namespace Parser {
     }
 
     Lex::Token parseTypeDefinition(ParseContext* ctx, Span* const span) {
-
         SpanEx lspan = markSpanStart(span);
 
         Lex::TokenValue tokenVal;
@@ -2263,7 +2283,6 @@ namespace Parser {
 
         Keyword keyword;
         if (token.kind == Lex::TK_KEYWORD) {
-
             if (token.detail == Lex::TD_KW_UNION || token.detail == Lex::TD_KW_STRUCT) {
                 keyword = (Keyword) token.detail;
             } else {
@@ -2272,11 +2291,8 @@ namespace Parser {
             }
 
             token = Lex::nextToken(&lspan);
-
         } else {
-
             keyword = KW_STRUCT;
-
         }
 
         if (token.kind != Lex::TK_IDENTIFIER) {
@@ -2307,7 +2323,6 @@ namespace Parser {
 
         StackMark mark = markStack(&ctx->nodeStack);
         while (1) {
-
             token = Lex::nextToken(&lspan, &tokenVal);
             if (token.kind == Lex::TK_SCOPE_END) break;
 
@@ -2322,17 +2337,16 @@ namespace Parser {
 
             Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL);
             return Lex::toToken(Err::UNEXPECTED_SYMBOL);
-
         }
         typeDef->vars = (Variable**) commitStack(&ctx->nodeStack, mark, &typeDef->varCount);
 
         DArray::push(&ctx->unit->reg->customDataTypes, &typeDef);
         DArray::push(&ctx->nodeStack, &typeDef);
+        DArray::push(&ctx->defStack, &typeDef);
 
         typeDef->base.span = finalizeSpan(&lspan, span);
 
         return token;
-
     }
 
     Lex::Token parseErrorDeclaration(ParseContext* ctx, Span* const span) {
@@ -2748,7 +2762,7 @@ namespace Parser {
         switch (token.kind) {
 
             case Lex::TK_IDENTIFIER: {
-                token = Lex::nextToken(span, &tokenVal);
+                token = Lex::nextToken(span, NULL);
                 if (token.kind == Lex::TK_PARENTHESIS_BEGIN) {
 
                     FunctionCall* call = Ast::Node::makeFunctionCall();
@@ -2761,6 +2775,7 @@ namespace Parser {
                     call->inArgs = (Variable**) commitStack(&ctx->nodeStack, smark, &call->inArgCount);
 
                     call->name = *((QualifiedName*) tokenVal.any);
+                    call->name.span = var->base.span;
 
                     var->value.hasValue = 0;
                     var->expression = (Expression*) call;
@@ -2805,24 +2820,18 @@ namespace Parser {
             }
 
             case Lex::TK_KEYWORD: {
-                if (token.detail == Lex::TD_KW_TRUE) {
+                var->expression = NULL;
+                var->value.hasValue = true;
 
-                    var->value.hasValue = 1;
+                if (token.detail == Lex::TD_KW_TRUE) {
                     var->value.typeKind = Type::DT_BOOL;
                     var->value.u64 = 1;
-
                 } else if (token.detail == Lex::TD_KW_FALSE) {
-
-                    var->value.hasValue = 1;
                     var->value.typeKind = Type::DT_BOOL;
                     var->value.u64 = 0;
-
                 } else if (token.detail == Lex::TD_KW_NULL) {
-
-                    var->value.hasValue = 1;
                     var->value.typeKind = Type::DT_POINTER;
                     var->value.u64 = 0;
-
                 }
 
                 break;
@@ -2834,7 +2843,9 @@ namespace Parser {
             }
 
             case Lex::TK_STRING: {
-                StringInitialization* init = (StringInitialization*) tokenVal.any; // Reg.Node.initStringInitialization();
+                StringInitialization* init = (StringInitialization*) tokenVal.any;
+
+                // Reg.Node.initStringInitialization();
                 // init->rawPtr = tokenVal.str->buff;
                 // init->rawPtrLen = tokenVal.str->len;
 
@@ -2907,15 +2918,11 @@ namespace Parser {
         //       basically this should work just fine while there is no binary
         //       operator with same signature as required closure
         if (prevOp == OP_SUBSCRIPT) {
-
             token = parseExpressionRecursive(ctx, span, var, prevBex, OP_NONE);
 
             if (token.kind == Lex::TK_ARRAY_END) {
-
                 token = nextToken(span, &tokenVal);
-
             } else if (token.kind == Lex::TK_SLICE) {
-
                 Slice* slice = Ast::Node::makeSlice();
 
                 slice->bidx = Ast::Node::makeVariable();
@@ -2926,33 +2933,40 @@ namespace Parser {
                 (*var)->expression = (Expression*) slice;
 
                 if (token.kind != Lex::TK_ARRAY_END) {
-                    tokenToErrorBuff(ctx, Lex::TK_ARRAY_END);
-                    Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, ctx->errBuff);
+                    Logger::logNoFlush(
+                        { .level = Logger::ERROR, .tag = ctx->unit->ast->tag },
+                        "Unexpected token!", span
+                    );
+
+                    Logger::write("Following token expected: ");
+                    logToken(Lex::TK_ARRAY_END);
+
+                    Diag::commit(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL);
                     token = sync(span, { Lex::TK_ARRAY_END });
                 }
 
                 token = nextToken(span, &tokenVal);
-
             } else {
+                Logger::logNoFlush(
+                    { .level = Logger::ERROR, .tag = ctx->unit->ast->tag },
+                    "Unexpected token!", span
+                );
 
-                endTokenToErrorBuff(ctx, { Lex::TK_ARRAY_END, Lex::TK_SLICE });
-                Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, ctx->errBuff);
+                Logger::write("Following tokens expected: ");
+                logEndToken(ctx, { Lex::TK_ARRAY_END, Lex::TK_SLICE });
+
+                Diag::commit(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL);
                 return sync(span, { Lex::TK_ARRAY_END, Lex::TK_SLICE });
-
             }
-
         } else {
             token = parseExpressionNode(ctx, span, *var, prevOp);
         }
 
         if (Lex::isOperator(token)) {
-
             OperatorEnum op = Lex::toBinaryOperator(token);
 
             while (op != OP_NONE) {
-
                 if (prevOp == OP_NONE || operators[prevOp].rank > operators[op].rank) {
-
                     BinaryExpression* bex = Ast::Node::makeBinaryExpression();
                     bex->left = *var;
                     bex->right = Ast::Node::makeVariable();
@@ -2971,20 +2985,13 @@ namespace Parser {
 
                     op = Lex::toBinaryOperator(token);
                     if (op < 0) return token;
-
                 } else {
-
                     prevBex->right = *var;
                     return Lex::toTokenAsBinaryOperator(op);
-
                 }
-
             }
-
         } else {
-
             return token;
-
         }
 
         return token;
@@ -3021,6 +3028,7 @@ namespace Parser {
         }
 
         Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, "Blablbalba");
+        return token;
     }
 
     // meh, but ok for now...

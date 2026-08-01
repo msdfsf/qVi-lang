@@ -6,7 +6,6 @@
 #include "task_system.h"
 #include <cstdarg>
 #include <stdarg.h>
-#include <stdio.h>
 
 
 
@@ -36,7 +35,7 @@ const char* const Err::str(Err code) { switch (code) {
     case INVALID_NUMBER_LITERAL:
         return "Invalid number literal!";
     case INVALID_TYPE_CONVERSION:
-        return "Type conversion between '%s' and '%s' types is invalid!";
+        return "Type conversion between '%.*s' and '%.*s' types is invalid!";
     case MISSING_VARIABLE_NAME:
         return "Variable name is missing!";
     case INVALID_TYPE_UNARY_OPERATOR:
@@ -155,6 +154,12 @@ const char* const Err::str(Err code) { switch (code) {
         return "Symbol not found!";
     case LIBRARY_LOAD_FAILED:
         return "Library load failed!";
+    case INVALID_BREAK_TARGET:
+        return "Invalid 'break' target!";
+    case Err::INVALID_CONTINUE_TARGET:
+        return "Invalid 'continue' target!";
+    case Err::INVALID_RETURN_TARGET:
+        return "Invalid 'return' target!";
     default:
         return "Unknown error!";
 
@@ -239,7 +244,7 @@ namespace Diag {
     void report(AstContext* ctx, Span* span, Severity sev, uint32_t code, const char* const format, va_list args) {
         if constexpr (Config::LOGGING_ENABLED) {
             Logger::Level level = toLoggerLevel(sev);
-            Logger::logNoFlush({ .level = level, .tag = ctx->tag }, format, span, args);
+            Logger::vlogNoFlush({ .level = level, .tag = ctx->tag }, format, span, args);
         }
 
         commit(ctx, span, sev, code);
@@ -290,7 +295,7 @@ namespace Diag {
     }
 
 
-    
+
     void commit(AstContext* ctx, Span* span, Err::Err code) {
         commit(ctx, span, SEV_ERROR, -code);
     }

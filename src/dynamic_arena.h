@@ -50,6 +50,7 @@ namespace Arena {
     Marker getMarker(Container* arena);
     void rollback(Container* arena, Marker marker, bool freeMemory = false);
     void rollback(Container* arena, void* ptr, bool freeMemory = false);
+    void rollback(Container* arena, uint64_t size, bool freeMemory = false);
 
     void clear(Container* arena);
 

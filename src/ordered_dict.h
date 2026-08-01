@@ -7,11 +7,16 @@
 namespace OrderedDict {
 
     enum Flags {
-        COPY_STRINGS = 1,
+        COPY_STRINGS  = 1 << 0,
+        KEY_IS_INDEX  = 1 << 1,
+        KEY_IS_STRING = 1 << 2,
     };
 
     struct Pair {
-        String str;
+        union Key {
+            String   str;
+            uint64_t idx;
+        } key;
         void* data;
     };
 
@@ -24,7 +29,10 @@ namespace OrderedDict {
     void init(Container* dict, size_t initialSize);
 
     void* get(Container* dict, String key);
+    void* get(Container* dict, uint64_t key);
+
     int set(Container* dict, String key, void* dataPtr);
+    int set(Container* dict, uint64_t key, void* dataPtr);
 
     Pair* getNext(Container* dict);
 

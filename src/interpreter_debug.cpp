@@ -8,6 +8,7 @@
 #include "data_types.h"
 #include "globals.h"
 #include "interpreter.h"
+#include "io.h"
 #include "ordered_dict.h"
 #include "syntax.h"
 #include "set.h"
@@ -25,7 +26,7 @@
 
 namespace Interpreter {
 
-    FILE* stream = stdout;
+    thread_local IO::Stream* stream = NULL;
 
     Set::Container functionsSet;
     DArray::Container functionsArray;
@@ -626,25 +627,25 @@ namespace Interpreter {
             case Type::DT_ARRAY: {
                 Array* arr = (Array*) payload;
                 printDtype(arr->base.pointsToKind, arr->base.pointsTo);
-                fputc('[', stream);
+                IO::write(stream, '[');
                 if (arr->length) {
-                    fprintf(stream, "%llu", arr->length->value.u64);
+                    IO::writef(stream, "%llu", arr->length->value.u64);
                 } else {
                     const uint64_t flags = arr->flags;
                     if (flags & IS_CONST) {
-                        fprintf(stream, "const");
+                        IO::write(stream, "const");
                     } else if (flags & IS_EMBEDED) {
-                        fprintf(stream, "embed");
+                        IO::write(stream, "embed");
                     } else {
-                        fprintf(stream, "unknown");
+                        IO::write(stream, "unknown");
                     }
                 }
-                fputc(']', stream);
+                IO::write(stream, ']');
                 break;
             }
 
             default: {
-                fprintf(stream, "%s", toStr(dtypeEnum));
+                IO::writef(stream, "%s", toStr(dtypeEnum));
             }
         }
 
@@ -663,7 +664,7 @@ namespace Interpreter {
             else printf(" ");
         }
 
-        fprintf(stream, "-> ");
+        IO::write(stream, "-> ");
 
         Value* outVal = &fp->outArg->var->value;
         printDtype(outVal->typeKind, outVal->any);
@@ -772,22 +773,18 @@ namespace Interpreter {
             while (offset >= lineEnd) {
                 // TODO: maybe safety size check?
                 LineInfo* line = block->lines + lineIdx;
-                Logger::FlushStream fStream = {
-                    .kind = Logger::FlushStream::FS_C_STREAM,
-                    .cstream = stream
-                };
-                Logger::printSpanStrict(&fStream, &line->span);
+                Logger::printSpanStrict(stream, &line->span);
                 lineEnd = line->ocOffsetEnd;
                 lineIdx++;
             }
 
-            fprintf(stream, AC_DIM "  [%04ld] " AC_RESET, (long) offset);
+            IO::writef(stream, AC_DIM "  [%04ld] " AC_RESET, (long) offset);
 
             Opcode opcode;
             memcpy(&opcode, buffer, sizeof(Opcode));
             buffer += sizeof(Opcode);
 
-            fprintf(stream, "%-15s ", toStr(opcode));
+            IO::writef(stream, "%-15s ", toStr(opcode));
 
             // potential len of the formated output
             // has to be adjusted if colors were used
@@ -1181,31 +1178,35 @@ namespace Interpreter {
 
             // Operands:
             if (idealLen > OPERATOR_WIDTH) {
-                fprintf(stream, "%-*.*s..", OPERATOR_WIDTH - 2, OPERATOR_WIDTH - 2, operandStr);
+                IO::writef(stream, "%-*.*s..", OPERATOR_WIDTH - 2, OPERATOR_WIDTH - 2, operandStr);
             } else {
-                fprintf(stream, "%-*.*s", OPERATOR_WIDTH + idealDif, operandStrSize, operandStr);
+                IO::writef(stream, "%-*.*s", OPERATOR_WIDTH + idealDif, operandStrSize, operandStr);
             }
 
             // Stack changes:
-            fprintf(stream, AC_DIM "  ; [ ");
+            IO::write(stream, AC_DIM "  ; [ ");
 
             if (typeStack.actualSize > DataTypeStack::size) {
                 const uint64_t diff = typeStack.actualSize - DataTypeStack::size;
-                fprintf(stream, "...+%llu more, ", diff);
+                IO::writef(stream, "...+%llu more, ", diff);
             }
 
             uint64_t visibleCount = std::min(typeStack.actualSize, DataTypeStack::size);
             for (uint64_t i = 0; i < visibleCount; i++) {
-                fprintf(stream, "%s%s", toStr((Type::Kind) typeStack.buffer[i]), (i == visibleCount - 1) ? "" : ", ");
+                IO::writef(stream, "%s%s", toStr((Type::Kind) typeStack.buffer[i]), (i == visibleCount - 1) ? "" : ", ");
             }
 
-            fprintf(stream, " ]" AC_RESET "\n");
+            IO::write(stream, " ]" AC_RESET "\n");
 
         }
     }
 
-
+    // TODO : format name column based on max var name length
+    //        or dots .. . make as option with constexpr toggler
+    // TODO : print actual type names instead of DT_CUSTOM
     void printLocals(OrderedDict::Container* dict) {
+        uint64_t maxNameSize = 18;
+        constexpr bool printFullNames = false;
 
         if (dict->pairs.size <= 0) {
             printf("  (no locals)\n");
@@ -1218,14 +1219,21 @@ namespace Interpreter {
         OrderedDict::Pair* first = OrderedDict::getNext(dict);
         OrderedDict::Pair* ptr = first;
 
+        if constexpr (printFullNames) {
+            do {
+                LocalVarInfo* info = (LocalVarInfo*)ptr->data;
+                maxNameSize = max(info->var->name.len, maxNameSize);
+                ptr = OrderedDict::getNext(dict);
+            } while (ptr && ptr != first);
+
+            ptr = first;
+        }
+
         do {
 
             if (!ptr) break;
 
-            uint64_t offset = 0;
-            if (ptr->str.len >= sizeof(uint64_t)) {
-                memcpy(&offset, ptr->str.buff, sizeof(uint64_t));
-            }
+            uint64_t offset = ptr->key.idx;
 
             // offset
             printf("  " AC_DIM "%-8llu" AC_RESET, offset);
@@ -1236,7 +1244,7 @@ namespace Interpreter {
                 continue;
             }
 
-            LocalVarInfo* info = (LocalVarInfo*)ptr->data;
+            LocalVarInfo* info = (LocalVarInfo*) ptr->data;
 
             // size
             printf(" | %-6llu | ", info->size);
@@ -1245,13 +1253,27 @@ namespace Interpreter {
             printf("%-6llu | ", info->align);
 
             // name
-            printf(AC_BOLD_GREEN "%-18.*s " AC_RESET "| ",
-                (int)info->var->name.len,
-                info->var->name.buff);
+            if (printFullNames) {
+                printf(AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
+                    (int) (maxNameSize - info->var->name.len),
+                    (int) info->var->name.len,
+                    info->var->name.buff);
+            } else {
+                if (info->var->name.len > maxNameSize) {
+                    printf(AC_BOLD_GREEN "%.*s.. " AC_RESET "| ",
+                        (int) maxNameSize - 2,
+                        info->var->name.buff);
+                } else {
+                    printf(AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
+                        (int) maxNameSize,
+                        (int) info->var->name.len,
+                        info->var->name.buff);
+                }
+            }
 
             // type
             printDtype(info->var->value.typeKind, info->var->value.any);
-            fputc('\n', stream);
+            IO::write(stream, '\n');
 
             ptr = OrderedDict::getNext(dict);
 
@@ -1337,28 +1359,28 @@ namespace Interpreter {
         }
 
         if (pathLen >= maxPathLen) {
-            fprintf(stream, "...::");
+            IO::write(stream, "...::");
         }
 
         for (int i = 0; i < pathLen; i++) {
             Namespace* nspace = path[i];
-            fprintf(stream, AC_BOLD_WHITE "%.*s::", nspace->name.len, nspace->name.buff);
+            IO::writef(stream, AC_BOLD_WHITE "%.*s::", nspace->name.len, nspace->name.buff);
         }
 
-        fprintf(stream, AC_BOLD_WHITE "%.*s", fcn->name.len, fcn->name.buff);
+        IO::writef(stream, AC_BOLD_WHITE "%.*s", fcn->name.len, fcn->name.buff);
     }
 
     // TODO : better name
     void printFlat(Function* fcn) {
-        fprintf(stream, AC_BOLD AC_MAGENTA "Function: " AC_RESET);
+        IO::write(stream, AC_BOLD AC_MAGENTA "Function: " AC_RESET);
         printFullFunctionName(fcn);
 
-        fprintf(stream, "  ");
+        IO::write(stream, "  ");
         printSignature(fcn);
-        fputc('\n', stream);
+        IO::write(stream, '\n');
 
-        print(fcn->exe);
-        fputc('\n', stream);
+        print(stream, fcn->exe);
+        IO::write(stream, '\n');
     }
 
     // TODO : print improvements
@@ -1368,10 +1390,11 @@ namespace Interpreter {
     //  - maybe literal colors
     //  - maybe preview AC_DIM
     //  - maybe color variables
-    void print(Function* fcn, uint64_t depth) {
+    void print(IO::Stream* s, Function* fcn, uint64_t depth) {
+        stream = s;
         collectFunctions(fcn->exe, 1, depth);
 
-        fprintf(stream, AC_DIM "[ROOT]\n" AC_RESET);
+        IO::write(stream, AC_DIM "[ROOT]\n" AC_RESET);
         printFlat(fcn);
         for (int i = 0; i < functionsArray.size; i++) {
             Function* fcn = *(Function**) DArray::get(&functionsArray, i);
@@ -1379,19 +1402,24 @@ namespace Interpreter {
         }
     }
 
-    void print(ExeBlock* block) {
+    void print(IO::Stream* s, ExeBlock* block) {
+        stream = s;
         if (block->rawDataSize > 0) {
-            fprintf(stream, AC_BOLD_CYAN "Raw data:\n" AC_RESET);
+            IO::write(stream, AC_BOLD_CYAN "Raw data:\n" AC_RESET);
             printConstants(block->rawData, block->rawDataSize);
         }
 
-        fprintf(stream, AC_BOLD_CYAN "Locals:\n" AC_RESET);
+        IO::write(stream, AC_BOLD_CYAN "Locals:\n" AC_RESET);
         printLocals(block->localsInfoMap);
 
-        fprintf(stream, "\n");
+        IO::write(stream, '\n');
 
-        fprintf(stream, AC_BOLD_CYAN "Bytecode:\n" AC_RESET);
+        IO::write(stream, AC_BOLD_CYAN "Bytecode:\n" AC_RESET);
         printBytecode(block, 1, 0);
+    }
+
+    void print(IO::Stream* stream, Reg::Unit* unit) {
+        print(stream, unit->exe);
     }
 
 }

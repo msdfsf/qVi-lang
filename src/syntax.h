@@ -45,7 +45,6 @@ struct Function;
 struct Branch;
 struct SwitchCase;
 struct WhileLoop;
-struct ForLoop;
 struct Loop;
 struct ErrorSet;
 struct ReturnStatement;
@@ -69,6 +68,7 @@ struct Catch;
 struct Alloc;
 struct Free;
 struct Using;
+struct Range;
 
 struct ScopeName;
 
@@ -116,7 +116,6 @@ enum NodeType : AllocType {
     NT_BRANCH,
     NT_SWITCH_CASE,
     NT_WHILE_LOOP,
-    NT_FOR_LOOP,
     NT_LOOP,
     NT_RETURN_STATEMENT,
     NT_CONTINUE_STATEMENT,
@@ -199,6 +198,23 @@ enum AcquireNodeReturn {
 struct QualifiedName : INamedEx {
     uint16_t pathSize;
     INamed* path;
+};
+
+struct SymbolIndexEntry {
+    String name;
+
+    enum {
+        SINGLE,
+        OVERLOAD
+    } kind;
+
+    union {
+        SyntaxNode* node;
+        struct {
+            SyntaxNode** data;
+            uint32_t     count;
+        } overloads;
+    };
 };
 
 struct SymbolIndex {
@@ -520,26 +536,36 @@ struct WhileLoop {
     Variable*  expression;
 };
 
-// TODO : Deprecated
-struct ForLoop {
-    SyntaxNode base;
-
-    Scope* bodyScope;
-
-    Variable* initEx;
-    Variable* conditionEx;
-    Variable* actionEx;
-};
-
 struct Loop {
     SyntaxNode base;
 
     Scope* bodyScope;
 
-    Variable* array;
-    Variable* idx;
-    VariableDefinition* idxDef;
-    Variable* to;
+    // Argument
+    struct Arg {
+        union {
+            Variable* array;
+            Range*    range;
+        };
+
+        enum Kind {
+            ARRAY,
+            RANGE,
+        } kind;
+    } arg;
+
+    // As Clause
+    VariableDefinition* array;
+    union {
+        Variable*           var;
+        VariableDefinition* def;
+    } index;
+
+    // By Clause
+    Variable* stride;
+
+    // While Clause
+    Variable* condition;
 };
 
 struct ReturnStatement {
@@ -554,10 +580,12 @@ struct ReturnStatement {
 
 struct ContinueStatement {
     SyntaxNode base;
+    SyntaxNode* target;
 };
 
 struct BreakStatement {
     SyntaxNode base;
+    SyntaxNode* target;
 };
 
 struct GotoStatement {
@@ -612,8 +640,19 @@ struct Array {
 
     Variable* length;
     int flags;
+
+    Type::TypeInfoEx* type;
 };
 
+struct Range {
+    Variable* bidx;
+    Variable* eidx;
+};
+
+// TODO : later reuse range here,
+// but couple it with a rewrite of adding
+// range as expression, like a way array initialization
+// for now its simpler to not mess around with.
 struct Slice {
     Expression base;
 
@@ -663,6 +702,8 @@ struct ImportStatement {
 
     // root scope of the imports file
     // Scope* root;
+
+    Extern::LibraryHandle lib;
 };
 
 
@@ -775,7 +816,6 @@ namespace Ast {
         void init(Branch* node);
         void init(SwitchCase* node);
         void init(WhileLoop* node);
-        void init(ForLoop* node);
         void init(Loop* node);
         void init(ReturnStatement* node);
         void init(ContinueStatement* node);
@@ -820,7 +860,6 @@ namespace Ast {
         Branch*             makeBranch();
         SwitchCase*         makeSwitchCase();
         WhileLoop*          makeWhileLoop();
-        ForLoop*            makeForLoop();
         Loop*               makeLoop();
         ReturnStatement*    makeReturnStatement();
         ContinueStatement*  makeContinueStatement();
@@ -865,7 +904,6 @@ namespace Ast {
         Branch*             copy(Branch* node);
         SwitchCase*         copy(SwitchCase* node);
         WhileLoop*          copy(WhileLoop* node);
-        ForLoop*            copy(ForLoop* node);
         Loop*               copy(Loop* node);
         ReturnStatement*    copy(ReturnStatement* node);
         ContinueStatement*  copy(ContinueStatement* node);
@@ -890,6 +928,8 @@ namespace Ast {
         const char* str(ExpressionType type);
 
         String getName(SyntaxNode* node);
+        void   getName(SyntaxNode* node, String** str);
+
         Span* getNameSpan(SyntaxNode* node);
     };
 
@@ -993,7 +1033,6 @@ constexpr int nodeTypeSize[AT_COUNT] = {
     sizeof(Branch),
     sizeof(SwitchCase),
     sizeof(WhileLoop),
-    sizeof(ForLoop),
     sizeof(Loop),
     sizeof(ReturnStatement),
     sizeof(ContinueStatement),
