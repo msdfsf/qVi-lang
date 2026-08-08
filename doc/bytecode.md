@@ -29,7 +29,7 @@ The interpreter is a stack-based virtual machine utilizing a fixed-width operand
 The fundamental unit of the operand stack and therefore locals is the **64-bit Word** aka **Slot**.
 *   **Normalization:** All primitive values (integers, floats, pointers) regardless of their size occupy exactly one word.
 *   **Zero-Padding:** Any unused word's bit (e.g., the upper 32 bits of an `i32` or `f32`) **must be zeroed**. This ensures human-readability during debugging, simplifies serialization, and allows for bitwise optimization.
-*   **Minimum Logic Width:** While compiler itself operates on types such as `i8` or `i16`, VM doesn't support types under 32 bits, and therefore they have to be promoted during compilation.
+*   **Minimum Logic Width:** The VM operates on sub-32-bit types via the typed `get`/`set`/`load`/`store`/`push` opcodes. Operations on those values normalize to a full Word (per the rules above) once on the stack; the typed opcode tracks how many bytes to actually transfer between the slot and the destination Word.
 
 ### 2.5 Memory Model
 1.  **Bytecode Stream:** A packed, unaligned stream of raw bytes. Instructions and their immediates are stored without padding to minimize the executable block size.
@@ -81,10 +81,29 @@ The **Frame Pointer (FP)** is anchored at the first Required Argument. To mainta
 For variadic calls, the VM performs a runtime "shift," moving the vararg section lower in memory to insert the Scope Variables template. This trade-off ensures that non-variadic calls—which are significantly more frequent, especially, during compile-time execution—remain trivial and high-performance.
 
 ### 4.3 Compiler Metadata
-Each executable block (`ExeBlock`) records specific metadata to facilitate frame management:
-*   **`locals` Template:** An array containing the initial values for Default Arguments and Scope Locals, initialized via a single `memcpy` during the call sequence.
-*   **`fixedSize`:** The total number of Words required for the Fixed Section.
-*   **`defaultArgsSize`:** The specific size of the Default Arguments segment.
+Each executable block (*`ExeBlock`*) records specific metadata to facilitate frame management:
+*   **locals template:** A byte array containing the initial values for Default Arguments and Scope Locals, copied into the new frame during the call sequence.
+*   **fixed size:** Byte size of the Fixed Section (Required Arguments + Default Arguments + Scope Variables).
+*   **default-args size:** Byte size of the Default Arguments segment.
+*   **locals size:** Byte size of the locals template (= default-args size + Scope Variables size).
+*   **block FP / "live FP":** Runtime-only state. When a block is currently being executed, this is the absolute address of its frame base (i.e. the address of its first Required Argument). Otherwise it is invalid (i.e null). This is the value the `*_global` family (§4.5) consults when it resolves a non-local reference into an actual slot address.
+
+### 4.5 Non-Local Variable Access
+
+A variable defined inside an executable block lives in that block's Locals Block at a fixed local offset. From the perspective of any *other* block (e.g. a nested function), such a variable is a **non-local**. The instruction family that accesses non-locals (§5.2) carries a *reference to the variable's definition* (i.e. to the AST/IR node that originally declared the variable — the same node the compiler used to allocate the slot), plus the local offset of the slot inside the owning block. That single reference is enough for the VM to resolve either of the two cases that arise at access time:
+
+* **Owner is live:** The block the definition belongs to is currently executing — its frame is on the operand stack. The non-local has a real, addressable slot, and reads/writes observe its current state, including prior mutations within the same CTE run. This is how a function inside a unit references a unit-level variable: the unit's block is the outermost frame and stays live for the whole compile.
+* **Owner is not live:** No frame exists. The engine refuses to guess which state of the variable to capture. The variable may still be usable at access time if its definition already carries a resolved value (e.g. through `embed`, where the expression was evaluated as part of compilation and attached to the definition). In that case the VM loads the value directly from the definition; otherwise it is a runtime error.
+
+Why the operand is the *definition* rather than the *owning block*: in the "owner is live" case the VM needs the owning block and the offset, both of which are easy to extract from the definition (the definition already records which block it lives in and at which offset). In the "owner is not live" case the VM needs the resolved value — which lives on the definition itself, since `embed` evaluation attaches the result there. Carrying the definition reference lets one and the same instruction cover both paths; carrying the owning block instead would force the VM to walk back from block metadata to the variable's value in the not-live case, a direction the metadata does not cheaply support.
+
+These reduce to a single rule:
+
+> A non-local may be referenced from *other* block if the block it lives in is live on the operand stack at the moment of access. Access goes through the dedicated `get_global` / `set_global` instruction family described in §5.2, which carries a reference to the variable's definition plus its local offset in the owning block. If the owning block happens not to be part of the current execution, the access may still succeed if the definition carries a resolved value (e.g. via `embed`); otherwise it is a runtime error.
+
+**Operand encoding.** The cross-block operand carries a *reference to the variable's definition* and the *local offset* of the slot inside the owning block. The reference can be represented however a particular implementation chooses, as long as it lets the VM reach the definition's owning block (for the live case) *and* the resolved value attached to that definition (for the not-live case).
+
+The current VM uses a raw pointer to the definition node, since definitions are AST nodes that persist for the whole compilation and carry both a back-pointer to their owning block and a place for the resolved value. This, as in case with call, doesn't compromise a serializable form (for on-disk caching) as definition have natural id in form of fully qualified name.
 
 ---
 
@@ -136,42 +155,93 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 * **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
 * **Description:** Reads a literal from the instruction stream. Small integers are sign/zero-extended to a 64-bit Word. `f32` is stored in the lower bits with the upper bits zeroed.
 
-**`push_blob`**  `u64: size, u64: offset`
+**`push_blob`**  `u64: offset, u64: size`
 * **Stack:** `... -> ..., data: Word(s)`  
-* **Description:** Copies `size` bytes from the **Constant Pool** (Raw Data Block) at the specified `offset` onto the stack.
+* **Description:** Copies `size` bytes from the **Locals Block** at `FP + offset` onto the stack. The destination is rounded up to a whole number of Words.
 
 **`pop`**
 * **Stack:** `..., val: Word -> ...`  
 * **Description:** Removes the top Word from the stack.
 
-**`pop_n`**  `u64: size_in_bytes`
-* **Stack:** `..., data: [n bytes] -> ...`  
-* **Description:** Discards a specific number of bytes from the stack. Used to clean up large structs or arrays.
+**`pop_n`**  `u64: word_count`
+* **Stack:** `..., data: [n words] -> ...`  
+* **Description:** Discards the top `word_count` Words from the stack. Used to clean up large structs or arrays.
 
 **`dup`**
 * **Stack:** `..., val: Word -> ..., val: Word, val: Word`  
 * **Description:** Duplicates the top Word on the stack.
 
-**`crop`** `u64: blob_offset_words`, `u64: member_offset_bytes`, `u64: member_size_bytes`
+**`swap`**
+* **Stack:** `..., a: Word, b: Word -> ..., b: Word, a: Word`  
+* **Description:** Swaps the top two Words on the stack.
+
+**`crop`** `u64: blob_size_words`, `u64: member_offset_bytes`, `u64: member_size_bytes`
 * **Stack:** `..., blob -> ..., member`
-* **Description:** Extracts a byte-packed member from a word-aligned blob on the stack.
+* **Description:** Extracts a byte-packed member from a word-aligned blob occupying the top `blob_size_words` Words. Reads the member at byte offset `member_offset_bytes` within the blob, copies `member_size_bytes` to the blob base, zero-pads to a whole number of Words behind it, and shrinks the stack to that many Words.
+
+**`grow`** `u64: size_bytes`
+* **Stack:** `... -> ..., [uninitialized space]`
+* **Description:** Advances SP by `ceil(size_bytes / 8)` Words. The new slots are uninitialized. Used to reserve stack space for a result before writing into it.
+
+**`nop`**
+* **Description:** No-op. Does not modify state.
+
+**`halt`**
+* **Description:** Terminates the top-level execution loop. Used as the sentinel "return target" of the outermost fake call frame.
+
 ---
 
 ### 5.2 Memory Access
 
 **`get_{type}`**  `u64: fp_offset`
 * **Stack:** `... -> ..., value: Word`  
-* **Types:** `i8, u8, i16, u16, i32, u32, i64, ptr`  
-* **Description:** Reads a value from the Locals Block at `FP + fp_offset`.
+* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
+* **Description:** Reads a value from the Locals Block at `FP + fp_offset` and pushes it as a normalized Word (small integers sign/zero-extended, upper bits zeroed).
+
+**`get_blob`**  `u64: size, u64: offset`
+* **Stack:** `... -> ..., data: Word(s)`  
+* **Description:** Reads `size` bytes from the Locals Block at `FP + offset` and grows the stack by `ceil(size / 8)` Words to hold them.
 
 **`set_{type}`**  `u64: fp_offset`
 * **Stack:** `..., value: Word -> ...`  
-* **Types:** `i8, u8, i16, u16, i32, u32, i64, ptr`  
-* **Description:** Pops a Word and writes it to the Locals Block at `FP + fp_offset`.
+* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
+* **Description:** Pops a Word and writes the low `sizeof(type)` bytes of it to the Locals Block at `FP + fp_offset`.
+
+**`set_blob`**  `u64: size, u64: offset`
+* **Stack:** `..., data: Word(s) -> ...`  
+* **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and writes them to the Locals Block at `FP + offset`.
+
+**`get_global_{type}`**  `u64: var_def_ref, u64: local_offset`
+* **Stack:** `... -> ..., value: Word`  
+* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
+* **Description:** Cross-block counterpart of `get_{type}`. Resolves the variable's definition from `var_def_ref` (see §4.5). Two paths:
+
+  * If the definition's owning block is live on the operand stack, read the value from that block's Locals Block at `block_FP + local_offset` (where `block_FP` is the owning block's frame-base address — see §4.3) and push it as a normalized Word. Reads observe the variable's current state in the surrounding execution flow, including prior mutations within the same CTE run.
+  * Otherwise, if the definition carries a resolved value (e.g. via `embed`), load that value directly from the definition and push it as a normalized Word.
+  * Otherwise it is a runtime error.
+
+  See §4.5 for the rules and the operand-encoding discussion.
+
+**`get_global_blob`**  `u64: var_def_ref, u64: size, u64: local_offset`
+* **Stack:** `... -> ..., data: Word(s)`  
+* **Description:** Cross-block counterpart of `get_blob`. Same resolution paths as `get_global_{type}`: if the owning block is live, reads `size` bytes from `block_FP + local_offset`; otherwise loads a blob-typed resolved value from the definition. Grows the stack by `ceil(size / 8)` Words to hold the result. Liveness and encoding rules per §4.5.
+
+**`set_global_{type}`**  `u64: var_def_ref, u64: local_offset`
+* **Stack:** `..., value: Word -> ...`  
+* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
+* **Description:** Pops a Word and writes the low `sizeof(type)` bytes of it to a non-local slot at `block_FP + local_offset` of the definition's owning block. Symmetric to `get_global_{type}`; the owning block must be live at the moment of access (writing a non-local outside a live execution frame is a runtime error, never an `embed`-fallback — `embed` fixes the value once during validation, runtime mutation is meaningless). See §4.5 for liveness, access semantics, and operand-encoding discussion.
+
+**`set_global_blob`**  `u64: var_def_ref, u64: size, u64: local_offset`
+* **Stack:** `..., data: Word(s) -> ...`  
+* **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and writes them to a non-local slot at `block_FP + local_offset` of the definition's owning block. Owning block must be live. Symmetric to `get_global_blob`.
 
 **`lea`**  `u64: fp_offset`
 * **Stack:** `... -> ..., address: ptr`  
 * **Description:** Calculates the absolute host address of a local variable (`FP + fp_offset`) and pushes it.
+
+**`lea_global`**  `u64: var_def_ref, u64: local_offset`
+* **Stack:** `... -> ..., address: ptr`  
+* **Description:** Calculates the absolute host address `block_FP + local_offset` of a non-local slot and pushes it. The definition's owning block must be live at the moment of access (no `embed`-fallback — taking the address of a value that has no frame to live in is meaningless). Used when the address of a non-local is needed — e.g. to form a slice `(ptr, length)` referencing a global vector, to pass a non-local by-reference to a foreign (C-ABI) function, or as the base for a subsequent `load_{type}`/`store_{type}` sequence. See §4.5.
 
 **`lea_const`** `u64: pool_offset`
 *   **Stack:** `... -> ..., address: ptr`
@@ -179,11 +249,13 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 
 **`load_{type}`**
 * **Stack:** `..., address: ptr -> ..., value: Word`  
-* **Description:** Dereferences a host pointer and pushes the value found at that address.
+* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr, blob`  
+* **Description:** Dereferences `address`, reads `sizeof(type)` bytes (for `blob`, the entire Word range up to the next aligned slot), and pushes the value as a normalized Word.
 
 **`store_{type}`**
 * **Stack:** `..., address: ptr, value: Word -> ...`  
-* **Description:** Writes `value` to the memory address specified by `address`.
+* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr, blob`  
+* **Description:** Writes `value` (low `sizeof(type)` bytes for primitives; `ceil(size/8)` Words for `blob`) to the memory address specified by `address`.
 
 ---
 
@@ -194,13 +266,61 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 * **Types:** `i32, u32, i64, u64, f32, f64`  
 * **Description:** Performs standard binary arithmetic. 32-bit integer operations wrap on overflow.
 
+**`mod_{type}`**
+* **Stack:** `..., a: Word, b: Word -> ..., (a mod b): Word`  
+* **Types:** `i32, u32, i64, u64`  
+* **Description:** Integer remainder. Undefined behaviour on division by zero.
+
+**`neg_{type}`**
+* **Stack:** `..., val: Word -> ..., (-val): Word`  
+* **Types:** `i32, u32, i64, u64, f32, f64`  
+* **Description:** Arithmetic negation of the top Word.
+
+**`and_{type}` / `or_{type}` / `xor_{type}`**
+* **Stack:** `..., a: Word, b: Word -> ..., (a OP b): Word`  
+* **Types:** `i32, u32, i64, u64`  
+* **Description:** Bitwise logic on integers.
+
+**`shl_{type}` / `shr_{type}`**
+* **Stack:** `..., a: Word, b: Word -> ..., (a << b) / (a >> b): Word`  
+* **Types:** `i32, u32, i64, u64` (shift right is arithmetic on signed types, logical on unsigned)  
+* **Description:** Bitwise shift by the count in the top Word.
+
+**`eq_{type}` / `ne_{type}`**
+* **Stack:** `..., a: Word, b: Word -> ..., (a == b) : Word(0|1)`  
+* **Types:** `i32, i64, f32, f64` (unsigned uses the signed variant; comparison is bit-equivalent for equality on integers)  
+* **Description:** Equality / inequality. Pushes a normalized boolean.
+
+**`lt_{type}` / `le_{type}` / `gt_{type}` / `ge_{type}`**
+* **Stack:** `..., a: Word, b: Word -> ..., result: Word(0|1)`  
+* **Types:** `i32, u32, i64, u64, f32, f64`  
+* **Description:** Ordered comparisons. Signed vs. unsigned is selected by the type suffix.
+
 **`bool_{type}`**
 * **Stack:** `..., val: Word -> ..., result: Word(0|1)`  
+* **Types:** `i32, i64, f32, f64` (the `i32` and `i64` variants also serve unsigned and `ptr`)  
 * **Description:** Logic normalization. Pushes `1` if `val != 0`, otherwise `0`.
 
 **`not_bool`**
 * **Stack:** `..., val: Word(0|1) -> ..., !val: Word(0|1)`  
 * **Description:** Standard logical NOT for normalized booleans.
+
+**`sext_32_to_64`**
+* **Stack:** `..., val: Word -> ..., val: Word`  
+* **Description:** Sign-extends the low 32 bits of the top Word to a full 64-bit value.
+
+**`zext_32_to_64`**
+* **Stack:** `..., val: Word -> ..., val: Word`  
+* **Description:** Zero-extends the low 32 bits of the top Word to a full 64-bit value.
+
+**`trunc_64_to_32`**
+* **Stack:** `..., val: Word -> ..., val: Word`  
+* **Description:** Truncates the top Word to its low 32 bits. Upper 32 bits are zeroed.
+
+**`cast_{src}_to_{dst}`**
+* **Stack:** `..., val: Word -> ..., (dst)val: Word`  
+* **Pairs:** any combination of `i32, u32, i64, u64, f32, f64` where the conversion is meaningful (int↔int width/reinterpret, int↔float, float↔float width). Int-to-int of the same width is a no-op reinterpret, the others perform a value conversion.  
+* **Description:** Numeric cast between primitive kinds. Pushes the converted value as a normalized Word.
 
 **`ptr_idx`**  `u64: stride`
 * **Stack:** `..., base_ptr: ptr, index: i64 -> ..., (base_ptr + index * stride): ptr`  
@@ -213,17 +333,23 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 **`jump`**  `u64: offset`
 * **Description:** Sets the Instruction Pointer to `code_base + offset`.
 
-**`jump_if_false`**  `u64: offset`
-* **Stack:** `..., condition: Word -> ...`  
-* **Description:** Jumps if `condition == 0`.
+**`jump_if_true`** / **`jump_if_false`**  `u64: offset`
+* **Stack:** `..., condition: Word -> ...` (the condition is popped)  
+* **Description:** Pops `condition` and jumps to `code_base + offset` if it is non-zero (`jump_if_true`) or zero (`jump_if_false`).
 
-**`call`**  `u64: function_ptr`
-* **Stack:** `... -> ..., saved_ip: Word, saved_fp: Word`  
-* **Description:** Sets up a new frame. Points `FP` to the first argument, initializes the `locals` template, and shifts varargs if present.
+**`call`**  `u64: function_ref, u64: vararg_word_count`
+* **Stack:** `..., [args] -> ..., [result]`  
+* **Description:** Invokes a function. `function_ref` identifies the target in whatever way the implementation uses to address functions (the current VM bakes a raw pointer to the function's metadata). The second operand is the size, in Words, of the vararg segment the caller pushed (0 for non-variadic; `2 * vararg_count + 1` for variadic — one `{TypeInfo*, Value}` pair per vararg, plus the trailing count Word).
+
+  Dispatch performs the frame setup described in §4.4: it sets up the new FP, copies the callee's locals template into the Scope Locals region, writes the saved `IP` and saved `FP` into the two reserved linkage Words below the arguments, and (for variadic calls) shifts the vararg section down to keep the frame contiguous. Required-arg and default-arg slots are *not* reinitialised — they are populated by the caller. The callee becomes the currently-executing block for the duration of the call.
+
+  This opcode is also used for foreign (C-ABI) functions; on a foreign target, the operand-stack side effects described above may be skipped, arguments are marshalled to their ABI representation, and the foreign function is invoked directly.
 
 **`ret`**  `u64: return_size`
 * **Stack:** `..., [return_data] -> [return_data], ...`  
-* **Description:** Restores caller's `IP` and `FP`. If `return_size > 0`, the data is moved from the callee's top-of-stack to the caller's top-of-stack.
+* **Description:** Restores the caller's `IP` and `FP` from the linkage Words below `FP`. If `return_size > 0`, the top `return_size` bytes of the callee's stack are moved to the caller's top-of-stack (growing the caller's stack first if necessary) so the result appears in the caller's frame. The two-Word linkage slots are not popped separately — they are below the new `FP`, lying in the caller's reservation.
+
+  Implementations may keep per-block "live-FP" bookkeeping up to date inside the `call` sequence; doing so on `ret` is optional *only when no in-flight non-local access can target the just-returned-from block* (see §4.5). Languages that allow nested function definitions — i.e. where the just-returned-from block may itself be a target of a pending non-local access — must save and restore that bookkeeping across the call/return boundary. Today's language does not, so the current implementation skips it on `ret`.
 
 ---
 
@@ -237,71 +363,73 @@ A tricky part in vector execution is buffer management. While variables provide 
 To support this workflow, all vector instructions are designed to be **chainable**, leaving the resulting slice (pointer and length) on the operand stack for the next operation. Every vector expression concludes with any specialized finalization instruction which signals to the VM that it can safely reset or reclaim its temporary buffers and, depending on the instruction, pop the last slice.
 
 #### Descriptor
-Each vector instruction carries a 64-bit immediate descriptor. The layout is as follows (ordered from most significant byte to least):
+Each vector instruction reads a 64-bit immediate descriptor. The layout (bit positions within the 64-bit word, LSB-first):
 
-*   **Byte 8 (MSB):** `DataType` Enum (e.g., `U8`, `I32`, `F64`).
-*   **Byte 7:** `Operator` Enum (e.g., `ADD`, `MUL`, `CAST`).
-*   **Byte 6:** Source 'DataType' Enum, useful e.g. for casting
-*   **Byte 5:** Reserved
-*   **Byte 4-1:** Flags (3 bits used):
-    *   `bit 8`: `isDestTmp` — If set, the result is stored in the temporary buffer.
-    *   `bit 7`: `isLeftTmp` — If set, the left source operand is in the temporary buffer.
-    *   `bit 6`: `isRightTmp` — If set, the right source operand is in the temporary buffer.
+*   **Bits 0-7:** `DataType` Enum (e.g., `U8`, `I32`, `F64`) — destination / element type.
+*   **Bits 8-15:** `Operator` Enum (e.g., `ADD`, `MUL`, `CAST`).
+*   **Bits 16-23:** Source `DataType` Enum (used e.g. for casts).
+*   **Bits 24-31:** Reserved.
+*   **Bits 32-63:** Flags field (a 32-bit region), with the following bits meaningfully used *within that field*:
+    *   `bit 29` (`isRightTmp`): If set, the right source operand is in a VM-managed temporary buffer.
+    *   `bit 30` (`isLeftTmp`): If set, the left source operand is in a VM-managed temporary buffer.
+    *   `bit 31` (`isDestTmp`): If set, the result is stored in a VM-managed temporary buffer.
 
 #### Instruction Set
 
-**`vec_vv`**
+Unless noted, each `vec_*` instruction below carries two immediate Words after its opcode byte: the descriptor described above, and a `dest` value. When the `isDestTmp` flag is clear, `dest` is interpreted as a Locals Block offset (`FP + dest`); otherwise the result is allocated from the VM's temporary buffer pool (and `dest` is unused).
+
+**`vec_vv`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., ptr_src1, length1, ptr_src2, length2 -> ..., res_ptr, length`
 *   **Description:** Performs `dest[i] = src1[i] OP src2[i]`.
 
-**`vec_vs`**
+**`vec_vs`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., ptr_src, scalar_val, length -> ..., res_ptr, length`
 *   **Description:** Performs `dest[i] = src[i] OP scalar_val`.
 
-**`vec_sv`**
+**`vec_sv`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., scalar_val, ptr_src, length -> ..., res_ptr, length`
 *   **Description:** Performs `dest[i] = scalar_val OP src[i]`.
 
-**`vec_unary`**
+**`vec_unary`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., ptr_src, length -> ..., res_ptr, length`
 *   **Description:** Applies a unary operator to every element in `src`.
 
-**`vec_cast`**
+**`vec_cast`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., ptr_src, length -> ..., res_ptr, length`
-*   **Description:** Casts all elements from the source type to the type specified in the descriptor.
+*   **Description:** Casts all elements from the source type (read from the descriptor's source-`DataType` byte) to the type in the descriptor's `DataType` byte.
 
-**`vec_load_indirect`**
+**`vec_load_indirect`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., ptr_src_ptrs, length -> ..., res_ptr, length`
-*   **Description:** Gather: Reads values from the list of pointers in `src_ptrs` and populates `dest`.
+*   **Description:** Gather: reads values from the list of pointers in `src_ptrs` and writes them into `dest`.
 
-**`vec_store_indirect`** `Descriptor, DestInfo`
+**`vec_store_indirect`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., ptr_dest_ptrs, ptr_src, length -> ..., res_ptr, length`
-*   **Description:** Scatter: Writes values from `src` to the various addresses in `dest_ptrs`.
+*   **Description:** Scatter: writes values from `src` to the various addresses in `dest_ptrs`.
 
-**`vec_cat`**
+**`vec_cat`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., ptr_src1, len1, ptr_src2, len2 -> ..., res_ptr, add(len1, len2)`
-*   **Description:** Concatenates two arrays.
+*   **Description:** Concatenates two arrays into `dest`.
 
-**`vec_copy`**
+**`vec_copy`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., ptr_src, length -> ..., res_ptr, length`
-*   **Description:** Bulk memory copy.
+*   **Description:** Bulk memory copy of `length` bytes from `src` to `dest`.
 
-**`vec_fill`**
+**`vec_fill`**  `u64: descriptor, u64: dest`
 *   **Stack:** `..., value, length -> ..., res_ptr, length`
-*   **Description:** Fill array with the value.
+*   **Description:** Fills `dest` with `length` copies of `value`.
 
-**`vec_alloc`**
-*   **Stack:** `..., size -> ptr, ...`
-*   **Description:** Allocates at least size bytes and returns a valid pointer. 
+**`vec_alloc`**  `u64: stride`
+*   **Stack:** `..., count -> ..., ptr`
+*   **Description:** Allocates `count * stride` bytes of VM-managed scratch memory and pushes the resulting pointer. (Note that the result is a bare `ptr`, not a slice — no length is pushed.)
 
 **`vec_to_ref`**
 *   **Stack:** `..., data_ptr, length -> ..., ref_ptr`  
-*   **Description:** Pushes a single-word reference to a slice metadata block. This is primarily used to pass arrays into **variadic functions** or **Any** types, which require values to be exactly one Word wide.
+*   **Description:** Allocates a slice descriptor (`{ptr, len}`) in the VM's scratch memory, populates it from the top slice, and pushes a single-Word pointer to that slice descriptor. Used to pass arrays into **variadic functions** or **`Any`** types, which require values to be exactly one Word wide.
 
 **`vec_reset`**
 *   **Stack:** `..., res_ptr, length -> ...`
-*   **Description:** Signals the end of a vector expression and clears the result from the stack.
+*   **Description:** Signals the end of a vector expression: pops the top slice and reclaims the VM's scratch memory.
 
 **`vec_mem_reset`**
 *   **Stack:** `... -> ...`  
-*   **Description:** **Memory-Only Reset**. Signals the VM to reclaim all memory in the **Temporary Scratch Arena** without modifying the operand stack. Use this when the vector result has already been transformed (e.g., after `vec_to_ref`) or consumed, but the underlying temporary memory still needs to be cleared.
+*   **Description:** **Memory-Only Reset.** Reclaims the VM's scratch memory without modifying the operand stack. Use when the vector result has already been transformed (e.g. after `vec_to_ref`) or consumed, but the underlying temporary memory still needs to be cleared.
