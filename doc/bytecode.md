@@ -90,20 +90,26 @@ Each executable block (*`ExeBlock`*) records specific metadata to facilitate fra
 
 ### 4.5 Non-Local Variable Access
 
-A variable defined inside an executable block lives in that block's Locals Block at a fixed local offset. From the perspective of any *other* block (e.g. a nested function), such a variable is a **non-local**. The instruction family that accesses non-locals (§5.2) carries a *reference to the variable's definition* (i.e. to the AST/IR node that originally declared the variable — the same node the compiler used to allocate the slot), plus the local offset of the slot inside the owning block. That single reference is enough for the VM to resolve either of the two cases that arise at access time:
+A variable defined inside an executable block lives in that block's Locals Block at a fixed local offset that the compiler records *on the variable's definition* during single-pass compilation of the owning block. From the perspective of any *other* block (e.g. a nested function), this variable is a **non-local**. The instruction family that accesses non-locals (§5.2) therefore carries exactly one operand: a *reference to the variable's definition* — the same AST/IR node the compiler used to allocate the slot, and which already carries:
 
-* **Owner is live:** The block the definition belongs to is currently executing — its frame is on the operand stack. The non-local has a real, addressable slot, and reads/writes observe its current state, including prior mutations within the same CTE run. This is how a function inside a unit references a unit-level variable: the unit's block is the outermost frame and stays live for the whole compile.
-* **Owner is not live:** No frame exists. The engine refuses to guess which state of the variable to capture. The variable may still be usable at access time if its definition already carries a resolved value (e.g. through `embed`, where the expression was evaluated as part of compilation and attached to the definition). In that case the VM loads the value directly from the definition; otherwise it is a runtime error.
+* its owning block, and
+* the local offset of its slot inside that block, and
+* (optionally) a resolved value attached during validation/`embed` evaluation.
 
-Why the operand is the *definition* rather than the *owning block*: in the "owner is live" case the VM needs the owning block and the offset, both of which are easy to extract from the definition (the definition already records which block it lives in and at which offset). In the "owner is not live" case the VM needs the resolved value — which lives on the definition itself, since `embed` evaluation attaches the result there. Carrying the definition reference lets one and the same instruction cover both paths; carrying the owning block instead would force the VM to walk back from block metadata to the variable's value in the not-live case, a direction the metadata does not cheaply support.
+This allows skipping any resolution work during compilation of the *referencing* block. The compiler emitting the access simply pushes a reference to the definition onto the bytecode stream. Any processing required to incorporate a non-local variable is then fully independent from the referencing block's compilation. It happens on whatever schedule the surrounding pipeline chooses. The VM simply inspects the result at access time, when everything needed from a semantic perspective is ready.
+
+At that moment, one of two cases holds:
+
+* **Owner is live:** the definition's owning block is currently executing — its frame is on the operand stack, the definition's offset is a real address `block_FP + offset`. Reads and writes observe the variable's current state, including prior mutations within the same CTE run. This is how a function inside a unit references a unit-level variable: the unit's block is the outermost frame and stays live for the whole compile.
+* **Owner is not live:** no frame exists, so the offset does not address a real slot. The engine refuses to guess which state of the variable to capture. The access may still succeed if the definition carries a resolved value (e.g. via `embed`, where the expression was evaluated as part of compilation and the result attached to the definition); in that case the VM loads the value directly from the definition. Otherwise it is a runtime error.
 
 These reduce to a single rule:
 
-> A non-local may be referenced from *other* block if the block it lives in is live on the operand stack at the moment of access. Access goes through the dedicated `get_global` / `set_global` instruction family described in §5.2, which carries a reference to the variable's definition plus its local offset in the owning block. If the owning block happens not to be part of the current execution, the access may still succeed if the definition carries a resolved value (e.g. via `embed`); otherwise it is a runtime error.
+> A non-local access carries only a reference to the variable's definition. At runtime, the VM reads from that definition either the live frame slot of the owning block or—if the owning block is not part of the current execution or is not even compiled—the resolved value attached to the definition (when present). Anything else is a runtime error. Neither compilation nor execution of the referencing block performs any resolution; compilation merely bakes the definition reference.
 
-**Operand encoding.** The cross-block operand carries a *reference to the variable's definition* and the *local offset* of the slot inside the owning block. The reference can be represented however a particular implementation chooses, as long as it lets the VM reach the definition's owning block (for the live case) *and* the resolved value attached to that definition (for the not-live case).
+**Operand encoding.** The single cross-block operand is a *reference to the variable's definition*. The reference can be represented however a particular implementation chooses, as long as it lets the VM reach the definition node, from which it can in turn reach both the owning block (for the live case) and any resolved value attached to the definition (for the not-live case).
 
-The current VM uses a raw pointer to the definition node, since definitions are AST nodes that persist for the whole compilation and carry both a back-pointer to their owning block and a place for the resolved value. This, as in case with call, doesn't compromise a serializable form (for on-disk caching) as definition have natural id in form of fully qualified name.
+The current VM uses a raw pointer to the definition node, since definitions are AST nodes that persist for the whole compilation and already store the owning-block back-pointer, the local offset, and a place for the resolved value. This, as in case with call, doesn't compromise a serializable form (for on-disk caching) as definition have natural id in form of fully qualified name.
 
 ---
 
@@ -211,37 +217,37 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 * **Stack:** `..., data: Word(s) -> ...`  
 * **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and writes them to the Locals Block at `FP + offset`.
 
-**`get_global_{type}`**  `u64: var_def_ref, u64: local_offset`
+**`get_global_{type}`**  `u64: var_def_ref`
 * **Stack:** `... -> ..., value: Word`  
 * **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
-* **Description:** Cross-block counterpart of `get_{type}`. Resolves the variable's definition from `var_def_ref` (see §4.5). Two paths:
+* **Description:** Cross-block counterpart of `get_{type}`. The single operand is a reference to the variable's definition (see §4.5). At runtime the VM reads from that definition whichever of two things holds:
 
-  * If the definition's owning block is live on the operand stack, read the value from that block's Locals Block at `block_FP + local_offset` (where `block_FP` is the owning block's frame-base address — see §4.3) and push it as a normalized Word. Reads observe the variable's current state in the surrounding execution flow, including prior mutations within the same CTE run.
+  * If the definition's owning block is live on the operand stack, read the value from that block's Locals Block at `block_FP + local_offset` (where `block_FP` is the owning block's frame-base address — see §4.3 — and `local_offset` is recorded on the definition itself). Push the value as a normalized Word. Reads observe the variable's current state in the surrounding execution flow, including prior mutations within the same CTE run.
   * Otherwise, if the definition carries a resolved value (e.g. via `embed`), load that value directly from the definition and push it as a normalized Word.
   * Otherwise it is a runtime error.
 
-  See §4.5 for the rules and the operand-encoding discussion.
+  The compiler emitting this instruction does no resolution work — it bakes only the definition reference.
 
-**`get_global_blob`**  `u64: var_def_ref, u64: size, u64: local_offset`
+**`get_global_blob`**  `u64: var_def_ref, u64: size`
 * **Stack:** `... -> ..., data: Word(s)`  
-* **Description:** Cross-block counterpart of `get_blob`. Same resolution paths as `get_global_{type}`: if the owning block is live, reads `size` bytes from `block_FP + local_offset`; otherwise loads a blob-typed resolved value from the definition. Grows the stack by `ceil(size / 8)` Words to hold the result. Liveness and encoding rules per §4.5.
+* **Description:** Cross-block counterpart of `get_blob`. Same resolution paths as `get_global_{type}`: if the owning block is live, reads `size` bytes from `block_FP + local_offset` (the offset recorded on the definition); otherwise loads a blob-typed resolved value from the definition. Grows the stack by `ceil(size / 8)` Words to hold the result. Liveness and encoding rules per §4.5. (`size` is a separate operand because the definition does not need to know how many bytes of itself a particular caller wants to materialize.)
 
-**`set_global_{type}`**  `u64: var_def_ref, u64: local_offset`
+**`set_global_{type}`**  `u64: var_def_ref`
 * **Stack:** `..., value: Word -> ...`  
 * **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
-* **Description:** Pops a Word and writes the low `sizeof(type)` bytes of it to a non-local slot at `block_FP + local_offset` of the definition's owning block. Symmetric to `get_global_{type}`; the owning block must be live at the moment of access (writing a non-local outside a live execution frame is a runtime error, never an `embed`-fallback — `embed` fixes the value once during validation, runtime mutation is meaningless). See §4.5 for liveness, access semantics, and operand-encoding discussion.
+* **Description:** Pops a Word and writes the low `sizeof(type)` bytes of it to the non-local slot at `block_FP + local_offset` of the definition's owning block (the offset is read from the definition at execution time). Symmetric to `get_global_{type}`; the owning block must be live at the moment of access (writing a non-local outside a live execution frame is a runtime error, never an `embed`-fallback — `embed` fixes the value once during validation, runtime mutation is meaningless). See §4.5 for liveness and access semantics.
 
-**`set_global_blob`**  `u64: var_def_ref, u64: size, u64: local_offset`
+**`set_global_blob`**  `u64: var_def_ref, u64: size`
 * **Stack:** `..., data: Word(s) -> ...`  
-* **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and writes them to a non-local slot at `block_FP + local_offset` of the definition's owning block. Owning block must be live. Symmetric to `get_global_blob`.
+* **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and writes them to the non-local slot at `block_FP + local_offset` of the definition's owning block. Owning block must be live. Symmetric to `get_global_blob`.
 
 **`lea`**  `u64: fp_offset`
 * **Stack:** `... -> ..., address: ptr`  
 * **Description:** Calculates the absolute host address of a local variable (`FP + fp_offset`) and pushes it.
 
-**`lea_global`**  `u64: var_def_ref, u64: local_offset`
+**`lea_global`**  `u64: var_def_ref`
 * **Stack:** `... -> ..., address: ptr`  
-* **Description:** Calculates the absolute host address `block_FP + local_offset` of a non-local slot and pushes it. The definition's owning block must be live at the moment of access (no `embed`-fallback — taking the address of a value that has no frame to live in is meaningless). Used when the address of a non-local is needed — e.g. to form a slice `(ptr, length)` referencing a global vector, to pass a non-local by-reference to a foreign (C-ABI) function, or as the base for a subsequent `load_{type}`/`store_{type}` sequence. See §4.5.
+* **Description:** Calculates the absolute host address `block_FP + local_offset` of a non-local slot (where `local_offset` is read from the definition at execution time) and pushes it. The definition's owning block must be live at the moment of access (no `embed`-fallback — taking the address of a value that has no frame to live in is meaningless). Used when the address of a non-local is needed — e.g. to form a slice `(ptr, length)` referencing a global vector, to pass a non-local by-reference to a foreign (C-ABI) function, or as the base for a subsequent `load_{type}`/`store_{type}` sequence. See §4.5.
 
 **`lea_const`** `u64: pool_offset`
 *   **Stack:** `... -> ..., address: ptr`
