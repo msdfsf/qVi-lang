@@ -528,6 +528,24 @@ namespace Interpreter {
         return 0;
     }
 
+    template<typename Target>
+    Target castValue(Value* val, Type::Kind fromType) {
+        switch (fromType) {
+            case Type::DT_I8:  return (Target) val->i8;
+            case Type::DT_U8:  return (Target) val->u8;
+            case Type::DT_I16: return (Target) val->i16;
+            case Type::DT_U16: return (Target) val->u16;
+            case Type::DT_I32: return (Target) val->i32;
+            case Type::DT_U32: return (Target) val->u32;
+            case Type::DT_I64: return (Target) val->i64;
+            case Type::DT_U64: return (Target) val->u64;
+            case Type::DT_F32: return (Target) val->f32;
+            case Type::DT_F64: return (Target) val->f64;
+                // TODO: case Type::DT_POINTER: return (Target) val->ptr;
+            default: return 0;
+        }
+    }
+
     void applyOperator(AstContext* ctx, Span* span, OperatorEnum op, Variable* leftVar, Variable* rightVar, Value* result) {
         Value* left = &leftVar->value;
         Value* right = &rightVar->value;
@@ -732,7 +750,6 @@ namespace Interpreter {
         }
 
         switch (ex->type) {
-
             case EXT_UNARY : {
                 UnaryExpression* uex = (UnaryExpression*) ex;
                 if (!uex->operand) return Err::CANNOT_EVALUATE;
@@ -766,7 +783,7 @@ namespace Interpreter {
                 FunctionCall* call = (FunctionCall*) ex;
                 Function* const fcn = call->fcn;
 
-                TaskSystem::dispatchCompileTimeBuild(fcn, true);
+                TaskSystem::dispatchLocalTask(fcn, true);
                 // Interpreter::print(fcn);
 
                 for (uint32_t i = 0; i < call->inArgCount; i++) {
@@ -776,7 +793,7 @@ namespace Interpreter {
 
                 if (fcn->base.flags & IS_EXTERN) {
                     Extern::Abi::Driver* abi = Extern::Abi::getTargetDriver();
-                    Extern::compile(ctx, abi, fcn);
+                    Extern::compile(ctx->unit->ast, abi, fcn);
                     Extern::invoke(ctx->unit->ast, abi, fcn, call->inArgs, call->inArgCount, var);
                 } else {
                     err = Interpreter::exec(ctx->unit->ast, fcn, call->inArgs, call->inArgCount, var);
@@ -803,14 +820,69 @@ namespace Interpreter {
                 break;
             }
 
+            case EXT_CAST: {
+                Cast* castExpr = (Cast*) ex;
+
+                err = eval(ctx, castExpr->operand);
+                if (err != Err::OK) return err;
+
+                Value* srcValue = &castExpr->operand->value;
+                Type::Kind srcType = srcValue->typeKind;
+                Type::Kind dstType = castExpr->target;
+
+                switch (dstType) {
+                    case Type::DT_I8:
+                        var->value.i8 = castValue<int8_t>(srcValue, srcType);
+                        break;
+                    case Type::DT_U8:
+                        var->value.u8 = castValue<uint8_t>(srcValue, srcType);
+                        break;
+                    case Type::DT_I16:
+                        var->value.i16 = castValue<int16_t>(srcValue, srcType);
+                        break;
+                    case Type::DT_U16:
+                        var->value.u16 = castValue<uint16_t>(srcValue, srcType);
+                        break;
+                    case Type::DT_I32:
+                        var->value.i32 = castValue<int32_t>(srcValue, srcType);
+                        break;
+                    case Type::DT_U32:
+                        var->value.u32 = castValue<uint32_t>(srcValue, srcType);
+                        break;
+                    case Type::DT_I64:
+                        var->value.i64 = castValue<int64_t>(srcValue, srcType);
+                        break;
+                    case Type::DT_U64:
+                        var->value.u64 = castValue<uint64_t>(srcValue, srcType);
+                        break;
+                    case Type::DT_F32:
+                        var->value.f32 = castValue<float>(srcValue, srcType);
+                        break;
+                    case Type::DT_F64:
+                        var->value.f64 = castValue<double>(srcValue, srcType);
+                        break;
+                        // TODO: case Type::DT_POINTER:
+                        //var->value.ptr = castValue<uint64_t>(srcValue, srcType); // Pointers are usually uint64_t under the hood
+                        //break;
+                    default:
+                        Diag::report(ctx->unit->ast, var->base.span, Err::UNEXPECTED_ERROR,
+                            Diag::Format {
+                                "TODO: cast error"
+                            }
+                        );
+                        break;
+                }
+
+                var->value.hasValue = true;
+                break;
+            }
+
             default: {
                 return Err::NOT_YET_IMPLEMENTED;
             }
-
         }
 
         return Err::OK;
-
     }
 
 }

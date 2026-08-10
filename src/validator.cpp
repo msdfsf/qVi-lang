@@ -130,15 +130,15 @@ namespace Validator {
 
         if (import->lib) {
             fcn->lib = import->lib;
-            return Extern::ensureFunctionExists(ctx, fcn->lib, fcn);
+            return Extern::resolveFunction(ctx->unit->ast, fcn);
         }
 
-        err = Extern::loadLibrary(ctx, import->fname, Extern::LL_INSPECT, &fcn->lib);
+        err = Extern::loadLibrary(ctx->unit->ast, import->fname, Extern::LL_INSPECT, &fcn->lib);
         if (err != Err::OK) return err;
 
         import->lib = fcn->lib;
 
-        return Extern::ensureFunctionExists(ctx, fcn->lib, fcn);
+        return Extern::resolveFunction(ctx->unit->ast, fcn);
     }
 
     Err::Err validate(ValidationContext* ctx, Function* fcn) {
@@ -847,7 +847,9 @@ namespace Validator {
                 if (err != Err::OK) return err;
 
                 if (arr->length) {
-                    validate(ctx, arr->length, NULL);
+                    err = validate(ctx, arr->length, NULL);
+                    if (err != Err::OK) return err;
+
                     if (arr->flags & IS_CMP_TIME) {
                         Interpreter::eval(ctx, arr->length);
                     }
@@ -882,6 +884,13 @@ namespace Validator {
         return Err::OK;
     }
 
+    // TODO : IS_CMP_TIME to IS_EMBEDED ?
+    // TODO : use info to check?
+    bool isStaticArray(Value* val) {
+        return val->typeKind == Type::DT_ARRAY &&
+               val->arr->flags & IS_CMP_TIME;
+    }
+
     Err::Err validate(ValidationContext* ctx, VariableDefinition* def) {
         Err::Err err;
 
@@ -893,21 +902,27 @@ namespace Validator {
         //err = validateDataType(ctx, leftValue.typeKind, leftValue.any, def->var->base.span);
         //if (err != Err::OK) return err;
 
+        // Emitter::driverDebug.emitNode(&DebugHelper::emitter, (SyntaxNode*) def, &DebugHelper::stream);
         err = validate(ctx, def->var, def->var);
         if (err != Err::OK) return err;
-        
-        // In case of static array, we may need to infer length
-        // TODO : IS_CMP_TIME to IS_EMBEDED ?
-        // TODO : check for static to a function
-        // TODO : use info to check?
-        if (
-            leftValue.typeKind == Type::DT_ARRAY &&
-            leftValue.arr->flags & IS_CMP_TIME &&
-            (!leftValue.arr->length || !leftValue.arr->length->value.hasValue)
-        ) {
-            leftValue.arr->length = def->var->value.arr->length;
-        }
 
+        // In case of static array, we need to compute/infer length
+        // TODO: can we force parser always parse length as NULL if [] is empty
+        //       to avoid ambiguity?
+        if (isStaticArray(&leftValue)) {
+            // TODO: This shall happen while validating dtype in var validation
+            //       So we shall remove it...
+            Array* arr = leftValue.arr;
+            if (arr->length) {
+                err = validate(ctx, arr->length, NULL);
+                if (err != Err::OK) return err;
+
+                err = Interpreter::eval(ctx, arr->length);
+                if (err != Err::OK) return err;
+            } else {
+                leftValue.arr->length = def->var->value.arr->length;
+            }
+        }
 
         // TODO : as we cahche anyway, create a function without
         //        return value
@@ -915,10 +930,15 @@ namespace Validator {
         err = computeTypeInfo(ctx, &leftValue, &info);
         if (err != Err::OK) return err;
 
-        err = applyImplicitCast(ctx, &leftValue, def->var);
-        if (err != Err::OK) return err;
+        if (def->var->expression) {
+            err = applyImplicitCast(ctx, &leftValue, def->var);
+            if (err != Err::OK) return err;
 
-        def->var->value = leftValue;
+            def->var->value = leftValue;
+        } else {
+            int x = 0;
+            int y = x + 2;
+        }
 
         return Err::OK;
     }
@@ -1916,6 +1936,7 @@ namespace Validator {
 
 
         // We basically go through top level nodes that can be exported
+        // TODO : make sure reg has only top level stuff...
         for (int i = 0; i < reg->customDataTypes.size; i++) {
             ensureValidated(ctx, *(SyntaxNode**) DArray::get(&reg->customDataTypes, i));
         }
@@ -1928,11 +1949,12 @@ namespace Validator {
             ensureValidated(ctx, *(SyntaxNode**) DArray::get(&reg->fcns, i));
         }
 
+        // Validate remaining local nodes
+        validate(ctx, ctx->unit->ast->root);
 
-
-        for (int i = 0; i < reg->imports.size; i++) {
-            validate(ctx, *(SyntaxNode**) DArray::get(&reg->imports, i));
-        }
+        // for (int i = 0; i < reg->imports.size; i++) {
+        //    validate(ctx, *(SyntaxNode**) DArray::get(&reg->imports, i));
+        //}
 
 
         /*
@@ -1945,10 +1967,10 @@ namespace Validator {
         */
 
         // DEBUG:
-        for (int i = 0; i < reg->initializations.size; i++) {
-            SyntaxNode* arr = *(SyntaxNode**) DArray::get(&reg->initializations, i);
-            Emitter::driverDebug.emitNode(&DebugHelper::emitter, arr, &DebugHelper::stream);
-        }
+        //for (int i = 0; i < reg->initializations.size; i++) {
+        //    SyntaxNode* arr = *(SyntaxNode**) DArray::get(&reg->initializations, i);
+        //    Emitter::driverDebug.emitNode(&DebugHelper::emitter, arr, &DebugHelper::stream);
+        //}
 
         for (int i = 0; i < reg->cmpTimeVars.size; i++) {
             Variable* var = *(Variable**) DArray::get(&reg->cmpTimeVars, i);
@@ -2384,7 +2406,8 @@ namespace Validator {
         }
 
         rvar->expression = (Expression*) castEx;
-        rvar->value = *target;
+        rvar->value.typeKind = target->typeKind;
+        rvar->value.any = target->any;
     }
 
     Value toValue(Type::Kind kind) {
@@ -2409,7 +2432,9 @@ namespace Validator {
             return Err::OK;
         }
 
-        if (rvar->value.hasValue) {
+        // we can do inplace operations over primitive
+        // literals only while result stays in primitve space
+        if (rvar->value.hasValue && Type::isPrimitive(lval->typeKind)) {
             // TODO: suppose to cast literal in place.
             castLiteral(ctx, &rvar->value, lval->typeKind);
             return Err::OK;
@@ -2435,8 +2460,10 @@ namespace Validator {
         return Err::OK;
     }
 
+    // We cannot inherit full value of basic type in case
+    // of litteral/cmp time value
     inline void inheritType(Variable* dest, Value* source) {
-        if (isBasic(source->typeKind)) {
+        if (Type::isBasic(source->typeKind)) {
             dest->value.typeKind = source->typeKind;
         } else {
             dest->value = *source;
@@ -2446,7 +2473,6 @@ namespace Validator {
     Err::Err resolveResultType(ValidationContext* ctx, UnaryExpression* uex, Variable* var) {
         const OperatorEnum op = uex->base.opType;
         if (op == OP_GET_ADDRESS) {
-
             // LOOK AT : do we need to create?
             Pointer* ptr = Ast::Node::makePointer();
             ptr->pointsToKind = uex->operand->value.typeKind;
@@ -2454,9 +2480,7 @@ namespace Validator {
 
             var->value.ptr = ptr;
             var->value.typeKind = Type::DT_POINTER;
-
         } else if (op == OP_GET_VALUE) {
-
             // TODO : view binary version
             if (!isIndexable(uex->operand->value.typeKind)) {
                 // TODO : eerorr
@@ -2464,11 +2488,26 @@ namespace Validator {
 
             var->value.any = uex->operand->value.ptr->pointsTo;
             var->value.typeKind = uex->operand->value.ptr->pointsToKind;
+        } else if (op == OP_NEGATION) {
+            const Type::Kind dtype = uex->operand->value.typeKind;
 
+            if (Type::isPrimitive(dtype)) {
+                var->value.typeKind = Type::DT_BOOL;
+                return Err::OK;
+            }
+
+            Diag::report(ctx->unit->ast, var->base.span, Err::INVALID_TYPE_CONVERSION,
+                Diag::Format{
+                    "Operator '%s' cannot be applied to operand of type '%s'.\n"
+                    "  Hint: Logical negation requires a primitive or boolean type."
+                },
+                OperatorToStr(op),
+                Type::str(dtype)
+            );
+
+            return Err::INVALID_TYPE_CONVERSION;
         } else {
-
             inheritType(var, &uex->operand->value);
-
         }
 
         return Err::OK;
@@ -2558,6 +2597,10 @@ namespace Validator {
 
         // Ast::Node::copyRef(bex->right, attribute);
         bex->right->name.id = idx;
+        // TODO : create union member
+        bex->right->value.typeKind = Type::DT_MEMBER;
+        bex->right->value.any = (void*) (td->typeInfo->str.members + idx);
+        // bex->right->def = attribute->def;
 
         var->value.typeKind = attribute->value.typeKind;
         var->value.any = attribute->value.any;
@@ -2565,14 +2608,36 @@ namespace Validator {
         return Err::OK;
     }
 
+    // Helper to identify operators that always return a Boolean
+    // TODO : to a proper place, also unite such operators and make
+    //        this only as < > comparasion
+    inline bool isPredicate(OperatorEnum op) {
+        switch (op) {
+        case OP_EQUAL:
+        case OP_NOT_EQUAL:
+        case OP_LESS_THAN:
+        case OP_GREATER_THAN:
+        case OP_LESS_THAN_OR_EQUAL:
+        case OP_GREATER_THAN_OR_EQUAL:
+
+        case OP_BOOL_AND:
+        case OP_BOOL_OR:
+            return true;
+
+        default:
+            return false;
+        }
+    }
+
     Err::Err resolveResultType(ValidationContext* ctx, BinaryExpression* bex, Variable* var) {
         Type::Kind lDtype = bex->left->value.typeKind;
         Type::Kind rDtype = bex->right->value.typeKind;
 
+        const OperatorEnum op = bex->base.opType;
         // Usually the result type can be derived from
         // operands ranks but in few cases operator can
         // influence the output type (arr[i])
-        if (bex->base.opType == OP_SUBSCRIPT) {
+        if (op == OP_SUBSCRIPT) {
             // TODO : move from this to a direct check, as we
             //   may need different behavior for each type later
             if (!isIndexable(lDtype)) {
@@ -2584,16 +2649,32 @@ namespace Validator {
             var->value.typeKind = ptr->pointsToKind;
 
             return Err::OK;
-        } else if (bex->base.opType == OP_MEMBER_SELECTION) {
+        } else if (op == OP_MEMBER_SELECTION) {
             // we also may want to change the operator to
             // OP_DEREFERENCE_MEMEBER_SELECTION here if needed,
             // so its simpler to compile
-            resolveMember(ctx, bex, var);
-            return Err::OK;
+            return resolveMember(ctx, bex, var);
+        } else if (isPredicate(op)) {
+            if (Type::isPrimitive(lDtype) && Type::isPrimitive(rDtype)) {
+                var->value.typeKind = Type::DT_BOOL;
+                return Err::OK;
+            }
+
+            Diag::report(ctx->unit->ast, var->base.span, Err::INVALID_TYPE_CONVERSION,
+                Diag::Format{
+                    "Operator '%s' cannot be applied to operands of type '%s' and '%s'.\n"
+                    "  Hint: Relational and logical operators are only supported for primitive types."
+                },
+                OperatorToStr(op),
+                Type::str(lDtype),
+                Type::str(rDtype)
+            );
+
+            return Err::INVALID_TYPE_CONVERSION;
         }
 
-        // TODO:
-        // validateImplicitCast(lDtype, rDtype);
+        Err::Err err = applyImplicitCast(ctx, &bex->left->value, bex->right);
+        if (err != Err::OK) return err;
 
         if (Type::basicTypes[lDtype].rank > Type::basicTypes[rDtype].rank) {
             inheritType(var, &bex->left->value);
@@ -2651,7 +2732,6 @@ namespace Validator {
     // assuming dtypeInit has at least one attribute
     // both TypeDefinition  has to be valid
     Err::Err validateTypeInitialization(Reg::Unit* unit, TypeDefinition* dtype, TypeInitialization* dtypeInit) {
-
         Variable** attributes = (Variable**) dtypeInit->attributes;
 
         const int count = dtype->varCount;
@@ -2752,7 +2832,6 @@ namespace Validator {
         }
 
         return Err::OK;
-
     }
 
     Err::Err validateCall(ValidationContext* ctx, Variable* callOp) {
@@ -2956,6 +3035,8 @@ namespace Validator {
     // TODO : unite all dtype->like structures and add spans, so
     //        precise errors can be reported
     // TODO : move from 'ref' convention
+    // marks input lvalue array if value is cast non-array-like type -> array
+    // TODO : clarify in better words what the thing above means
     Err::Err validateImplicitCast(ValidationContext* ctx, void* dtype, void* dtypeRef, Type::Kind typeKind, Type::Kind typeKindRef) {
         if (validateImplicitCast(typeKind, typeKindRef) >= 0) {
             return Err::OK;
@@ -3004,12 +3085,14 @@ namespace Validator {
                 arrL->base.pointsTo, arrR->base.pointsTo,
                 arrL->base.pointsToKind, arrR->base.pointsToKind);
         } else if (typeKindRef == Type::DT_ARRAY) {
-
             Array* arr = (Array*) dtypeRef;
             const Type::Kind arrDtype = (Type::Kind) getFirstNonArrayDtype(arr);
 
-            return validateImplicitCast(typeKind, arrDtype);
+            Err::Err err = validateImplicitCast(typeKind, arrDtype);
+            if (err != Err::OK) return err;
 
+            arr->flags |= IS_CASTED_FROM_LOWER_LEVEL;
+            return Err::OK;
         }
 
         Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);

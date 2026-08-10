@@ -2,7 +2,7 @@
 
 #include "data_types.h"
 #include "syntax.h"
-#include "validator.h"
+#include "diagnostic.h"
 #include <cstdint>
 
 
@@ -26,12 +26,14 @@ namespace Extern {
             AK_NONE,
         };
 
-        // This is description for compiler what to describe
-        // how it shall pass arguments, mainly for the ffi
-        // context, ABI drivers doesnt need internally follow
-        // it or set it in the most accurate way, but just
-        // to tell the compiler how it shall prepare args for
-        // the call (into already compiled context)
+        // This is foremost description for the compiler how
+        // argument shall be passed, how they have to be set
+        // for the call (into already compiled ffi context).
+        //
+        // ABI drivers internally does not have to follow
+        // these descriptions in the most accurate way, or
+        // build around them, its just a way to define form
+        // of input arguments..
         enum ArgPassKind : uint8_t {
             PK_REG_INT,
             PK_REG_INT_UP,
@@ -102,15 +104,34 @@ namespace Extern {
             Driver*  abi;
         };
 
+        const char* str(ArgPassKind pass);
+
         bool isRegFloat(ArgPassKind pass);
         bool isRegInt(ArgPassKind pass);
 
-        Err::Err        ensureTypeInfoReady (Validator::ValidationContext* ctx, TypeDefinition* td, Driver* driver);
+        Err::Err        ensureTypeInfoReady (AstContext* ast, TypeDefinition* td, Driver* driver);
         Type::TypeInfo* computeTypeInfo     (Abi::LayoutConfig* cfg, Type::TypeInfo*  tempInfo);
 
-        void fillArgs     (AstContext* ast, Abi::CallContext* ctx, Variable** args, uint32_t argCount);
-        Err::Err varToStack(AstContext* ast, Variable* var, uint8_t* stack);
-        Err::Err stackToVar(AstContext* ast, Variable* var, uint8_t* stack);
+        // Fills ctx->args using syntax nodes
+        void fillArgs      (AstContext* ast, Abi::CallContext* ctx, Variable** args, uint32_t argCount);
+        // Fills ctx->args using vms stack
+        void fillArgsFromVM(AstContext* ast, Abi::CallContext* ctx, uintptr_t sp, uint32_t argCount);
+
+
+        // AST Variable -> ABI Arg
+        // 'dest' shall be pre-allocated to fit the data.
+        Err::Err marshal(AstContext* ast, Variable* src, uint8_t* dest, Type::TypeInfo* typeInfo);
+
+        // ABI Arg -> AST Variable
+        // 'dest' shall be pre-allocated to fit the data.
+        Err::Err unmarshal(AstContext* ast, uint8_t* src, Variable* dest, Type::TypeInfo* typeInfo);
+
+        // ABI Arg A -> ABI Arg B
+        // Directly moves data between two ABI representations.
+        // Essential for the VM to move a return value from a DLL
+        // 'Arg' into a VM Stack 'Arg' layout without using AST as
+        // middleman.
+        Err::Err transcode(AstContext* ast, uint8_t* src, uint8_t* dest, Type::TypeInfo* srcTypeInfo, Type::TypeInfo* destTypeInfo);
 
         Driver* getTargetDriver();
 
@@ -149,18 +170,28 @@ namespace Extern {
     // Inits globals, so has to be called only once
     void init();
 
-    Err::Err loadLibrary(Validator::ValidationContext* ctx, String name, LibraryLoadLevel level, LibraryHandle* out);
+    Err::Err loadLibrary(AstContext* ast, String name, LibraryLoadLevel level, LibraryHandle* out);
 
-    // Ensures that function exists from previously loadaed library
-    Err::Err ensureFunctionExists(Validator::ValidationContext* ctx, LibraryHandle lib, Function* fcn);
+    // Ensures that function exists in previously loaded library and
+    // binds address in case of LL_EXECUTE
+    Err::Err resolveFunction(AstContext* ast, Function* fcn);
 
-    // Binds function to real address from previosly loaded library
-    // Triggers 'Hot' load of library, if not already 'Hot' loaded
-    Err::Err bindFunction(Validator::ValidationContext* ctx, Library* lib, Function* fcn);
+    // Upgrades the associated library to LL_EXECUTE, resolves the native
+    // address, and builds the ABI CallContext. After this call function
+    // is ready to be invoked.
+    Err::Err compile(AstContext* ast, Abi::Driver* abi, Function* fcn);
 
-    Err::Err compile(Validator::ValidationContext* ctx, Abi::Driver* abi, Function* fcn);
+    // Invokes function from previously bound shared library
+    //
+    // VM -> VM
+    // abi args have to be filled beforehand
+    Err::Err invoke(AstContext* ast, Abi::Driver* abi, Function* fcn, uint8_t* out);
 
-    // Invokes function from previously binded shared library
+    // VM -> AST
+    // abi args have to be filled beforehand
+    Err::Err invoke(AstContext* ast, Abi::Driver* abi, Function* fcn, Variable* out);
+
+    // AST -> AST
     Err::Err invoke(AstContext* ast, Abi::Driver* abi, Function* fcn, Variable** args, uint32_t argCount, Variable* out);
 
 }

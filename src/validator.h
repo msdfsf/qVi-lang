@@ -54,6 +54,7 @@ namespace Validator {
 
         FileSystem::Path fileDir;
 
+        // TODO : deprecated, we shall use TaskSystem getter directly
         uint8_t workerId;
     };
 

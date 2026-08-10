@@ -1,104 +1,151 @@
 #include "file_driver.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 
 namespace FileDriver {
 
-    #define MAX_FILE_NAME_LENGTH 256
-
-    //#define POSIX 0
-    //#define WINDOWS 1
-
-    // 0 on success
     #ifdef _WIN32
         #include <direct.h>
         #include <errno.h>
-        int newDir(char* const path) {
-            if (_mkdir(path)) {
-                return (errno != EEXIST);
+        int newDir(const String path) {
+            // _mkdir needs a NUL-terminated C string; build one in a
+            // stack buffer if the path doesn't happen to be terminated.
+            char buf[260];
+            if (path.len < sizeof(buf)) {
+                std::memcpy(buf, path.buff, path.len);
+                buf[path.len] = '\0';
+                if (_mkdir(buf)) return (errno != EEXIST);
+                return 0;
             }
-            return 0;
+            // Fallback for unusually long paths: leak-friendlier than the
+            // old fixed 256-byte buffer that silently truncated.
+            char* heap = (char*) malloc(path.len + 1);
+            std::memcpy(heap, path.buff, path.len);
+            heap[path.len] = '\0';
+            const int res = _mkdir(heap) ? (errno != EEXIST) : 0;
+            free(heap);
+            return res;
         }
     #else
         #include <sys/stat.h>
-        int newDir(char* const path) {
-            return mkdir(path, 0777);
+        int newDir(const String path) {
+            char buf[260];
+            if (path.len < sizeof(buf)) {
+                std::memcpy(buf, path.buff, path.len);
+                buf[path.len] = '\0';
+                return mkdir(buf, 0777);
+            }
+            char* heap = (char*) malloc(path.len + 1);
+            std::memcpy(heap, path.buff, path.len);
+            heap[path.len] = '\0';
+            const int res = mkdir(heap, 0777);
+            free(heap);
+            return res;
         }
     #endif
 
-    FILE* openFile(char* name, int nameLen, const char* const mode) {
+    // Internal helper: open a NUL-terminated C string under `mode`.
+    static FILE* openCStr(const char* cstr, const char* const mode) {
+        return std::fopen(cstr, mode);
+    }
 
-        char buffer[256];
-        for (int i = 0; i < nameLen; i++) {
-            buffer[i] = name[i];
+    FILE* openFile(const String name, const char* const mode) {
+        // Many paths that arrive here are already NUL-terminated (they
+        // came straight from a C-string literal or a parser-managed
+        // buffer with one byte of slack). Detect that case cheaply and
+        // skip the copy.
+        if (name.buff != NULL && name.buff[name.len] == '\0') {
+            return openCStr(name.buff, mode);
         }
-        buffer[nameLen] = '\0';
 
-        FILE* file = fopen(buffer, mode);
+        char* buf = (char*) malloc(name.len + 1);
+        std::memcpy(buf, name.buff, name.len);
+        buf[name.len] = '\0';
 
+        FILE* file = openCStr(buf, mode);
+        free(buf);
         return file;
-
     }
 
-    FILE* openFile(char* name, int nameLen, char* dirName, const char* const mode) {
+    FILE* openFile(const String name, const String dir, const char* const mode) {
+        newDir(dir);
 
-        newDir(dirName);
+        // "dir/name" with one separator and a NUL terminator. Worst-case
+        // path lengths large enough to overflow size_t are nonsensical
+        // here, so a saturating add is safe.
+        const uint64_t total = dir.len + 1 + name.len + 1;
 
-        char buffer[MAX_FILE_NAME_LENGTH];
+        char* buf = (char*) malloc(total);
+        if (!buf) return NULL;
 
-        int i = 0;
-        for (; i < MAX_FILE_NAME_LENGTH; i++) {
-            const char ch = dirName[i];
-            if (ch != '\0') buffer[i] = ch;
-            else break;
-        }
+        std::memcpy(buf, dir.buff, dir.len);
+        buf[dir.len] = '/';
+        std::memcpy(buf + dir.len + 1, name.buff, name.len);
+        buf[dir.len + 1 + name.len] = '\0';
 
-        if (i + nameLen >= MAX_FILE_NAME_LENGTH - 1) {
-            return NULL;
-        }
-
-        buffer[i] = '/';
-        i++;
-
-        const int offset = i;
-        for (; i < offset + nameLen; i++) {
-            buffer[i] = name[i - offset];
-        }
-
-        return openFile(buffer, i, mode);
-
+        FILE* file = openCStr(buf, mode);
+        free(buf);
+        return file;
     }
 
-    int readFile(char* name, char** buffer) {
-
-        // TODO: NULL CHECK
-
-        FILE* file = fopen(name, "rb");
+    int64_t readFile(const String path, char** buffer) {
+        // Earlier implementation used a stack-copied NUL-termination
+        // (with a fixed 256-byte buffer). Reuse the openFile() code path
+        // so we don't duplicate that logic.
+        FILE* file = openFile(path, "rb");
         if (!file) return -1;
 
-        fseek(file, 0, SEEK_END);
-		const int fileSize = ftell(file);
-		fseek(file, 0, SEEK_SET);
+        std::fseek(file, 0, SEEK_END);
+        const int64_t fileSize = std::ftell(file);
+        std::fseek(file, 0, SEEK_SET);
 
-        *buffer = (char*) malloc(fileSize + 1);
-        fread(*buffer, 1, fileSize + 1, file);
+        // The original code allocated fileSize + 1 and fread that many
+        // bytes, then NUL-terminated at [fileSize]. preserve that
+        // behaviour for downstream string-construction callers that
+        // expect a NUL terminator.
+        char* buf = (char*) malloc((size_t) (fileSize + 1));
+        if (!buf) {
+            std::fclose(file);
+            return -1;
+        }
 
-        (*buffer)[fileSize] = '\0';
+        const size_t read = std::fread(buf, 1, (size_t) fileSize, file);
+        buf[read] = '\0';
 
-        fclose(file);
-        return fileSize;
+        std::fclose(file);
 
+        *buffer = buf;
+        return (int64_t) read;
     }
 
-    int createDirectory(char* const path) {
-        return !std::filesystem::create_directory(path);
+    int writeFile(FILE* file, const String buffer) {
+        if (!file) return -1;
+        const size_t written = std::fwrite(buffer.buff, 1, buffer.len, file);
+        return (int) written == buffer.len ? 0 : -1;
     }
 
-    int doesFileExists(const char* const path) {
-        return std::filesystem::exists(path);
+    int createDirectory(const String path) {
+        // std::filesystem::create_directory requires a std::filesystem::path
+        // that is NUL-terminable; build one regardless of whether the
+        // underlying String is NUL-terminated.
+        char* buf = (char*) malloc(path.len + 1);
+        std::memcpy(buf, path.buff, path.len);
+        buf[path.len] = '\0';
+        const bool ok = std::filesystem::create_directory(buf);
+        free(buf);
+        return ok ? 0 : 1;
+    }
+
+    int doesFileExists(const String path) {
+        char* buf = (char*) malloc(path.len + 1);
+        std::memcpy(buf, path.buff, path.len);
+        buf[path.len] = '\0';
+        const bool exists = std::filesystem::exists(buf);
+        free(buf);
+        return exists ? 1 : 0;
     }
 
 }

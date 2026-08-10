@@ -15,8 +15,8 @@ namespace DArray {
         size_t size;
 
         // size_n = size_n-1 * constCoef + constTerm
-        uint8_t constCoef;
-        uint8_t constTerm;
+        uint32_t constCoef;
+        uint32_t constTerm;
 
     };
 

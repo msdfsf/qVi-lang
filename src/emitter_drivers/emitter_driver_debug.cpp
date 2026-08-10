@@ -71,16 +71,25 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
 
     ctx->indentLevel++;
     switch ((ExpressionType) exp->type) {
-        case EXT_BINARY: {
-            BinaryExpression* bex = (BinaryExpression*)exp;
-            writeAttr(ctx, out, "Op");
-            IO::writef(out, "%s\n", OperatorToStr(bex->base.opType));
-            emitNode(ctx, (SyntaxNode*)bex->left, out);
-            emitNode(ctx, (SyntaxNode*)bex->right, out);
+        case EXT_UNARY: {
+            UnaryExpression* uex = (UnaryExpression*) exp;
+            writeAttr(ctx, out, "Operator");
+            IO::writef(out, "%s\n", OperatorToStr(uex->base.opType));
+            emitNode(ctx, (SyntaxNode*) uex->operand, out);
             break;
         }
+
+        case EXT_BINARY: {
+            BinaryExpression* bex = (BinaryExpression*) exp;
+            writeAttr(ctx, out, "Operator");
+            IO::writef(out, "%s\n", OperatorToStr(bex->base.opType));
+            emitNode(ctx, (SyntaxNode*) bex->left, out);
+            emitNode(ctx, (SyntaxNode*) bex->right, out);
+            break;
+        }
+
         case EXT_FUNCTION_CALL: {
-            FunctionCall* call = (FunctionCall*)exp;
+            FunctionCall* call = (FunctionCall*) exp;
             writeAttr(ctx, out, "Target");
             writeQualifiedName(out, &call->name);
             IO::write(out, '\n');
@@ -89,7 +98,6 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
             }
             break;
         }
-        // ... (Add other cases as needed following the same pattern)
     }
     ctx->indentLevel--;
 }

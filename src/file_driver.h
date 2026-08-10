@@ -1,21 +1,33 @@
 #pragma once
 
-#include "stdio.h"
+#include <cstdio>
 
+#include "string.h"
 
 
 namespace FileDriver {
 
-    int newDir(char* name);
+    // 0 on success.
+    int newDir(const String path);
 
-    FILE* openFile(char* name, int nameLen, const char* const mode);
-    FILE* openFile(char* name, int nameLen, char* dirName, const char* const mode);
+    // Opens an existing file at `name` under `mode`.
+    // Returns NULL on failure.
+    FILE* openFile(const String name, const char* const mode);
 
-    int readFile(char* name, char** buffer);
-    int writeFile(FILE* file, char* buffer, int buffLen);
+    // Creates the directory `dir` if needed and opens `name` inside it.
+    // Returns NULL on failure.
+    FILE* openFile(const String name, const String dir, const char* const mode);
 
-    int createDirectory(char* const path);
+    // Reads the whole file at `path` into a freshly `malloc`'d buffer.
+    // The buffer is NUL-terminated for convenience.
+    // Returns the byte count, or a negative value on failure.
+    // Caller owns `*buffer` and must `free` it.
+    int64_t readFile(const String path, char** buffer);
 
-    int doesFileExists(const char* const path);
+    int writeFile(FILE* file, const String buffer);
+
+    int createDirectory(const String path);
+
+    int doesFileExists(const String path);
 
 }

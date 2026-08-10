@@ -115,6 +115,7 @@ namespace Arena {
         return { .block = arena->tail, .pos = arena->logicalPos };
     }
 
+    // TODO : also move logical pos...
     void rollback(Container* arena, Marker marker, bool freeMemory) {
         arena->tail = marker.block;
         arena->tail->pos = marker.pos;

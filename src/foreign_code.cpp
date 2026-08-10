@@ -7,11 +7,13 @@
 #include "registry.h"
 #include "syntax.h"
 #include "task_status.h"
+#include "task_system.h"
 #include "utils.h"
-#include "validator.h"
 #include "foreign_code.h"
 
 #include <cstdint>
+#include <libloaderapi.h>
+#include <minwindef.h>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -170,10 +172,13 @@ namespace Extern {
         );
     }
 
-    Err::Err loadLibrary(Validator::ValidationContext* ctx, String name, LibraryLoadLevel level, LibraryHandle* out) {
+    Err::Err loadLibrary(AstContext* ast, String name, LibraryLoadLevel level, LibraryHandle* out) {
         HMODULE hnd = NULL;
 
-        String wname = utf8ToWChar(&ctx->stringArena, name);
+        // TODO
+        Arena::Container* stringArena = alc;
+
+        String wname = utf8ToWChar(stringArena, name);
 
         if (level == LL_INSPECT) {
             hnd = LoadLibraryExW((wchar_t*) wname.buff, NULL,
@@ -185,12 +190,12 @@ namespace Extern {
             return Err::UNEXPECTED_ERROR;
         }
 
-        Arena::rollback(&ctx->stringArena, wname.buff);
+        // Arena::rollback(stringArena, wname.len * sizeof(wchar_t));
 
         if (!hnd) {
             formatOsError(GetLastError(), osErrBuff, sizeof(osErrBuff));
 
-            Diag::report(ctx->unit->ast, NULL, Err::LIBRARY_LOAD_FAILED,
+            Diag::report(ast, NULL, Err::LIBRARY_LOAD_FAILED,
                 Diag::Format {
                     "Failed to map native library into compiler memory.\n"
                     "  Target: %.*s\n"
@@ -202,7 +207,7 @@ namespace Extern {
             return Err::LIBRARY_LOAD_FAILED;
         }
 
-        wchar_t* fullPath = (wchar_t*) Arena::push(&ctx->stringArena, FileSystem::MAX_FILE_PATH);
+        wchar_t* fullPath = (wchar_t*) Arena::push(stringArena, FileSystem::MAX_FILE_PATH);
         DWORD resultSize = GetModuleFileNameW(hnd, fullPath, FileSystem::MAX_FILE_PATH);
         DWORD errCode = GetLastError();
         if (resultSize == 0 || errCode == ERROR_INSUFFICIENT_BUFFER) {
@@ -210,7 +215,7 @@ namespace Extern {
 
             formatOsError(errCode, osErrBuff, sizeof(osErrBuff));
 
-            Diag::report(ctx->unit->ast, NULL, Err::LIBRARY_LOAD_FAILED,
+            Diag::report(ast, NULL, Err::LIBRARY_LOAD_FAILED,
                 Diag::Format{
                     "Failed to resolve full library path.\n"
                     "  Target: %.*s\n"
@@ -219,7 +224,7 @@ namespace Extern {
                 name.len, name.buff, osErrBuff
             );
 
-            Arena::rollback(&ctx->stringArena, fullPath);
+            Arena::rollback(stringArena, fullPath);
 
             return Err::UNEXPECTED_ERROR;
         }
@@ -239,7 +244,7 @@ namespace Extern {
 
             FreeLibrary(hnd);
 
-            Diag::report(ctx->unit->ast, NULL, Err::UNEXPECTED_ERROR,
+            Diag::report(ast, NULL, Err::UNEXPECTED_ERROR,
                 Diag::Format{
                     "Internal Error: Unable to open native library for identity verification.\n"
                     "  Resolved Path: %ls\n"
@@ -248,7 +253,7 @@ namespace Extern {
                 fullPath, osErrBuff
             );
 
-            Arena::rollback(&ctx->stringArena, fullPath);
+            Arena::rollback(stringArena, fullPath);
 
             return Err::UNEXPECTED_ERROR;
         }
@@ -262,7 +267,7 @@ namespace Extern {
             CloseHandle(hFile);
             FreeLibrary((HMODULE) hnd);
 
-            Diag::report(ctx->unit->ast, NULL, Err::UNEXPECTED_ERROR,
+            Diag::report(ast, NULL, Err::UNEXPECTED_ERROR,
                 Diag::Format{
                     "Internal Error: Failed to retrieve unique identity for native library.\n"
                     "  The compiler cannot verify if this file is already loaded.\n"
@@ -272,7 +277,7 @@ namespace Extern {
                 fullPath, osErrBuff
             );
 
-            Arena::rollback(&ctx->stringArena, fullPath);
+            Arena::rollback(stringArena, fullPath);
 
             return Err::UNEXPECTED_ERROR;
         }
@@ -308,9 +313,9 @@ namespace Extern {
                     unlockLibSet();
                     formatOsError(GetLastError(), osErrBuff, sizeof(osErrBuff));
 
-                    Arena::rollback(&ctx->stringArena, wname.buff);
+                    Arena::rollback(stringArena, wname.len * sizeof(wchar_t));
 
-                    Diag::report(ctx->unit->ast, NULL, Err::LIBRARY_LOAD_FAILED,
+                    Diag::report(ast, NULL, Err::LIBRARY_LOAD_FAILED,
                         Diag::Format{
                             "Failed to initialize native library for compile-time execution.\n"
                             "  The library was previously verified but could not be loaded as code.\n"
@@ -332,20 +337,24 @@ namespace Extern {
 
         unlockLibSet();
 
-        Arena::rollback(&ctx->stringArena, fullPath);
+        // TODO
+        // Arena::rollback(stringArena, fullPath);
 
         return Err::OK;
     }
 
-    Err::Err ensureFunctionExists(Validator::ValidationContext* ctx, LibraryHandle hLib, Function* fcn) {
-        Library* lib = hLib;
+    Err::Err resolveFunction(AstContext* ast, Function* fcn) {
+        Library* lib = fcn->lib;
 
-        char* cstr = toCString(&ctx->stringArena, String { fcn->name.buff, fcn->name.len });
+        // TODO
+        Arena::Container* stringArena = alc;
+
+        char* cstr = toCString(stringArena, String { fcn->name.buff, fcn->name.len });
         FARPROC addr = GetProcAddress((HMODULE) lib->osHandle, cstr);
         if (!addr) {
             formatOsError(GetLastError(), osErrBuff, sizeof(osErrBuff));
 
-            Diag::report(ctx->unit->ast, fcn->base.span, Err::SYMBOL_NOT_FOUND,
+            Diag::report(ast, fcn->base.span, Err::SYMBOL_NOT_FOUND,
                 Diag::Format{
                     "Failed to bind native symbol '%.*s'.\n"
                     "  The symbol '%s' was not found in the loaded library.\n"
@@ -361,52 +370,13 @@ namespace Extern {
             return Err::SYMBOL_NOT_FOUND;
         }
 
-        fcn->externAddress = (void*) addr;
-        Arena::rollback(&ctx->stringArena, cstr);
-
-        return Err::OK;
-    }
-
-    Err::Err bindFunction(Validator::ValidationContext* ctx, Library* lib, Function* fcn) {
-        if (!lib->osHandle || lib->loadLevel != LL_EXECUTE) {
-            LibraryHandle hDummy;
-            Err::Err err = loadLibrary(ctx, lib->name, LL_EXECUTE, &hDummy);
-            if (err != Err::OK) return err;
+        if (lib->loadLevel == LL_EXECUTE) {
+            fcn->externAddress = (void*) addr;
         }
 
-        char stackBuffer[256];
-        char* cstr = stackBuffer;
-        if (fcn->name.len >= 256) {
-            cstr = (char*) Arena::push(&ctx->stringArena, fcn->name.len + 1);
-        }
-        memcpy(cstr, fcn->name.buff, fcn->name.len);
-        cstr[fcn->name.len] = '\0';
+        // TODO
+        // Arena::rollback(stringArena, cstr);
 
-        void* addr = NULL;
-        addr = (void*) GetProcAddress((HMODULE) lib->osHandle, cstr);
-
-        if (!addr) {
-            formatOsError(GetLastError(), osErrBuff, sizeof(osErrBuff));
-
-            Diag::report(ctx->unit->ast, fcn->base.span, Err::SYMBOL_NOT_FOUND,
-                Diag::Format{
-                    "Failed to bind native function '%.*s'.\n"
-                    "  The symbol '%s' was not found in the library.\n"
-                    "  Library Path: %.*s\n"
-                    "  System Error: %s\n"
-                },
-                fcn->name.len, fcn->name.buff, cstr,
-                lib->dllPath.len, lib->dllPath.buff, osErrBuff
-            );
-
-            if (cstr != stackBuffer) free(cstr);
-            return Err::SYMBOL_NOT_FOUND;
-        }
-
-        fcn->externAddress = addr;
-        fcn->base.cmpStatus = TS_READY;
-
-        if (cstr != stackBuffer) free(cstr);
         return Err::OK;
     }
 
@@ -505,8 +475,22 @@ namespace Extern {
 
     // TODO : better var names
     // TODO : [fix] size/alignment is not recorded
-    Err::Err compile(Validator::ValidationContext* ctx, Abi::Driver* abi, Function* fcn) {
+    Err::Err compile(AstContext* ast, Abi::Driver* abi, Function* fcn) {
         if (fcn->abiCtx) return Err::OK;
+
+        Library* lib = fcn->lib;
+        if (lib->loadLevel != LL_EXECUTE) {
+            if (lib->osHandle) {
+                FreeLibrary((HMODULE) lib->osHandle);
+            }
+
+            Err::Err err;
+            err = loadLibrary(ast, lib->dllPath, LL_EXECUTE, &fcn->lib);
+            if (err != Err::OK) return err;
+
+            err = resolveFunction(ast, fcn);
+            if (err != Err::OK) return err;
+        }
 
         const uint32_t argCount = fcn->prototype.inArgCount;
         VariableDefinition** args = fcn->prototype.inArgs;
@@ -542,7 +526,7 @@ namespace Extern {
             uintptr_t ptr = Utils::alignForward(stackOffset, abi->stackAlign);
 
             if (Type::isStructLike(src->typeKind)) {
-                Abi::ensureTypeInfoReady(ctx, src->def, abi);
+                Abi::ensureTypeInfoReady(ast, src->def, abi);
                 dest->size = src->def->typeInfoAbi->info->base.size;
             } else {
                 dest->size = Type::basicTypes[src->typeKind].size;
@@ -566,14 +550,30 @@ namespace Extern {
         return Err::OK;
     }
 
-    Err::Err invoke(AstContext* ast, Abi::Driver* abi, Function* fcn, Variable** args, uint32_t argCount, Variable* out) {
-        Abi::fillArgs(ast, fcn->abiCtx, args, argCount);
+    Err::Err invoke(AstContext* ast, Abi::Driver* abi, Function* fcn, uint8_t* out) {
         abi->invoke(fcn->abiCtx);
 
-        Err::Err err = Abi::stackToVar(ast, out, (uint8_t*) fcn->abiCtx->retArg.data.ptr);
+        Variable* outVar = fcn->prototype.outArg->var;
+        Err::Err err = Abi::transcode(
+            ast,
+            (uint8_t*) &fcn->abiCtx->retArg.data.i64,
+            out,
+            Type::getDtype(outVar->value.any, outVar->value.typeKind),// TODO : we need a way to get ABI dtype
+            Type::getDtype(outVar->value.any, outVar->value.typeKind)
+        );
         if (err != Err::OK) return err;
 
         return Err::OK;
+    }
+
+    Err::Err invoke(AstContext* ast, Abi::Driver* abi, Function* fcn, Variable* out) {
+        // TODO
+        return Err::OK;
+    }
+
+    Err::Err invoke(AstContext* ast, Abi::Driver* abi, Function* fcn, Variable** args, uint32_t argCount, Variable* out) {
+        Abi::fillArgs(ast, fcn->abiCtx, args, argCount);
+        return invoke(ast, abi, fcn, out);
     }
 
 }
@@ -588,6 +588,24 @@ namespace Extern::Abi {
         #endif
     }
 
+    const char* str(ArgPassKind passKind) {
+        switch (passKind) {
+            case PK_REG_INT:               return "PK_REG_INT";
+            case PK_REG_INT_UP:            return "PK_REG_INT_UP";
+            case PK_REG_FLOAT:             return "PK_REG_FLOAT";
+            case PK_REG_FLOAT_UP:          return "PK_REG_FLOAT_UP";
+
+            case PK_REG_STRUCT:            return "PK_REG_STRUCT";
+            case PK_REG_STRUCT_SPLIT:      return "PK_REG_STRUCT_SPLIT";
+            case PK_REG_STRUCT_REFERENCE:  return "PK_REG_STRUCT_REFERENCE";
+
+            case PK_MEM_STRUCT:            return "PK_MEM_STRUCT";
+            case PK_MEM_STRUCT_REFERENCE:  return "PK_MEM_STRUCT_REFERENCE";
+
+            default:                       return "PK_UNKNOWN";
+        }
+    }
+
     bool isRegFloat(ArgPassKind pass) {
         return pass == PK_REG_FLOAT;
     }
@@ -596,85 +614,17 @@ namespace Extern::Abi {
         return pass == PK_REG_INT;
     }
 
-    Err::Err stackToVar(AstContext* ast, Variable* var, uint8_t* stack) {
-        Value* val = &var->value;
-
-        switch (val->typeKind) {
-            case Type::DT_I8:
-            case Type::DT_U8:
-            case Type::DT_I16:
-            case Type::DT_U16:
-            case Type::DT_I32:
-            case Type::DT_U32:
-            case Type::DT_I64:
-            case Type::DT_U64:
-            case Type::DT_F32:
-            case Type::DT_F64: {
-                val->u64 = (uint64_t) stack;
-                break;
-            }
-
-            case Type::DT_CUSTOM: {
-                Type::StructInfo* sInfo = (Type::StructInfo*)val->def->typeInfo;
-
-                Variable* currentVar = unwrap(var);
-                if (currentVar->def) currentVar = unwrap(currentVar->def->var);
-
-                if (!currentVar->expression || currentVar->expression->type != EXT_TYPE_INITIALIZATION) {
-                    Diag::report(ast, var->base.span, Err::UNEXPECTED_SYMBOL,
-                        "Expected struct initialization expression to populate from stack.");
-                    return Err::UNEXPECTED_ERROR;
-                }
-
-                TypeInitialization* init = (TypeInitialization*)currentVar->expression;
-
-                for (int i = 0; i < sInfo->memberCount; i++) {
-                    Type::StructMemberInfo* mInfo = sInfo->members + i;
-
-                    Variable* mVar = NULL;
-                    if (i < init->attributeCount) {
-                        mVar = init->attributes[i];
-                    }
-                    else if (init->fillVar) {
-                        mVar = init->fillVar;
-                    }
-                    else {
-                        mVar = val->def->vars[i];
-                    }
-
-                    uint8_t* mBuff = stack + mInfo->offset;
-
-                    Err::Err err = stackToVar(ast, mVar, mBuff);
-                    if (err != Err::OK) return err;
-                }
-                break;
-            }
-
-            case Type::DT_SLICE:
-            case Type::DT_ARRAY:
-            case Type::DT_FUNCTION: {
-                Diag::report(ast, var->base.span,
-                    Err::NOT_YET_IMPLEMENTED, Diag::Format{
-                        "Stack-to-Variable conversion for %s not yet implemented"
-                    }, Type::str(val->typeKind));
-                return Err::NOT_YET_IMPLEMENTED;
-            }
-
-            default: {
-                Diag::report(ast, var->base.span,
-                    Err::UNEXPECTED_ERROR, Diag::Format{
-                        "Invalid type kind (%i) in stackToVar"
-                    }, val->typeKind);
-                return Err::UNEXPECTED_ERROR;
-            }
-        }
-
-        return Err::OK;
-    }
-
-    // stack size has to be able to fit the value
-    Err::Err varToStack(AstContext* ast, Variable* var, uint8_t* stack) {
-        Value* val = &var->value;
+    // TODO: move note to .h or somewhere
+    // NOTE: the primitive dtype itself dictates how data are aligned
+    //       as its they are the only types the language can speak in
+    //       if ABI has different vision, it shall be called with whatever
+    //       raw data that by the logic of the language reassembly in
+    //       right bit representation!
+    // NOTE: these functions are meant to do transformations for compile
+    //       time evaluation, therefore the src is expected to be evaluated,
+    //       so the value is first class citizen.
+    Err::Err marshal(AstContext* ast, Variable* src, uint8_t* dest, Type::TypeInfo* typeInfo) {
+        Value* val = &src->value;
 
         switch (val->typeKind) {
             case Type::DT_I8:
@@ -688,25 +638,24 @@ namespace Extern::Abi {
             case Type::DT_F32:
             case Type::DT_F64: {
                 const int size = (Type::basicTypes + val->typeKind)->size;
-                memcpy(stack, &val->u64, size);
+                memcpy(dest, &val->u64, size);
                 break;
             }
 
             case Type::DT_CUSTOM: {
-                Abi::TypeInfo* info = val->def->typeInfoAbi;
-                Type::StructInfo* sInfo = (Type::StructInfo*) val->def->typeInfo;
+                Type::StructInfo* sInfo = (Type::StructInfo*) typeInfo;
 
-                var = unwrap(var);
-                if (var->def) var = unwrap(var->def->var);
+                src = unwrap(src);
+                if (src->def) src = unwrap(src->def->var);
 
                 // TODO : for now assuming that it can be only init
-                if (!var->expression || var->expression->type != EXT_TYPE_INITIALIZATION) {
-                    Diag::report(ast, var->base.span, Err::UNEXPECTED_SYMBOL,
+                if (!src->expression || src->expression->type != EXT_TYPE_INITIALIZATION) {
+                    Diag::report(ast, src->base.span, Err::UNEXPECTED_SYMBOL,
                         "Expected struct initialization expression.");
                     return Err::UNEXPECTED_ERROR;
                 }
 
-                TypeInitialization* init = (TypeInitialization*) var->expression;
+                TypeInitialization* init = (TypeInitialization*) src->expression;
                 for (int i = 0; i < sInfo->memberCount; i++) {
                     Type::StructMemberInfo* mInfo = sInfo->members + i;
 
@@ -719,9 +668,7 @@ namespace Extern::Abi {
                         mVar = val->def->vars[i];
                     }
 
-                    uint8_t* mBuff = stack + mInfo->offset;
-
-                    Err::Err err = varToStack(ast, mVar, mBuff);
+                    Err::Err err = marshal(ast, mVar, dest + mInfo->offset, mInfo->type);
                     if (err != Err::OK) return err;
                 }
 
@@ -734,7 +681,7 @@ namespace Extern::Abi {
             case Type::DT_COUNT:
             case Type::DT_MULTIPLE_TYPES:
             case Type::DT_ARRAY: {
-                Diag::report(ast, var->base.span,
+                Diag::report(ast, src->base.span,
                     Err::NOT_YET_IMPLEMENTED, Diag::Format {
                         "Compile-time conversion for %s not yet implemented"
                     }, Type::str(val->typeKind));
@@ -742,7 +689,7 @@ namespace Extern::Abi {
             }
 
             default: {
-                Diag::report(ast, var->base.span,
+                Diag::report(ast, src->base.span,
                     Err::UNEXPECTED_ERROR, Diag::Format {
                         "Invalid type kind (%i) in ValueToStack"
                     }, val->typeKind);
@@ -754,9 +701,156 @@ namespace Extern::Abi {
         return Err::OK;
     }
 
+    Err::Err unmarshal(AstContext* ast, uint8_t* src, Variable* dest, Type::TypeInfo* typeInfo) {
+        switch (typeInfo->kind) {
+            case Type::DT_I8:
+            case Type::DT_U8:
+            case Type::DT_I16:
+            case Type::DT_U16:
+            case Type::DT_I32:
+            case Type::DT_U32:
+            case Type::DT_I64:
+            case Type::DT_U64:
+            case Type::DT_F32:
+            case Type::DT_F64: {
+                dest->value.u64 = 0;
+                memcpy(&dest->value.u64, src, typeInfo->size);
+                break;
+            }
+
+            case Type::DT_CUSTOM: {
+                Type::StructInfo* sInfo = (Type::StructInfo*) typeInfo;
+
+                TypeInitialization* init = Ast::Node::makeTypeInitialization();
+                init->attributeCount = sInfo->memberCount;
+                init->attributes = (Variable**) alloc(alc, init->attributeCount * sizeof(Variable*));
+
+                for (int i = 0; i < (int) sInfo->memberCount; i++) {
+                    Type::StructMemberInfo* mInfo = sInfo->members + i;
+
+                    Variable* mVar = Ast::Node::makeVariable();
+                    mVar->value.typeKind = mInfo->type->kind;
+                    mVar->value.def =
+                        mInfo->type->kind == Type::DT_CUSTOM ?
+                        (TypeDefinition*) mInfo->type : NULL;
+
+                    uint8_t* mBuff = src + mInfo->offset;
+
+                    Err::Err err = unmarshal(ast, mBuff, mVar, mInfo->type);
+                    if (err != Err::OK) return err;
+
+                    init->attributes[i] = mVar;
+                }
+
+                dest->expression = (Expression*) init;
+                break;
+            }
+
+            case Type::DT_SLICE:
+            case Type::DT_ARRAY:
+            case Type::DT_FUNCTION: {
+                Diag::report(ast, dest->base.span,
+                    Err::NOT_YET_IMPLEMENTED, Diag::Format{
+                        "Stack-to-Variable conversion for %s not yet implemented"
+                    }, Type::str(typeInfo->kind));
+                return Err::NOT_YET_IMPLEMENTED;
+            }
+
+            default: {
+                Diag::report(ast, dest->base.span,
+                    Err::UNEXPECTED_ERROR, Diag::Format{
+                        "Invalid type kind (%i) in stackToVar"
+                    }, typeInfo->kind);
+                return Err::UNEXPECTED_ERROR;
+            }
+        }
+
+        return Err::OK;
+    }
+
+    Err::Err transcode(AstContext* ast, uint8_t* src, uint8_t* dest, Type::TypeInfo* srcTypeInfo, Type::TypeInfo* destTypeInfo) {
+        switch (srcTypeInfo->kind) {
+            case Type::DT_I8:
+            case Type::DT_U8:
+            case Type::DT_I16:
+            case Type::DT_U16:
+            case Type::DT_I32:
+            case Type::DT_U32:
+            case Type::DT_I64:
+            case Type::DT_U64:
+            case Type::DT_F32:
+            case Type::DT_F64: {
+                if (destTypeInfo->size > srcTypeInfo->size) {
+                    memset(dest, 0, destTypeInfo->size);
+                }
+                memcpy(dest, src, srcTypeInfo->size);
+                break;
+            }
+
+            case Type::DT_CUSTOM: {
+                Type::StructInfo* srcSInfo  = (Type::StructInfo*) srcTypeInfo;
+                Type::StructInfo* destSInfo = (Type::StructInfo*) destTypeInfo;
+
+                for (int i = 0; i < (int) srcSInfo->memberCount; i++) {
+                    Type::StructMemberInfo* srcMInfo  = srcSInfo->members + i;
+                    Type::StructMemberInfo* destMInfo = destSInfo->members + i;
+
+                    uint8_t* srcMBuff  = src + srcMInfo->offset;
+                    uint8_t* destMBuff = dest + destMInfo->offset;
+
+                    Err::Err err = transcode(ast, srcMBuff, destMBuff, srcMInfo->type, destMInfo->type);
+                    if (err != Err::OK) return err;
+                }
+
+                break;
+            }
+
+            case Type::DT_ARRAY: {
+                Type::ArrayInfo* srcAInfo  = (Type::ArrayInfo*) srcTypeInfo;
+                Type::ArrayInfo* destAInfo = (Type::ArrayInfo*) destTypeInfo;
+
+                uint32_t srcStride  = srcAInfo->element->size;
+                uint32_t destStride = destAInfo->element->size;
+
+                for (uint32_t i = 0; i < srcAInfo->elementCount; i++) {
+                    Err::Err err = transcode(
+                        ast,
+                        src  + (i * srcStride),
+                        dest + (i * destStride),
+                        srcAInfo->element,
+                        destAInfo->element
+                    );
+                    if (err != Err::OK) return err;
+                }
+
+                break;
+            }
+
+            case Type::DT_SLICE:
+            case Type::DT_FUNCTION: {
+                Diag::report(ast, NULL,
+                    Err::NOT_YET_IMPLEMENTED, Diag::Format{
+                        "TODO: transcode error"
+                    });
+                return Err::NOT_YET_IMPLEMENTED;
+            }
+
+            default: {
+                Diag::report(ast, NULL,
+                    Err::UNEXPECTED_ERROR, Diag::Format{
+                        "TODO: transcode"
+                    });
+                return Err::UNEXPECTED_ERROR;
+            }
+        }
+
+        return Err::OK;
+    }
+
     void fillArgs(AstContext* ast, Abi::CallContext* ctx, Variable** args, uint32_t argCount) {
         uint32_t  stackSize;
         uintptr_t stack = Interpreter::getExeFramePointer(ctx->abi->stackAlign, &stackSize);
+
         if (ctx->argStackSize > stackSize) {
             Diag::report(ast, NULL, Err::UNEXPECTED_ERROR,
                 "Native call failed: stack argument space exceeded."
@@ -777,8 +871,10 @@ namespace Extern::Abi {
 
                 case Abi::PK_MEM_STRUCT_REFERENCE:
                 case Abi::PK_REG_STRUCT_REFERENCE: {
+                    Type::TypeInfo* typeInfo = &src->value.def->typeInfoAbi->info->base;
+
                     stack = Utils::alignForward(stack, ctx->abi->indirectAlignment);
-                    Abi::varToStack(ast, src, (uint8_t*) stack);
+                    Abi::marshal(ast, src, (uint8_t*) stack, typeInfo);
                     dest->data.i64 = stack;
 
                     stack += ctx->abi->layout.wordSize;
@@ -786,10 +882,12 @@ namespace Extern::Abi {
                 }
 
                 case Abi::PK_REG_STRUCT: {
+                    Type::TypeInfo* typeInfo = &src->value.def->typeInfoAbi->info->base;
+
                     stack = Utils::alignForward(stack, ctx->abi->layout.wordSize);
 
                     const size_t offset = ctx->abi->layout.wordSize - dest->size;
-                    Abi::varToStack(ast, src, ((uint8_t*) stack) + offset);
+                    Abi::marshal(ast, src, ((uint8_t*) stack) + offset, typeInfo);
 
                     memset((void*) stack, 0, offset);
                     dest->data.i64 = *((int64_t*) stack);
@@ -799,19 +897,83 @@ namespace Extern::Abi {
                 }
 
                 case Abi::PK_MEM_STRUCT: {
-                    Abi::TypeInfo* info = src->value.def->typeInfoAbi;
+                    Type::TypeInfo* typeInfo = &src->value.def->typeInfoAbi->info->base;
 
-                    stack = Utils::alignForward(stack, info->info->base.align);
-                    Abi::varToStack(ast, src, (uint8_t*) stack);
+                    stack = Utils::alignForward(stack, typeInfo->align);
+                    Abi::marshal(ast, src, (uint8_t*) stack, typeInfo);
 
                     dest->data.i64 = *((int64_t*) stack);
 
-                    stack += info->info->base.size;
+                    stack += typeInfo->size;
                     break;
                 }
 
                 default: {
                     // Error: not yet implemented
+                }
+            }
+        }
+    }
+
+    void fillArgsFromVM(AstContext* ast, Abi::CallContext* ctx, uintptr_t sp, uint32_t argCount) {
+        uint32_t stackSize;
+        Interpreter::vmword* fp = (Interpreter::vmword*)
+            Interpreter::getExeFramePointer(ctx->abi->stackAlign, &stackSize);
+
+        if (ctx->argStackSize > stackSize) {
+            Diag::report(ast, NULL, Err::UNEXPECTED_ERROR,
+                "Native call failed: stack argument space exceeded.");
+            return;
+        }
+
+        uint32_t offset;
+
+        for (uint32_t i = 0; i < argCount; i++) {
+            Abi::Arg* dest = &ctx->args[i];
+
+            switch (dest->pass) {
+                case Abi::PK_REG_INT:
+                case Abi::PK_REG_FLOAT: {
+                    dest->data.i64 = (uint64_t) fp[offset];
+                    offset++;
+                    break;
+                }
+
+                case Abi::PK_MEM_STRUCT_REFERENCE:
+                case Abi::PK_REG_STRUCT_REFERENCE: {
+                    sp = Utils::alignForward((uintptr_t) sp, ctx->abi->indirectAlignment);
+
+                    // TODO:
+                    // The VM stack holds the raw bytes of the struct in 'C-style alignment'.
+                    // For now we just copy it directly, but later we have to adust it for
+                    // general alignment rules...
+                    uint32_t wordsToCopy = BYTES_TO_WORDS(dest->size);
+                    memcpy((void*) sp, fp + offset, dest->size);
+
+                    dest->data.ptr = (void*) sp;
+
+                    sp += ctx->abi->layout.wordSize;
+                    offset += wordsToCopy;
+
+                    break;
+                }
+
+                case Abi::PK_REG_STRUCT: {
+                    // TODO
+                }
+
+                case Abi::PK_MEM_STRUCT: {
+                    // TODO
+                }
+
+                default: {
+                    Diag::report(ast, NULL, Err::NOT_YET_IMPLEMENTED,
+                        Diag::Format {
+                            "Unhandled ABI pass kind '%s' in fillArgsFromStack."
+                        },
+                        Abi::str(dest->pass)
+                    );
+                    break;
                 }
             }
         }
@@ -894,20 +1056,20 @@ namespace Extern::Abi {
     // TODO : we reuse for now cmpStatus, but later think of either
     // implementing custom task states or add linear task states levels
     // ex TS_READY_2, TS_RUNNING_2 etc.
-    Err::Err ensureTypeInfoReady(Validator::ValidationContext* ctx, TypeDefinition* td, Driver* driver) {
+    Err::Err ensureTypeInfoReady(AstContext* ast, TypeDefinition* td, Driver* driver) {
         Err::Err err = Err::OK;
 
         if (td->base.cmpStatus == TS_READY) return Err::OK;
 
         AcquireNodeReturn ans =
-            acquireNode(&td->base.cmpStatus, &td->base.workerId, ctx->workerId, true);
+            acquireNode(&td->base.cmpStatus, &td->base.workerId, TaskSystem::getWorkerId(), true);
 
         if (ans == ANR_ACQUIRED_FOR_WORK) {
             td->typeInfoAbi->info = (Type::TypeInfoEx*) computeTypeInfo(&driver->layout, &td->typeInfo->base);
             releaseNode(&td->base.cmpStatus, true);
         } else if (ans == ANR_ALREADY_ACQUIRED_BY_CALLER) {
             // TODO : Proper Errors
-            Diag::report(ctx->unit->ast, td->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
+            Diag::report(ast, td->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
                 "TODO : Node being validated is already on stack! Causing circular dependency!"
             });
             return Err::UNEXPECTED_ERROR;

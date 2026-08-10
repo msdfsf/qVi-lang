@@ -36,7 +36,7 @@ void Ast::init(AstRegistry* reg) {
 
     for (int i = 0; i < AstRegistry::dataSize; i++) {
         DArray::init(reg->data + i, initSize, sizeof(void*));
-        (reg->data + i)->constCoef = 0;
+        (reg->data + i)->constCoef = 1;
         (reg->data + i)->constTerm = (reg->data + i)->allocSize;
     }
 }
@@ -919,6 +919,7 @@ void Ast::Node::init(VariableDefinition* node) {
     node->var->def = node;
     node->lastPtr = NULL;
     node->dtype = NULL;
+    node->vmOwnerExe = NULL;
     ::init(&node->base);
     node->base.type = NT_VARIABLE_DEFINITION;
 }

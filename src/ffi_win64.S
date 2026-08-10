@@ -57,9 +57,9 @@ asm_win64Invoke:
     xor R_IDX, R_IDX
 
     # If return value is not fitting into reg,
-    # pointer to store it is first the first arg
-    # and inputs are shifted, so we just skip one loop
-    # iteration
+    # pointer to store it is the first arg and
+    # inputs are shifted. Therefore we just skip
+    # one loop iteration
     movzx rax, byte ptr [R_RET_ARG + offset_arg_kind]
     cmp   rax, AK_AGGREGATE
     jne   loop

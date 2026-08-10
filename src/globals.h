@@ -95,6 +95,7 @@ enum State : uint64_t {
 
     IS_RENDERED = 1 << 24,
 
+    IS_CASTED_FROM_LOWER_LEVEL = 1 << 25,
     // TODO : better name
     // If children are unique. Where both, children and unique,
     // are relative to the specific node type.

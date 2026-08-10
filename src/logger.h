@@ -43,9 +43,9 @@ namespace Logger {
 
     // TODO : pick good colors
     struct SpanStyle {
-        const char* colorGutter    = AC_BRIGHT_BLACK; // Line numbers
-        const char* colorText      = AC_BRIGHT_WHITE;        // The source code
-        const char* colorHighlight = AC_BRIGHT_MAGENTA;          // The specific highlighted text
+        const char* colorGutter    = AC_BRIGHT_BLACK;   // Line numbers
+        const char* colorText      = AC_BRIGHT_WHITE;   // The source code
+        const char* colorHighlight = AC_BRIGHT_MAGENTA; // The specific highlighted text
         const char* colorUnderline = AC_BRIGHT_CYAN;
         const char* colorPointer   = AC_BRIGHT_RED;
 

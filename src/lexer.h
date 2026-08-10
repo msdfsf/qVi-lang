@@ -476,11 +476,12 @@ namespace Lex {
     static inline OperatorEnum toPostfixOperator(Token val) {
 
         switch (val.kind) {
-
+            case TK_OP_SUBSCRIPT        : return OP_SUBSCRIPT;
+            case TK_PARENTHESIS_BEGIN   : return OP_CALL;
+            case TK_OP_MEMBER_SELECTION : return OP_MEMBER_SELECTION;
             case TK_OP_INCREMENT        : return OP_INCREMENT;
             case TK_OP_DECREMENT        : return OP_DECREMENT;
             default                     : return OP_NONE;
-
         }
 
     }

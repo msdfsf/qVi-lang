@@ -31,6 +31,24 @@ namespace Interpreter {
     Set::Container functionsSet;
     DArray::Container functionsArray;
 
+    Logger::SpanStyle gSpanStyle = {
+        .colorText      = AC_BRIGHT_CYAN,
+        .colorHighlight = AC_BRIGHT_CYAN,
+
+        .contextLines  = 0,
+        .showGutter    = false,
+        .showUnderline = false
+    };
+
+    Logger::SpanStyle gSpanStyleSub = {
+        .colorText      = AC_BRIGHT_BLACK,
+        .colorHighlight = AC_BRIGHT_BLACK,
+
+        .contextLines  = 0,
+        .showGutter    = false,
+        .showUnderline = false
+    };
+
     void initDebug(CompilerState* state) {
         Set::init(&functionsSet, 256);
         DArray::init(&functionsArray, 128, sizeof(Function*));
@@ -50,7 +68,7 @@ namespace Interpreter {
             case OC_PUSH_F32:   return 5;
             case OC_PUSH_F64:   return 9;
             case OC_PUSH_PTR:   return 9;
-            case OC_PUSH_BLOB:  return 9;
+            case OC_PUSH_BLOB:  return 1 + 8 + 8;
 
             case OC_SET_I8:     return 9;
             case OC_SET_U8:     return 9;
@@ -63,7 +81,7 @@ namespace Interpreter {
             case OC_SET_F32:    return 9;
             case OC_SET_F64:    return 9;
             case OC_SET_PTR:    return 9;
-            case OC_SET_BLOB:   return 9;
+            case OC_SET_BLOB:   return 1 + 8 + 8;
 
             case OC_GET_I8:
             case OC_GET_U8:
@@ -76,7 +94,33 @@ namespace Interpreter {
             case OC_GET_F32:
             case OC_GET_F64:
             case OC_GET_PTR:
-            case OC_GET_BLOB:   return 9;
+            case OC_GET_BLOB:   return 1 + 8 + 8;
+
+            case OC_SET_GLOBAL_I8:   return 1 + 8 + 8;
+            case OC_SET_GLOBAL_U8:   return 1 + 8 + 8;
+            case OC_SET_GLOBAL_I16:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_U16:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_I32:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_U32:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_I64:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_U64:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_F32:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_F64:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_PTR:  return 1 + 8 + 8;
+            case OC_SET_GLOBAL_BLOB: return 1 + 8 + 8;
+
+            case OC_GET_GLOBAL_I8:   return 1 + 8 + 8;
+            case OC_GET_GLOBAL_U8:   return 1 + 8 + 8;
+            case OC_GET_GLOBAL_I16:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_U16:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_I32:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_U32:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_I64:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_U64:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_F32:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_F64:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_PTR:  return 1 + 8 + 8;
+            case OC_GET_GLOBAL_BLOB: return 1 + 8 + 8;
 
             case OC_LOAD_I8:
             case OC_LOAD_U8:
@@ -105,18 +149,22 @@ namespace Interpreter {
             case OC_STORE_BLOB: return 1;
 
             case OC_LEA:
-            case OC_LEA_CONST: return (1 + 8);
-
-            case OC_STORE_INDEXED:
-            case OC_STORE_INDEXED_TMP: return (1 + 2 * 8);
+            case OC_LEA_CONST:  return (1 + 8);
+            case OC_LEA_GLOBAL: return (1 + 8 + 8);
 
             case OC_PTR_IDX: return 9;
-            case OC_DEREF:   return 1;
 
             case OC_POP:    return 1;
             case OC_POP_N:  return 9;
             case OC_DUP:    return 1;
             case OC_CROP:   return 3 * 8 + 1;
+
+            case OC_NEG_I32: return 1;
+            case OC_NEG_U32: return 1;
+            case OC_NEG_I64: return 1;
+            case OC_NEG_U64: return 1;
+            case OC_NEG_F32: return 1;
+            case OC_NEG_F64: return 1;
 
             case OC_ADD_I32: return 1;
             case OC_ADD_U32: return 1;
@@ -254,7 +302,7 @@ namespace Interpreter {
             case OC_GROW:   return (1 + 8);
 
             case OC_CALL:   return (1 + 8 + 8);
-            case OC_RET:    return 1;
+            case OC_RET:    return 1 + 8;
 
             case OC_NOP:    return 1;
             case OC_HALT:   return 1;
@@ -282,50 +330,74 @@ namespace Interpreter {
 
         switch (opcode) {
 
-            case OC_PUSH_I8:    return "push_i8";
-            case OC_PUSH_U8:    return "push_u8";
-            case OC_PUSH_I16:   return "push_i16";
-            case OC_PUSH_U16:   return "push_u16";
-            case OC_PUSH_I32:   return "push_i32";
-            case OC_PUSH_U32:   return "push_u32";
-            case OC_PUSH_I64:   return "push_i64";
-            case OC_PUSH_U64:   return "push_u64";
-            case OC_PUSH_F32:   return "push_f32";
-            case OC_PUSH_F64:   return "push_f64";
-            case OC_PUSH_PTR:   return "push_ptr";
+            case OC_PUSH_I8:   return "push_i8";
+            case OC_PUSH_U8:   return "push_u8";
+            case OC_PUSH_I16:  return "push_i16";
+            case OC_PUSH_U16:  return "push_u16";
+            case OC_PUSH_I32:  return "push_i32";
+            case OC_PUSH_U32:  return "push_u32";
+            case OC_PUSH_I64:  return "push_i64";
+            case OC_PUSH_U64:  return "push_u64";
+            case OC_PUSH_F32:  return "push_f32";
+            case OC_PUSH_F64:  return "push_f64";
+            case OC_PUSH_PTR:  return "push_ptr";
             case OC_PUSH_BLOB: return "push_const";
 
-            case OC_SET_I8:    return "set_i8";
-            case OC_SET_U8:    return "set_u8";
-            case OC_SET_I16:   return "set_i16";
-            case OC_SET_U16:   return "set_u16";
-            case OC_SET_I32:   return "set_i32";
-            case OC_SET_U32:   return "set_u32";
-            case OC_SET_I64:   return "set_i64";
-            case OC_SET_U64:   return "set_u64";
-            case OC_SET_F32:   return "set_f32";
-            case OC_SET_F64:   return "set_f64";
-            case OC_SET_PTR:   return "set_ptr";
-            case OC_SET_BLOB: return "set_local";
+            case OC_SET_I8:   return "set_i8";
+            case OC_SET_U8:   return "set_u8";
+            case OC_SET_I16:  return "set_i16";
+            case OC_SET_U16:  return "set_u16";
+            case OC_SET_I32:  return "set_i32";
+            case OC_SET_U32:  return "set_u32";
+            case OC_SET_I64:  return "set_i64";
+            case OC_SET_U64:  return "set_u64";
+            case OC_SET_F32:  return "set_f32";
+            case OC_SET_F64:  return "set_f64";
+            case OC_SET_PTR:  return "set_ptr";
+            case OC_SET_BLOB: return "set_blob";
 
-            case OC_GET_I8:    return "get_i8";
-            case OC_GET_U8:    return "get_u8";
-            case OC_GET_I16:   return "get_i16";
-            case OC_GET_U16:   return "get_u16";
-            case OC_GET_I32:   return "get_i32";
-            case OC_GET_U32:   return "get_u32";
-            case OC_GET_I64:   return "get_i64";
-            case OC_GET_U64:   return "get_u64";
-            case OC_GET_F32:   return "get_f32";
-            case OC_GET_F64:   return "get_f64";
-            case OC_GET_PTR:   return "get_ptr";
-            case OC_GET_BLOB: return "get_local";
+            case OC_GET_I8:   return "get_i8";
+            case OC_GET_U8:   return "get_u8";
+            case OC_GET_I16:  return "get_i16";
+            case OC_GET_U16:  return "get_u16";
+            case OC_GET_I32:  return "get_i32";
+            case OC_GET_U32:  return "get_u32";
+            case OC_GET_I64:  return "get_i64";
+            case OC_GET_U64:  return "get_u64";
+            case OC_GET_F32:  return "get_f32";
+            case OC_GET_F64:  return "get_f64";
+            case OC_GET_PTR:  return "get_ptr";
+            case OC_GET_BLOB: return "get_blob";
 
-            case OC_LEA:       return "lea";
-            case OC_LEA_CONST: return "lea_const";
+            case OC_SET_GLOBAL_I8:   return "set_global_i8";
+            case OC_SET_GLOBAL_U8:   return "set_global_u8";
+            case OC_SET_GLOBAL_I16:  return "set_global_i16";
+            case OC_SET_GLOBAL_U16:  return "set_global_u16";
+            case OC_SET_GLOBAL_I32:  return "set_global_i32";
+            case OC_SET_GLOBAL_U32:  return "set_global_u32";
+            case OC_SET_GLOBAL_I64:  return "set_global_i64";
+            case OC_SET_GLOBAL_U64:  return "set_global_u64";
+            case OC_SET_GLOBAL_F32:  return "set_global_f32";
+            case OC_SET_GLOBAL_F64:  return "set_global_f64";
+            case OC_SET_GLOBAL_PTR:  return "set_global_ptr";
+            case OC_SET_GLOBAL_BLOB: return "set_global_blob";
 
-            case OC_STORE_INDEXED:     return "store_indexed";
-            case OC_STORE_INDEXED_TMP: return "store_indexed";
+            case OC_GET_GLOBAL_I8:   return "get_global_i8";
+            case OC_GET_GLOBAL_U8:   return "get_global_u8";
+            case OC_GET_GLOBAL_I16:  return "get_global_i16";
+            case OC_GET_GLOBAL_U16:  return "get_global_u16";
+            case OC_GET_GLOBAL_I32:  return "get_global_i32";
+            case OC_GET_GLOBAL_U32:  return "get_global_u32";
+            case OC_GET_GLOBAL_I64:  return "get_global_i64";
+            case OC_GET_GLOBAL_U64:  return "get_global_u64";
+            case OC_GET_GLOBAL_F32:  return "get_global_f32";
+            case OC_GET_GLOBAL_F64:  return "get_global_f64";
+            case OC_GET_GLOBAL_PTR:  return "get_global_ptr";
+            case OC_GET_GLOBAL_BLOB: return "get_global_blob";
+
+            case OC_LEA:        return "lea";
+            case OC_LEA_CONST:  return "lea_const";
+            case OC_LEA_GLOBAL: return "lea_global";
 
             case OC_PTR_IDX: return "ptr_idx";
 
@@ -354,6 +426,13 @@ namespace Interpreter {
             case OC_STORE_F64:  return "store_f64";
             case OC_STORE_PTR:  return "store_ptr";
             case OC_STORE_BLOB: return "store_blob";
+
+            case OC_NEG_I32: return "neg_i32";
+            case OC_NEG_U32: return "neg_u32";
+            case OC_NEG_I64: return "neg_i64";
+            case OC_NEG_U64: return "neg_u64";
+            case OC_NEG_F32: return "neg_f32";
+            case OC_NEG_F64: return "neg_f64";
 
             case OC_ADD_I32: return "add_i32";
             case OC_ADD_U32: return "add_u32";
@@ -644,6 +723,12 @@ namespace Interpreter {
                 break;
             }
 
+            case Type::DT_CUSTOM: {
+                TypeDefinition* def = (TypeDefinition*) payload;
+                IO::writef(stream, "%.*s", def->name.len, def->name.buff);
+                break;
+            }
+
             default: {
                 IO::writef(stream, "%s", toStr(dtypeEnum));
             }
@@ -660,8 +745,8 @@ namespace Interpreter {
             VariableDefinition* def = fp->inArgs[i];
             Value* val = &def->var->value;
             printDtype(val->typeKind, val->any);
-            if (i != size - 1) printf(", ");
-            else printf(" ");
+            if (i != size - 1) IO::write(stream, ", ");
+            else IO::write(stream, ' ');
         }
 
         IO::write(stream, "-> ");
@@ -735,7 +820,38 @@ namespace Interpreter {
         return !(1 & (descriptor >> 16));
     }
 
+    LineInfo* findLineForOffset(ExeBlock * block, uint64_t targetOffset) {
+        if (block->linesSize == 0) {
+            return NULL;
+        }
+
+        uint64_t left = 0;
+        uint64_t right = block->linesSize - 1;
+
+        while (left <= right) {
+            uint64_t mid = left + (right - left) / 2;
+            LineInfo* line = &block->lines[mid];
+
+            uint64_t prevEnd = (mid == 0) ? 0 : block->lines[mid - 1].ocOffsetEnd;
+
+            if (targetOffset >= prevEnd && targetOffset < line->ocOffsetEnd) {
+                return line;
+            } else if (targetOffset >= line->ocOffsetEnd) {
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+
+        return NULL;
+    }
+
+    // TODO : add span style to ommit indentation, to print max-line count.
     void printBytecode(ExeBlock* block, uint64_t maxDepth, uint64_t depth = 0) {
+        if (block->bytecodeSize == 0) {
+            IO::write(stream, "  (no bytecode)\n");
+            return;
+        }
 
         // width of the operator column in actual
         // printable chars, color code etc. not included
@@ -759,15 +875,14 @@ namespace Interpreter {
         uint64_t lineIdx = 0;
         uint64_t lineEnd = 0;
 
-        // TODO : get the value from the last line and
-        //   then force each span to be accordingly aligned
+        LineInfo* targetJump = NULL;
+
         int maxLineDigits = 0;
         if (block->linesSize > 0) {
             maxLineDigits = Utils::countDigits(block->lines[block->linesSize - 1].span.end.ln);
         }
 
         while (buffer < endPtr) {
-
             const uint64_t offset = (buffer - startPtr);
 
             while (offset >= lineEnd) {
@@ -941,6 +1056,40 @@ namespace Interpreter {
                     break;
                 }
 
+                case OC_SET_GLOBAL_I8:  case OC_GET_GLOBAL_I8:
+                case OC_SET_GLOBAL_U8:  case OC_GET_GLOBAL_U8:
+                case OC_SET_GLOBAL_I16: case OC_GET_GLOBAL_I16:
+                case OC_SET_GLOBAL_U16: case OC_GET_GLOBAL_U16:
+                case OC_SET_GLOBAL_I32: case OC_GET_GLOBAL_I32:
+                case OC_SET_GLOBAL_U32: case OC_GET_GLOBAL_U32:
+                case OC_SET_GLOBAL_I64: case OC_GET_GLOBAL_I64:
+                case OC_SET_GLOBAL_U64: case OC_GET_GLOBAL_U64:
+                case OC_SET_GLOBAL_F32: case OC_GET_GLOBAL_F32:
+                case OC_SET_GLOBAL_F64: case OC_GET_GLOBAL_F64:
+                case OC_SET_GLOBAL_PTR: case OC_GET_GLOBAL_PTR: {
+                    // TODO : to a function isGetOpcode?
+                    if (OC_GET_GLOBAL_I8 <= opcode && opcode <= OC_GET_GLOBAL_PTR) {
+                        Type::Kind dtype = (Type::Kind) (Type::DT_I8 + (opcode - OC_GET_GLOBAL_I8));
+                        push(&typeStack, dtype);
+                    } else {
+                        pop(&typeStack);
+                    }
+
+                    VariableDefinition* def;
+                    memcpy(&def, buffer, 8);
+                    buffer += 8;
+
+                    uint64_t offset;
+                    memcpy(&offset, buffer, 8);
+                    buffer += 8;
+
+                    idealLen = snprintf(operandStr, operandStrSize, "%.*s[%llu]",
+                        def->var->name.len, def->var->name.buff, offset);
+
+                    // idealLen = printLocalName(block, offset, operandStr, operandStrSize);
+                    break;
+                }
+
                 case OC_PUSH_BLOB:
                 case OC_GET_BLOB:
                 case OC_SET_BLOB: {
@@ -956,24 +1105,41 @@ namespace Interpreter {
                     break;
                 }
 
-                case OC_JUMP: {
-                    uint64_t target;
-                    memcpy(&target, buffer, 8);
+                case OC_GET_GLOBAL_BLOB:
+                case OC_SET_GLOBAL_BLOB: {
+                    VariableDefinition* def;
+                    memcpy(&def, buffer, 8);
                     buffer += 8;
 
-                    idealLen = snprintf(operandStr, operandStrSize, "%llu", target);
+                    uint64_t size;
+                    memcpy(&size, buffer, 8);
+                    buffer += 8;
+
+                    uint64_t offset;
+                    memcpy(&offset, buffer, 8);
+                    buffer += 8;
+
+                    String* name = (String*) &def->var->name;
+                    idealLen = snprintf(operandStr, operandStrSize, "%.*s[size=%llu offset=%llu]",
+                        name->len, name->buff, size, offset);
+
                     break;
                 }
 
                 case OC_JUMP_IF_TRUE:
                 case OC_JUMP_IF_FALSE: {
                     pop(&typeStack);
+                }
+                case OC_JUMP:{
 
-                    uint64_t target;
+                    int64_t target;
                     memcpy(&target, buffer, 8);
                     buffer += 8;
 
-                    idealLen = snprintf(operandStr, operandStrSize, "%llu", target);
+                    uint64_t absOffset = (uint64_t) ((int64_t) (buffer - block->bytecode - 9) + target);
+                    targetJump = findLineForOffset(block, absOffset);
+
+                    idealLen = snprintf(operandStr, operandStrSize, "%lli[%llu]", target, absOffset);
                     break;
                 }
 
@@ -1015,17 +1181,22 @@ namespace Interpreter {
                     break;
                 }
 
-                case OC_STORE_INDEXED:
-                case OC_STORE_INDEXED_TMP: {
-                    uint64_t id;
-                    memcpy(&id, buffer, 8);
+                case OC_LEA_GLOBAL: {
+                    push(&typeStack, Type::DT_POINTER);
+
+                    VariableDefinition* def;
+                    memcpy(&def, buffer, 8);
                     buffer += 8;
 
-                    uint64_t idx;
-                    memcpy(&idx, buffer, 8);
+                    uint64_t offset;
+                    memcpy(&offset, buffer, 8);
                     buffer += 8;
 
-                    idealLen = snprintf(operandStr, operandStrSize, "id: %llu idx: %llu", id, idx);
+                    if (def) {
+                        idealLen = snprintf(operandStr, operandStrSize, "%.*s", def->var->name.len, def->var->name.buff);
+                    }
+                    idealLen += snprintf(operandStr, operandStrSize, "[%llu]", offset);
+
                     break;
                 }
 
@@ -1184,6 +1355,7 @@ namespace Interpreter {
             }
 
             // Stack changes:
+            /*
             IO::write(stream, AC_DIM "  ; [ ");
 
             if (typeStack.actualSize > DataTypeStack::size) {
@@ -1197,23 +1369,30 @@ namespace Interpreter {
             }
 
             IO::write(stream, " ]" AC_RESET "\n");
+            */
 
+            IO::write(stream, '\n');
+
+            // Target jump:
+            if (targetJump) {
+                IO::write(stream, "          " AC_BRIGHT_MAGENTA "-> " AC_RESET);
+                Logger::printSpan(stream, &targetJump->span, &gSpanStyleSub);
+                IO::write(stream, '\n');
+                targetJump = NULL;
+            }
         }
     }
 
-    // TODO : format name column based on max var name length
-    //        or dots .. . make as option with constexpr toggler
-    // TODO : print actual type names instead of DT_CUSTOM
     void printLocals(OrderedDict::Container* dict) {
         uint64_t maxNameSize = 18;
         constexpr bool printFullNames = false;
 
         if (dict->pairs.size <= 0) {
-            printf("  (no locals)\n");
+            IO::write(stream, "  (no locals)\n");
             return;
         }
 
-        printf("  %-8s | %-6s | %-6s | %-18s | %-12s\n",
+        IO::writef(stream, "  %-8s | %-6s | %-6s | %-18s | %-12s\n",
             "Offset", "Size", "Align", "Name", "Type");
 
         OrderedDict::Pair* first = OrderedDict::getNext(dict);
@@ -1236,10 +1415,10 @@ namespace Interpreter {
             uint64_t offset = ptr->key.idx;
 
             // offset
-            printf("  " AC_DIM "%-8llu" AC_RESET, offset);
+            IO::writef(stream, "  " AC_DIM "%-8llu" AC_RESET, offset);
 
             if (!ptr->data) {
-                printf(" | Internal Variable\n");
+                IO::write(stream, " | Internal Variable\n");
                 ptr = OrderedDict::getNext(dict);
                 continue;
             }
@@ -1247,24 +1426,24 @@ namespace Interpreter {
             LocalVarInfo* info = (LocalVarInfo*) ptr->data;
 
             // size
-            printf(" | %-6llu | ", info->size);
+            IO::writef(stream, " | %-6llu | ", info->size);
 
             // align
-            printf("%-6llu | ", info->align);
+            IO::writef(stream, "%-6llu | ", info->align);
 
             // name
             if (printFullNames) {
-                printf(AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
+                IO::writef(stream, AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
                     (int) (maxNameSize - info->var->name.len),
                     (int) info->var->name.len,
                     info->var->name.buff);
             } else {
                 if (info->var->name.len > maxNameSize) {
-                    printf(AC_BOLD_GREEN "%.*s.. " AC_RESET "| ",
+                    IO::writef(stream, AC_BOLD_GREEN "%.*s.. " AC_RESET "| ",
                         (int) maxNameSize - 2,
                         info->var->name.buff);
                 } else {
-                    printf(AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
+                    IO::writef(stream, AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
                         (int) maxNameSize,
                         (int) info->var->name.len,
                         info->var->name.buff);
@@ -1282,29 +1461,29 @@ namespace Interpreter {
     }
 
     void printConstants(uint8_t* buffer, uint64_t size) {
-        printf("%-8s | %-48s | %s\n", "  Offset", "Hex Data", "Preview");
+        IO::writef(stream, "%-8s | %-48s | %s\n", "  Offset", "Hex Data", "Preview");
 
         uint64_t i = 0;
         while (i < size) {
-            printf(AC_DIM "  0x%04llx" AC_RESET " | ", i);
+            IO::writef(stream, AC_DIM "  0x%04llx" AC_RESET " | ", i);
 
             // 1. Print Hex Block (e.g., 16 bytes at a time)
             uint64_t lineStart = i;
             for (int j = 0; j < 16; j++) {
-                if (i + j < size) printf("%02x ", buffer[i + j]);
-                else printf("   ");
+                if (i + j < size) IO::writef(stream, "%02x ", buffer[i + j]);
+                else IO::writef(stream, "   ");
             }
-            printf(" | ");
+            IO::write(stream, " | ");
 
             // 2. Print ASCII Preview
             for (int j = 0; j < 16; j++) {
                 if (i < size) {
                     uint8_t c = buffer[i++];
-                    if (c >= 32 && c <= 126) printf("%c", c);
-                    else printf("."); // Non-printable
+                    if (c >= 32 && c <= 126) IO::writef(stream, "%c", c);
+                    else IO::write(stream, '.'); // Non-printable
                 }
             }
-            printf("\n");
+            IO::write(stream, '\n');
         }
     }
 
@@ -1384,7 +1563,6 @@ namespace Interpreter {
     }
 
     // TODO : print improvements
-    //  - jump locations
     //  - annotate folded/magic values
     //  - maybe color only line numbers and not whole lines
     //  - maybe literal colors
@@ -1419,7 +1597,15 @@ namespace Interpreter {
     }
 
     void print(IO::Stream* stream, Reg::Unit* unit) {
+        IO::write(stream, AC_BOLD AC_MAGENTA "Main:\n" AC_RESET);
         print(stream, unit->exe);
+        IO::write(stream, '\n');
+
+        for (int i = 0; i < unit->reg->fcns.size; i++) {
+            Function* fcn = *(Function**) DArray::get(&unit->reg->fcns, i);
+            IO::write(stream, '\n');
+            printFlat(fcn);
+        }
     }
 
 }

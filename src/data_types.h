@@ -49,6 +49,7 @@ namespace Type {
         DT_ERROR,
         DT_ENUM,
         DT_FUNCTION, // FunctionPrototype
+        DT_MEMBER,
         DT_UNDEFINED,
         DT_COUNT,
 
@@ -147,6 +148,8 @@ namespace Type {
     inline int isIndexable(int x) {
         return x == DT_POINTER || x == DT_ARRAY || x == DT_SLICE;
     }
+
+    Type::TypeInfo* getDtype(void* data, Type::Kind dtype);
 
     const char* str(Kind kind);
 

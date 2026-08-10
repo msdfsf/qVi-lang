@@ -162,8 +162,7 @@ namespace Logger {
     }
 
     int printSpanStrictNoFlush(Span* span) {
-        const int tmp = printSpanStrict(&gBufferStream, span);
-        return tmp;
+        return printSpanStrict(&gBufferStream, span);
     }
 
 
@@ -178,7 +177,7 @@ namespace Logger {
         write("\n");
     }
 
-    int printSpanNoFlush(Span* span, SpanStyle* style) {
+    int printSpan(IO::Stream* stream, Span* span, SpanStyle* style) {
         if (!span || !span->str || !style) return 0;
 
         const char* str = span->str;
@@ -195,13 +194,13 @@ namespace Logger {
         uint32_t currentLine = span->start.ln - style->contextLines;;
 
         if (idx <= endIdx) {
-            writef("%s%*u | %s", style->colorGutter, maxLineDigits, currentLine, style->colorText);
+            IO::writef(stream, "%s%*u | %s", style->colorGutter, maxLineDigits, currentLine, style->colorText);
         }
 
         bool lineInSpan = false;
         while (idx <= endIdx) {
             if (str[idx] == '\n' || idx == endIdx) {
-                write(str + (lastCommitedIdx + 1), idx - lastCommitedIdx);
+                IO::write(stream, str + (lastCommitedIdx + 1), idx - lastCommitedIdx);
 
                 if (style->showUnderline && lineInSpan) {
                     const uint32_t start = span->start.idx > lineStartIdx ?
@@ -216,7 +215,7 @@ namespace Logger {
                 if (str[idx] != '\n') break;
 
                 currentLine++;
-                writef("%s%*u | %s", style->colorGutter, maxLineDigits, currentLine, style->colorText);
+                IO::writef(stream, "%s%*u | %s", style->colorGutter, maxLineDigits, currentLine, style->colorText);
 
                 lineInSpan = idx < span->end.idx;
 
@@ -229,34 +228,32 @@ namespace Logger {
 
             if (idx == span->start.idx) {
                 lineInSpan = true;
-                write(str + (lastCommitedIdx + 1), idx - lastCommitedIdx - 1);
-                write(style->colorHighlight);
+                IO::write(stream, str + (lastCommitedIdx + 1), idx - lastCommitedIdx - 1);
+                IO::write(stream, style->colorHighlight);
                 lastCommitedIdx = idx - 1;
             }
 
             if (idx == span->end.idx) {
-                write(str + (lastCommitedIdx + 1), idx - lastCommitedIdx);
-                write(style->colorText);
+                IO::write(stream, str + (lastCommitedIdx + 1), idx - lastCommitedIdx);
+                IO::write(stream, style->colorText);
                 lastCommitedIdx = idx;
             }
 
             idx++;
         }
 
-        write(AC_RESET);
+        IO::write(stream, AC_RESET);
 
         return maxLineDigits;
     }
 
     int printSpan(Span* span, SpanStyle* style) {
-        const int tmp = printSpanNoFlush(span, style);
-        flush();
-        return tmp;
+        return printSpan(&gBufferStream, span, style);
     }
 
-    int printSpan(IO::Stream* stream, Span* span, SpanStyle* style) {
-        const int tmp = printSpanNoFlush(span, style);
-        flush(stream);
+    int printSpanNoFlush(Span* span, SpanStyle* style) {
+        const int tmp = printSpan(&gBufferStream, span, style);
+        flush();
         return tmp;
     }
 

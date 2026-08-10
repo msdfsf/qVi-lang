@@ -27,6 +27,7 @@ enum OperatorEnum : uint8_t {
 
     OP_BINARY_BEGIN,
     OP_SUBSCRIPT = OP_BINARY_BEGIN,
+    OP_CALL,
     OP_MEMBER_SELECTION,
     OP_DEREFERENCE_MEMBER_SELECTION,
 
@@ -76,6 +77,7 @@ constexpr Operator operators[] {
 
     // --- BINARY ---
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_SUBSCRIPT
+    { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_CALL
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_MEMBER_SELECTION
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_DEREF_MEMBER_SELECTION
 

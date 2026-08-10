@@ -304,7 +304,6 @@ struct Statement {
 };
 
 struct Value {
-
     Type::Kind typeKind;
     bool hasValue = false;
     union {
@@ -328,7 +327,6 @@ struct Value {
         TypeDefinition*    def;
         FunctionPrototype* fcn;
     };
-
 };
 
 struct Expression {
@@ -441,6 +439,7 @@ struct VariableDefinition {
 
     // local offset in vm
     uint64_t vmOffset;
+    Interpreter::ExeBlock* vmOwnerExe;
 };
 
 struct VariableAssignment {
@@ -556,6 +555,7 @@ struct Loop {
 
     // As Clause
     VariableDefinition* array;
+    // TODO : change this, as its awkward to access
     union {
         Variable*           var;
         VariableDefinition* def;
@@ -599,6 +599,7 @@ struct Label {
     SyntaxNode base;
     INamedEx   name;
     Span*      span;
+    uint64_t   vmAddress;
 };
 
 struct TypeDefinition {

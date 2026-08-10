@@ -1,10 +1,13 @@
 
 #include "data_types.h"
 #include "dynamic_arena.h"
+#include "foreign_code.h"
 #include "interpreter.h"
+#include "io.h"
 #include "registry.h"
 #include "supplement/runtime.h"
 
+#include <cassert>
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -15,6 +18,10 @@
 
 #include "utils.h"
 #include "vec_kernel.h"
+
+#include "debug_helper.h"
+
+
 
 namespace Interpreter {
 
@@ -260,9 +267,9 @@ namespace Interpreter {
     // macros so we can change the implementation
     // for platforms/build modes
 
-    #define GROW(stack, size) ((stack) += ((size) + 7) >> 3)
+    #define GROW(stack, size) ((stack) += BYTES_TO_WORDS(size))
     #define GROW_IN_WORDS(stack, size) ((stack) += (size))
-    #define DROP(stack, size) ((stack) -= ((size) + 7) >> 3)
+    #define DROP(stack, size) ((stack) -= (BYTES_TO_WORDS(size)))
     #define DROP_IN_WORDS(stack, size) ((stack) -= (size))
 
     #define FETCH(buffer, dtype) (_unaligned_fetch<dtype>(buffer))
@@ -283,13 +290,66 @@ namespace Interpreter {
         *(sp - 1) = *(store*) &val;
 
 
+    // TODO : add Err::RUNTIME_ERROR
+    static Err::Err reportUninitializedGlobal(AstContext* ast, ExeBlock* exe, uint8_t* ip, ExeBlock* owner, uint64_t offset) {
+        // ip - 1 points to the opcode that just failed
+        uint64_t opcodeOffset = (uint64_t) (ip - 1 - exe->bytecode);
+        LineInfo* line = findLineForOffset(exe, opcodeOffset);
+
+        String name = Ast::Node::getName(owner->node);
+        Diag::report(ast, line ? &line->span : NULL, Err::UNEXPECTED_ERROR,
+            Diag::Format {
+                "Runtime Error: Access to uninitialized global memory.\n"
+                "  Owner Unit: %.*s\n"
+                "  Memory Offset: %llu bytes"
+            },
+            name.len, name.buff, offset
+        );
+
+        return Err::UNEXPECTED_ERROR;
+    }
+
+    template<typename T>
+    inline static Err::Err execGetGlobal(AstContext* ast, ExeBlock* exe, uint8_t*& ip, vmword*& sp) {
+        VariableDefinition* def = FETCH(ip, VariableDefinition*);
+
+        ExeBlock* owner = def->vmOwnerExe;
+        uint64_t  offset = FETCH(ip, uint64_t);
+
+        if (!owner->liveFp) {
+            return reportUninitializedGlobal(ast, exe, ip, owner, offset);
+        }
+
+        T val = *(T*) ((uint8_t*) owner->liveFp + offset);
+        PUSH(sp, val);
+
+        return Err::OK;
+    }
+
+    template<typename T>
+    inline static Err::Err execSetGlobal(AstContext* ast, ExeBlock* exe, uint8_t*& ip, vmword*& sp) {
+        VariableDefinition* def = FETCH(ip, VariableDefinition*);
+        
+        ExeBlock* owner  = def->vmOwnerExe;
+        uint64_t  offset = FETCH(ip, uint64_t);
+
+        if (!owner->liveFp) {
+            return reportUninitializedGlobal(ast, exe, ip, owner, offset);
+        }
+
+        vmword word = POP(sp);
+        memcpy(owner->liveFp + offset, &word, sizeof(T));
+
+        return Err::OK;
+    }
+
     int execPrint(ExeBlock* exe, uint8_t* fp, vmword* sp) {
 
         uint64_t argsCnt = POP(sp);
         DROP(sp, argsCnt * 2 * sizeof(vmword));
 
         uint64_t fmtLen = POP(sp);
-        char* fmt = (char*) (exe->rawData + POP(sp));
+        char* fmt = (char*) POP(sp);// (char*) (exe->rawData + POP(sp));
 
         int idx = 0;
         int argIdx = 1;
@@ -378,7 +438,7 @@ namespace Interpreter {
         return Arena::push(&vecContext.arena, len, sizeof(vmword));
     }
 
-    void* vecAlloc(VecInfo info, const int len) {
+    void* vecAlloc(const int len) {
         return Arena::push(&vecContext.arena, len, sizeof(vmword));
     }
 
@@ -388,13 +448,51 @@ namespace Interpreter {
 
 
 
+    uint64_t getStrideFromStoreOpcode(Opcode opcode) {
+        switch (opcode) {
+            case OC_STORE_I8:
+            case OC_STORE_U8:  return 1;
+            case OC_STORE_I16:
+            case OC_STORE_U16: return 2;
+            case OC_STORE_I32:
+            case OC_STORE_U32:
+            case OC_STORE_F32: return 4;
+            case OC_STORE_I64:
+            case OC_STORE_U64:
+            case OC_STORE_F64:
+            case OC_STORE_PTR: return 8;
+            default: return 1;
+        }
+    }
+
+    // We can unite them with Store function
+    uint64_t getStrideFromLoadOpcode(Opcode opcode) {
+        switch (opcode) {
+            case OC_LOAD_I8:
+            case OC_LOAD_U8:  return 1;
+            case OC_LOAD_I16:
+            case OC_LOAD_U16: return 2;
+            case OC_LOAD_I32:
+            case OC_LOAD_U32:
+            case OC_LOAD_F32: return 4;
+            case OC_LOAD_I64:
+            case OC_LOAD_U64:
+            case OC_LOAD_F64:
+            case OC_LOAD_PTR: return 8;
+            default: return 1;
+        }
+    }
+
+
+
     Err::Err exec(AstContext* ast, Function* fcn, Variable** args, uint64_t argCount, Variable* out) {
         Arena::clear(&heap);
 
-        ExeBlock* block = fcn->exe;
+        ExeBlock* rootBlock = fcn->exe;
+        ExeBlock* currBlock = rootBlock;
 
         vmword* sp = getFreeStack(); // operand stack pointer
-        uint8_t* ip = block->bytecode; // bytecode instruction pointer
+        uint8_t* ip = currBlock->bytecode; // bytecode instruction pointer
 
         // setup 'fake' call with exit
         // for now assuming only void
@@ -403,9 +501,9 @@ namespace Interpreter {
         PUSH(sp, 0);
 
         uint8_t* fp = (uint8_t*) sp; // current frame on operand stack
-        GROW(sp, block->fixedSize);
-        GROW(sp, block->localsSize);
-        memcpy(fp, block->locals, block->localsSize);
+        GROW(sp, currBlock->fixedSize);
+        GROW(sp, currBlock->localsSize);
+        memcpy(fp, currBlock->locals, currBlock->localsSize);
 
         gFramePointer = fp;
 
@@ -414,11 +512,11 @@ namespace Interpreter {
             int64_t offset = 0;
             for (int i = 0; i < argCount; i++) {
                 const int64_t size = getTypeInfo(args[i])->size;
-                if (offset + size > block->fixedSize) {
+                if (offset + size > currBlock->fixedSize) {
                     Diag::report(ast, args[i]->base.span, Err::UNEXPECTED_ERROR, Diag::Format{
                         "Internal Compiler Error: Argument '%i' at offset %llu exceeds "
                         "function frame size %llu"
-                    }, i, offset, block->fixedSize);
+                    }, i, offset, currBlock->fixedSize);
                     return Err::UNEXPECTED_ERROR;
                 };
 
@@ -428,12 +526,10 @@ namespace Interpreter {
         }
 
         while (1) {
-
             Opcode opcode = (Opcode) *ip;
             ip += sizeof(Opcode);
 
             switch(opcode) {
-
                 case OC_PUSH_I8: {
                     PUSH(sp, FETCH(ip, int8_t));
                     break;
@@ -593,6 +689,118 @@ namespace Interpreter {
                     break;
                 }
 
+
+
+                case OC_SET_GLOBAL_I8:
+                case OC_SET_GLOBAL_U8: {
+                    Err::Err err = execSetGlobal<uint8_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_SET_GLOBAL_I16:
+                case OC_SET_GLOBAL_U16: {
+                    Err::Err err = execSetGlobal<uint16_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_SET_GLOBAL_I32:
+                case OC_SET_GLOBAL_U32:
+                case OC_SET_GLOBAL_F32: {
+                    Err::Err err = execSetGlobal<float>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_SET_GLOBAL_I64:
+                case OC_SET_GLOBAL_U64:
+                case OC_SET_GLOBAL_F64:
+                case OC_SET_GLOBAL_PTR: {
+                    Err::Err err = execSetGlobal<uintptr_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_SET_GLOBAL_BLOB: {
+                    ExeBlock* owner = FETCH(ip, ExeBlock*);
+                    uint64_t offset = FETCH(ip, uint64_t);
+                    uint64_t size   = FETCH(ip, uint64_t);
+
+                    sp -= BYTES_TO_WORDS(size);
+                    void* dest = (uint8_t*) owner->liveFp + offset;
+                    memcpy(dest, sp, size);
+
+                    break;
+                }
+
+
+
+                case OC_GET_GLOBAL_I8: {
+                    Err::Err err = execGetGlobal<int8_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_GET_GLOBAL_U8: {
+                    Err::Err err = execGetGlobal<uint8_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_GET_GLOBAL_I16: {
+                    Err::Err err = execGetGlobal<int16_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_GET_GLOBAL_U16: {
+                    Err::Err err = execGetGlobal<uint16_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_GET_GLOBAL_I32: {
+                    Err::Err err = execGetGlobal<int32_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_GET_GLOBAL_U32: {
+                    Err::Err err = execGetGlobal<uint32_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_GET_GLOBAL_F32: {
+                    Err::Err err = execGetGlobal<float>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_GET_GLOBAL_I64:
+                case OC_GET_GLOBAL_U64:
+                case OC_GET_GLOBAL_F64:
+                case OC_GET_GLOBAL_PTR: {
+                    Err::Err err = execGetGlobal<uintptr_t>(ast, currBlock, ip, sp);
+                    if (err != Err::OK) return err;
+                    break;
+                }
+
+                case OC_GET_GLOBAL_BLOB: {
+                    ExeBlock* owner = FETCH(ip, ExeBlock*);
+                    uint64_t offset = FETCH(ip, uint64_t);
+                    uint64_t size   = FETCH(ip, uint64_t);
+
+                    void* src = (uint8_t*)owner->liveFp + offset;
+                    memcpy(sp, src, size);
+                    sp += BYTES_TO_WORDS(size);
+
+                    break;
+                }
+
+
+
                 case OC_LEA: {
                     const uint64_t offset = FETCH(ip, uint64_t);
                     PUSH(sp, (vmword) (fp + offset));
@@ -601,25 +809,33 @@ namespace Interpreter {
 
                 case OC_LEA_CONST: {
                     const uint64_t offset = FETCH(ip, uint64_t);
-                    PUSH(sp, (vmword) (block->rawData + offset));
+                    PUSH(sp, (vmword) (currBlock->rawData + offset));
+                    break;
+                }
+
+                case OC_LEA_GLOBAL: {
+                    ExeBlock* owner = FETCH(ip, ExeBlock*);
+                    uint64_t offset = FETCH(ip, uint64_t);
+
+                    PUSH(sp, (vmword) (owner->liveFp + offset));
                     break;
                 }
 
                 case OC_PTR_IDX: {
                     const uint64_t stride = FETCH(ip, uint64_t);
                     const uint64_t idx = POP(sp);
+                    const uint64_t ptr = POP(sp);
 
-                    uint8_t* ptr = ((uint8_t*) POP(sp)) + stride * idx;
-                    PUSH(sp, (vmword) ptr);
+                    uint8_t* ans = ((uint8_t*) ptr) + stride * idx;
+                    PUSH(sp, (vmword) ans);
 
                     break;
                 }
 
-                // DUMAT: can align > 8 ocure on my operand
+
+
+                // DUMAT: can align > 8 occur on my operand
                 //        stack if I am on meta level
-                // pointer in the stack
-                // load data from
-                //
                 case OC_LOAD_I8: {
                     uintptr_t ptr = POP(sp);
                     PUSH(sp, *(int8_t*) ptr);
@@ -677,6 +893,8 @@ namespace Interpreter {
                     break;
                 }
 
+
+
                 case OC_STORE_I8:
                 case OC_STORE_U8: {
                     int64_t val = POP(sp);
@@ -729,6 +947,39 @@ namespace Interpreter {
                 }
 
 
+
+                case OC_NEG_I32: {
+                    ((vmvalue*) (sp - 1))->i32 = -((vmvalue*) (sp - 1))->i32;
+                    break;
+                }
+
+                case OC_NEG_U32: {
+                    ((vmvalue*) (sp - 1))->u32 = -((vmvalue*) (sp - 1))->u32;
+                    break;
+                }
+
+                case OC_NEG_I64: {
+                    ((vmvalue*) (sp - 1))->i64 = -((vmvalue*) (sp - 1))->i64;
+                    break;
+                }
+
+                case OC_NEG_U64: {
+                    ((vmvalue*) (sp - 1))->u64 = -((vmvalue*) (sp - 1))->u64;
+                    break;
+                }
+
+                case OC_NEG_F32: {
+                    ((vmvalue*) (sp - 1))->f32 = -((vmvalue*) (sp - 1))->f32;
+                    break;
+                }
+
+                case OC_NEG_F64: {
+                    ((vmvalue*) (sp - 1))->f64 = -((vmvalue*) (sp - 1))->f64;
+                    break;
+                }
+
+
+
                 case OC_ADD_I32: {
                     BINARY_EXP(int32_t, +);
                     break;
@@ -758,6 +1009,8 @@ namespace Interpreter {
                     BINARY_EXP_EX(double, uint64_t, +)
                     break;
                 }
+
+
 
                 case OC_SUB_I32: {
                     BINARY_EXP(int32_t, -);
@@ -789,6 +1042,8 @@ namespace Interpreter {
                     break;
                 }
 
+
+
                 case OC_MUL_I32: {
                     BINARY_EXP(int32_t, *);
                     break;
@@ -818,6 +1073,8 @@ namespace Interpreter {
                     BINARY_EXP_EX(double, uint64_t, *);
                     break;
                 }
+
+
 
                 case OC_DIV_I32: {
                     BINARY_EXP(int32_t, /);
@@ -849,6 +1106,8 @@ namespace Interpreter {
                     break;
                 }
 
+
+
                 case OC_AND_I32: {
                     BINARY_EXP(int32_t, &);
                     break;
@@ -868,6 +1127,8 @@ namespace Interpreter {
                     BINARY_EXP(uint64_t, &);
                     break;
                 }
+
+
 
                 case OC_OR_I32: {
                     BINARY_EXP(int32_t, &);
@@ -889,6 +1150,8 @@ namespace Interpreter {
                     break;
                 }
 
+
+
                 case OC_XOR_I32: {
                     BINARY_EXP(int32_t, &);
                     break;
@@ -908,6 +1171,8 @@ namespace Interpreter {
                     BINARY_EXP(uint64_t, &);
                     break;
                 }
+
+
 
                 case OC_SHL_I32: {
                     BINARY_EXP(int32_t, <<);
@@ -929,6 +1194,8 @@ namespace Interpreter {
                     break;
                 }
 
+
+
                 case OC_SHR_I32: {
                     BINARY_EXP(int32_t, >>);
                     break;
@@ -949,6 +1216,202 @@ namespace Interpreter {
                     break;
                 }
 
+
+
+                case OC_MOD_I32: {
+                    BINARY_EXP(int32_t, %);
+                    break;
+                }
+
+                case OC_MOD_U32: {
+                    BINARY_EXP(uint32_t, %);
+                    break;
+                }
+
+                case OC_MOD_I64: {
+                    BINARY_EXP(int64_t, %);
+                    break;
+                }
+
+                case OC_MOD_U64: {
+                    BINARY_EXP(uint64_t, %);
+                    break;
+                }
+
+
+
+                case OC_EQ_I32: {
+                    BINARY_EXP(int32_t, ==);
+                    break;
+                }
+
+                case OC_EQ_I64: {
+                    BINARY_EXP(int64_t, ==);
+                    break;
+                }
+
+                case OC_EQ_F32: {
+                    BINARY_EXP(float, ==);
+                    break;
+                }
+
+                case OC_EQ_F64: {
+                    BINARY_EXP(double, ==);
+                    break;
+                }
+
+
+
+                case OC_NE_I32: {
+                    BINARY_EXP(int32_t, !=);
+                    break;
+                }
+
+                case OC_NE_I64: {
+                    BINARY_EXP(int64_t, !=);
+                    break;
+                }
+
+                case OC_NE_F32: {
+                    BINARY_EXP(float, !=);
+                    break;
+                }
+
+                case OC_NE_F64: {
+                    BINARY_EXP(double, !=);
+                    break;
+                }
+
+
+
+                case OC_LT_I32: {
+                    BINARY_EXP(int32_t, <);
+                    break;
+                }
+
+                case OC_LT_I64: {
+                    BINARY_EXP(int64_t, <);
+                    break;
+                }
+
+                case OC_LT_U32: {
+                    BINARY_EXP(uint32_t, <);
+                    break;
+                }
+
+                case OC_LT_U64: {
+                    BINARY_EXP(uint64_t, <);
+                    break;
+                }
+
+                case OC_LT_F32: {
+                    BINARY_EXP(float, <);
+                    break;
+                }
+
+                case OC_LT_F64: {
+                    BINARY_EXP(double, <);
+                    break;
+                }
+
+
+
+                case OC_LE_I32: {
+                    BINARY_EXP(int32_t, <=);
+                    break;
+                }
+
+                case OC_LE_I64: {
+                    BINARY_EXP(int64_t, <=);
+                    break;
+                }
+
+                case OC_LE_U32: {
+                    BINARY_EXP(uint32_t, <=);
+                    break;
+                }
+
+                case OC_LE_U64: {
+                    BINARY_EXP(uint64_t, <=);
+                    break;
+                }
+
+                case OC_LE_F32: {
+                    BINARY_EXP(float, <=);
+                    break;
+                }
+
+                case OC_LE_F64: {
+                    BINARY_EXP(double, <=);
+                    break;
+                }
+
+
+
+                case OC_GE_I32: {
+                    BINARY_EXP(int32_t, >=);
+                    break;
+                }
+
+                case OC_GE_I64: {
+                    BINARY_EXP(int64_t, >=);
+                    break;
+                }
+
+                case OC_GE_U32: {
+                    BINARY_EXP(uint32_t, >=);
+                    break;
+                }
+
+                case OC_GE_U64: {
+                    BINARY_EXP(uint64_t, >=);
+                    break;
+                }
+
+                case OC_GE_F32: {
+                    BINARY_EXP(float, >=);
+                    break;
+                }
+
+                case OC_GE_F64: {
+                    BINARY_EXP(double, >=);
+                    break;
+                }
+
+
+
+                case OC_GT_I32: {
+                    BINARY_EXP(int32_t, >);
+                    break;
+                }
+
+                case OC_GT_I64: {
+                    BINARY_EXP(int64_t, >);
+                    break;
+                }
+
+                case OC_GT_U32: {
+                    BINARY_EXP(uint32_t, >);
+                    break;
+                }
+
+                case OC_GT_U64: {
+                    BINARY_EXP(uint64_t, >);
+                    break;
+                }
+
+                case OC_GT_F32: {
+                    BINARY_EXP(float, >);
+                    break;
+                }
+
+                case OC_GT_F64: {
+                    BINARY_EXP(double, >);
+                    break;
+                }
+
+
+
                 case OC_NOT_BOOL: {
                     vmword word = POP(sp);
                     PUSH(sp, !word);
@@ -959,6 +1422,7 @@ namespace Interpreter {
                     CAST(bool, uint32_t);
                     break;
                 }
+
                 case OC_BOOL_F32: {
                     CAST(bool, float);
                     break;
@@ -974,6 +1438,8 @@ namespace Interpreter {
                     break;
                 }
 
+
+
                 case OC_SEXT_32_TO_64: {
                     CAST(int32_t, int64_t);
                     break;
@@ -988,6 +1454,8 @@ namespace Interpreter {
                     CAST(uint64_t, int32_t);
                     break;
                 }
+
+
 
                 case OC_CAST_I32_TO_U32: {
                     CAST(int32_t, uint32_t);
@@ -1099,34 +1567,44 @@ namespace Interpreter {
                     break;
                 }
 
+
+
                 case OC_JUMP: {
-                    uint64_t target = FETCH(ip, uint64_t);
-                    ip = block->bytecode + target;
+                    int64_t target = FETCH(ip, int64_t);
+                    ip += target;
                     break;
                 }
 
                 case OC_JUMP_IF_TRUE: {
-                    uint64_t target = FETCH(ip, uint64_t);
+                    int64_t target = FETCH(ip, int64_t);
 
                     if (POP(sp)) {
-                        ip = block->bytecode + target;
+                        ip += target;
                     }
 
                     break;
                 }
 
                 case OC_JUMP_IF_FALSE: {
-                    uint64_t target = FETCH(ip, uint64_t);
+                    int64_t target = FETCH(ip, int64_t);
 
                     if (POP(sp) == 0) {
-                        ip = block->bytecode + target;
+                        ip += target;
                     }
 
                     break;
                 }
 
+
+
                 case OC_POP: {
                     POP(sp);
+                    break;
+                }
+
+                case OC_POP_N: {
+                    uint64_t n = FETCH(ip, uint64_t);
+                    DROP_IN_WORDS(sp, n);
                     break;
                 }
 
@@ -1155,35 +1633,75 @@ namespace Interpreter {
                     break;
                 }
 
+                case OC_SWAP: {
+                    if (((uint8_t*) sp) - fp < 2 * sizeof(vmword)) {
+                        // TODO : what shall happen when there is only one word on stack?
+                        break;
+                    }
+
+                    const vmword tmp = *sp;
+                    *sp = *(sp - 1);
+                    *(sp - 1) = tmp;
+
+                    break;
+                }
+
+
+
                 case OC_CALL: {
                     Function* fcn = (Function*) FETCH(ip, uint64_t);
                     FETCH(ip, uint64_t); // vararg count, we dont need here
                     ExeBlock* exe = fcn->exe;
 
+                    if (fcn->base.flags & IS_EXTERN) {
+                        Extern::Abi::Driver* abi = Extern::Abi::getTargetDriver();
+                        Extern::compile(ast, abi, fcn);
+
+                        uint8_t* out = (uint8_t*) sp;
+                        Type::TypeInfo* outInfo = getTypeInfo(fcn->prototype.outArg->var);
+                        GROW(sp, outInfo->size);
+
+                        Extern::invoke(ast, abi, fcn, out);
+
+                        //Type::TypeInfo* outInfo = getTypeInfo(fcn->prototype.outArg->var);
+                        //VariableToStack(ast, (uint8_t*) sp, min((uint64_t) outInfo->size, stackSize), &out);
+
+                        break;
+                    }
+
                     if (isValidFunctionIdx(fcn->internalIdx)) {
-                        int fSize = internalCall(block, fp, sp, (Ast::Internal::FunctionType) fcn->internalIdx);
+                        int fSize = internalCall(currBlock, fp, sp, (Ast::Internal::FunctionType) fcn->internalIdx);
                         DROP_IN_WORDS(sp, 2 + fSize);
                         break;
                     }
 
-                    // sizes are measured in words
+                    // NOTE: when nested function definitions land, liveFp must
+                    //       be saved/restored across OC_CALL/OC_RET as 3rd
+                    //       linkage slot.
+                    //       For now it's safe to do nothing because no non-local
+                    //       variable can target the same ExeBlock twice, as the
+                    //       global block cannot be called...
+                    exe->liveFp = fp;
+
+                    // sizes are in bytes
                     //
-                    const uint64_t fixedSize = exe->fixedSize;
-                    const uint64_t varargSize = exe->isVariadic ? 2 * (*(sp - 1)) + 1 : 0;
+                    const uint64_t fixedSize   = exe->fixedSize;
+                    const uint64_t varargSize = exe->isVariadic ?
+                        sizeof(vmword) * (2 * (*(sp - 1)) + 1) : 0;
 
                     const uint64_t scopeSize = exe->localsSize - exe->defaultArgsSize;
-                    vmword* scopeLocals = sp - varargSize;
+                    uint8_t* scopeLocals = ((uint8_t*) sp) - varargSize;
 
+                    GROW(sp, scopeSize);
+                    memmove(scopeLocals + scopeSize, scopeLocals, varargSize);
+                    memcpy(scopeLocals, exe->locals + exe->defaultArgsSize, scopeSize);
 
-                    GROW_IN_WORDS(sp, scopeSize);
-                    memmove(scopeLocals + scopeSize, scopeLocals, varargSize * sizeof(vmword));
-                    memcpy(scopeLocals, exe->locals + exe->defaultArgsSize, scopeSize * sizeof(vmword));
+                    uint64_t retAddrOffset = (fixedSize + varargSize) / sizeof(vmword) + 2;
+                    *(sp - retAddrOffset)     = (vmword) ip;
+                    *(sp - retAddrOffset + 1) = (vmword) fp;
 
-                    *(sp - fixedSize - varargSize - 1) = (vmword) fp;
-                    *(sp - fixedSize - varargSize - 2) = (vmword) ip;
-
-                    fp = (uint8_t*) (sp - fixedSize - varargSize);
                     ip = exe->bytecode;
+                    fp = ((uint8_t*) sp) - fixedSize - varargSize;
 
                     gFramePointer = fp;
 
@@ -1211,6 +1729,8 @@ namespace Interpreter {
                     break;
                 }
 
+
+
                 case OC_GROW: {
                     GROW(sp, FETCH(ip, uint64_t));
                     break;
@@ -1220,6 +1740,8 @@ namespace Interpreter {
                     goto loopEnd;
                     break;
                 }
+
+
 
                 case OC_VEC_VV: {
                     uint64_t lenB = POP(sp);
@@ -1362,8 +1884,10 @@ namespace Interpreter {
                 }
 
                 case OC_VEC_ALLOC: {
-                    uint64_t bytes = POP(sp);
-                    //vecAlloc(bytes);
+                    uint64_t len    = POP(sp);
+                    uint64_t stride = FETCH(ip, uint64_t);
+
+                    PUSH(sp, (vmword) vecAlloc(len * stride));
                     break;
                 }
 
@@ -1390,18 +1914,20 @@ namespace Interpreter {
                     break;
                 }
 
+                case OC_NOP: {
+                    break;
+                }
 
                 default: {
                     Logger::log(logErr, "Opcode %s (%i) not yet implemented.\n", NULL, toStr(opcode), opcode);
                     return Err::NOT_YET_IMPLEMENTED;
                 }
-
             }
 
         }
         loopEnd:
 
-        ip = block->bytecode + block->bytecodeSize - sizeof(uint64_t);
+        ip = currBlock->bytecode + currBlock->bytecodeSize - sizeof(uint64_t);
 
         uint64_t ansSize = FETCH(ip, uint64_t);
         DROP(sp, ansSize);

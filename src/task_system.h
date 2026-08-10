@@ -37,8 +37,10 @@ namespace TaskSystem {
     void dispatchParse(FileSystem::Handle file);
     void dispatchPreValidation(FileSystem::Handle file);
     void dispatchValidation(FileSystem::Handle file);
-    void dispatchCompileTimeBuild(Function* fcn, bool waitForExecution);
     void dispatchBackend(FileSystem::Handle file, Backend::Driver* driver, Backend::BuildContext* ctx);
+
+    // TODO : to generic input args...
+    void dispatchLocalTask(Function* fcn, bool sync);
 
     // Suppose to start a new synchronization group.
     // Ex. resets internal counters to synchronize parallel tasks

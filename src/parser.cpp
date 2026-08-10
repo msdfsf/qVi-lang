@@ -1222,14 +1222,8 @@ namespace Parser {
                 arr->base.pointsTo = var->value.any;
                 arr->base.pointsToKind = var->value.typeKind;
 
-                Variable* lenVar = Ast::Node::makeVariable();
-                lenVar->base.span = getSpanStamp(span);
-                lenVar->base.scope = ctx->currentScope;
-                lenVar->name.len = 0;
-
                 token = Lex::nextToken(span, &tokenVal);
                 if (token.kind == Lex::TK_KEYWORD) {
-
                     const int keyword = token.detail;
 
                     token = Lex::nextToken(span, NULL);
@@ -1249,14 +1243,19 @@ namespace Parser {
                     }
 
                     arr->length = NULL; // var->allocSize = NULL;
-
+                } else if (token.kind == Lex::TK_ARRAY_END) {
+                    arr->flags = IS_CMP_TIME;
+                    arr->length = NULL;
                 } else {
+                    Variable* lenVar = Ast::Node::makeVariable();
+                    lenVar->base.span = getSpanStamp(span);
+                    lenVar->base.scope = ctx->currentScope;
+                    lenVar->name.len = 0;
 
-                    token = parseExpression(ctx, span, lenVar, arrStart, End { Lex::TK_ARRAY_END }, EMPTY_EXPRESSION_ALLOWED);
+                    token = parseExpression(ctx, span, lenVar, arrStart, End{ Lex::TK_ARRAY_END }, EMPTY_EXPRESSION_ALLOWED);
 
                     arr->flags = IS_CMP_TIME;
                     arr->length = lenVar; // var->allocSize = lenVar;
-
                 }
 
                 // var->flags = varDef->flags ^ IS_ARRAY;
@@ -1642,7 +1641,7 @@ namespace Parser {
         branch->expressionCount = count;
         for (int i = 0; i < count; i++) {
             branch->scopes[i] = (Scope*) buffer[2 * i];
-            branch->expressions[i + 1] = (Variable*) buffer[2 * i + 1];
+            branch->expressions[i] = (Variable*) buffer[2 * i + 1];
         }
 
         if (hasElse) {
@@ -2738,8 +2737,10 @@ namespace Parser {
 
         var->base.scope = ctx->currentScope;
 
-        while (1) {
+        //Prefix part
+        //
 
+        while (1) {
             token = Lex::nextToken(span, &tokenVal);
 
             OperatorEnum op = Lex::toUnaryOperator(token);
@@ -2754,47 +2755,29 @@ namespace Parser {
 
             var->expression = (Expression*) uex;
             var = uex->operand;
-
         }
 
         var->base.span = getSpanStamp(span);
+
+
+
+        // Primary part
+        //
 
         switch (token.kind) {
 
             case Lex::TK_IDENTIFIER: {
                 token = Lex::nextToken(span, NULL);
-                if (token.kind == Lex::TK_PARENTHESIS_BEGIN) {
 
-                    FunctionCall* call = Ast::Node::makeFunctionCall();
-                    call->fptr = NULL;
-                    call->fcn = NULL;
+                var->name = *((QualifiedName*) tokenVal.any);
+                consumeToken = 0;
 
-                    StackMark smark = markStack(&ctx->nodeStack);
-                    token = parseList(ctx, span, Lex::TK_LIST_SEPARATOR, Lex::TK_PARENTHESIS_END);
-                    if (token.encoded < 0) return token;
-                    call->inArgs = (Variable**) commitStack(&ctx->nodeStack, smark, &call->inArgCount);
-
-                    call->name = *((QualifiedName*) tokenVal.any);
-                    call->name.span = var->base.span;
-
-                    var->value.hasValue = 0;
-                    var->expression = (Expression*) call;
-
-                    DArray::push(&ctx->unit->reg->fcnCalls, &var);
-
-                } else {
-
-                    var->name = *((QualifiedName*) tokenVal.any);
-                    consumeToken = 0;
-
-                    if (prevOp != OP_MEMBER_SELECTION) {
-                        DArray::push(&ctx->unit->reg->variables, &var);
-                    }
-
-                    var->name.span = var->base.span;
-                    var->base.definitionIdx = ctx->defStack.size;
-
+                if (prevOp != OP_MEMBER_SELECTION) {
+                    DArray::push(&ctx->unit->reg->variables, &var);
                 }
+
+                var->name.span = var->base.span;
+                var->base.definitionIdx = ctx->defStack.size;
 
                 break;
             }
@@ -2886,6 +2869,11 @@ namespace Parser {
 
         if (consumeToken) token = Lex::nextToken(span, &tokenVal);
 
+
+
+        // Postfix part
+        //
+
         while (1) {
 
             OperatorEnum op = Lex::toPostfixOperator(token);
@@ -2893,16 +2881,84 @@ namespace Parser {
                 break;
             }
 
-            UnaryExpression* uex = Ast::Node::makeUnaryExpression();
-            uex->base.opType = op;
-            uex->operand = Ast::Node::makeVariable();
-            uex->operand->value = var->value;
-            uex->operand->expression = var->expression;
+            // INFO :
+            // We handle first operators, that are not in fact
+            // unary form semantic standpoint, and therefore
+            // have to be treated as special cases
+            if (op == OP_MEMBER_SELECTION) {
+                BinaryExpression* bex = Ast::Node::makeBinaryExpression();
+                bex->left = Ast::Node::copy(var);
+                bex->base.opType = op;
 
-            var->expression = (Expression*) uex;
+                token = Lex::nextToken(span, &tokenVal);
 
+                bex->right = Ast::Node::makeVariable();
+                bex->right->name = *((QualifiedName*) tokenVal.any);
+
+                var->expression = (Expression*) bex;
+            } else if (op == OP_SUBSCRIPT) {
+                BinaryExpression* bex = Ast::Node::makeBinaryExpression();
+                bex->base.opType = op;
+                bex->left = Ast::Node::copy(var); // The array/pointer being indexed
+
+                bex->right = Ast::Node::makeVariable();
+                token = parseExpression(ctx, span, bex->right, INVALID_POS, End { Lex::TK_ARRAY_END, Lex::TK_SLICE });
+
+                if (token.kind == Lex::TK_SLICE) {
+                    Slice* slice = Ast::Node::makeSlice();
+
+                    slice->bidx = bex->right;
+
+                    slice->eidx = Ast::Node::makeVariable();
+                    token = parseExpression(ctx, span, slice->eidx, INVALID_POS, End{ Lex::TK_ARRAY_END, Lex::TK_NONE });
+
+                    bex->right = Ast::Node::makeVariable();
+                    bex->right->expression = (Expression*) slice;
+
+                    if (token.kind != Lex::TK_ARRAY_END) {
+                        Logger::logNoFlush(
+                            { .level = Logger::ERROR, .tag = ctx->unit->ast->tag },
+                            "Unexpected token!", span
+                        );
+
+                        Logger::write("Following token expected: ");
+                        logToken(Lex::TK_ARRAY_END);
+
+                        Diag::commit(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL);
+                        token = sync(span, { Lex::TK_ARRAY_END });
+                    }
+                }
+
+                var->expression = (Expression*) bex;
+            } else if (op == OP_CALL) {
+                FunctionCall* call = Ast::Node::makeFunctionCall();
+                call->fptr = NULL;
+                call->fcn = NULL;
+
+                StackMark smark = markStack(&ctx->nodeStack);
+                token = parseList(ctx, span, Lex::TK_LIST_SEPARATOR, Lex::TK_PARENTHESIS_END);
+                if (token.encoded < 0) return token;
+                call->inArgs = (Variable**) commitStack(&ctx->nodeStack, smark, &call->inArgCount);
+
+                call->name = *((QualifiedName*) tokenVal.any);
+                call->name.span = var->base.span;
+
+                var->value.hasValue = 0;
+                var->expression = (Expression*) call;
+
+                DArray::push(&ctx->unit->reg->fcnCalls, &var);
+            } else {
+                // generic case
+                UnaryExpression* uex = Ast::Node::makeUnaryExpression();
+                uex->base.opType = op;
+                uex->operand = Ast::Node::makeVariable();
+                uex->operand = Ast::Node::copy(var);
+
+                var->expression = (Expression*) uex;
+            }
+
+            var->name = { 0 };
             token = Lex::nextToken(span, &tokenVal);
-
         }
 
         return token;
@@ -2914,59 +2970,14 @@ namespace Parser {
         Lex::Token token;
         Lex::TokenValue tokenVal;
 
-        // INFO: as for now only one such operator exists, its hardcoded
-        //       basically this should work just fine while there is no binary
-        //       operator with same signature as required closure
-        if (prevOp == OP_SUBSCRIPT) {
-            token = parseExpressionRecursive(ctx, span, var, prevBex, OP_NONE);
-
-            if (token.kind == Lex::TK_ARRAY_END) {
-                token = nextToken(span, &tokenVal);
-            } else if (token.kind == Lex::TK_SLICE) {
-                Slice* slice = Ast::Node::makeSlice();
-
-                slice->bidx = Ast::Node::makeVariable();
-                slice->bidx->expression = (*var)->expression;
-
-                token = parseExpressionRecursive(ctx, span, &(slice->eidx), NULL, OP_NONE);
-
-                (*var)->expression = (Expression*) slice;
-
-                if (token.kind != Lex::TK_ARRAY_END) {
-                    Logger::logNoFlush(
-                        { .level = Logger::ERROR, .tag = ctx->unit->ast->tag },
-                        "Unexpected token!", span
-                    );
-
-                    Logger::write("Following token expected: ");
-                    logToken(Lex::TK_ARRAY_END);
-
-                    Diag::commit(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL);
-                    token = sync(span, { Lex::TK_ARRAY_END });
-                }
-
-                token = nextToken(span, &tokenVal);
-            } else {
-                Logger::logNoFlush(
-                    { .level = Logger::ERROR, .tag = ctx->unit->ast->tag },
-                    "Unexpected token!", span
-                );
-
-                Logger::write("Following tokens expected: ");
-                logEndToken(ctx, { Lex::TK_ARRAY_END, Lex::TK_SLICE });
-
-                Diag::commit(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL);
-                return sync(span, { Lex::TK_ARRAY_END, Lex::TK_SLICE });
-            }
-        } else {
-            token = parseExpressionNode(ctx, span, *var, prevOp);
-        }
+        token = parseExpressionNode(ctx, span, *var, prevOp);
 
         if (Lex::isOperator(token)) {
             OperatorEnum op = Lex::toBinaryOperator(token);
 
             while (op != OP_NONE) {
                 if (prevOp == OP_NONE || operators[prevOp].rank > operators[op].rank) {
+                    // We are higher precedence, so we want to hug the next expression
                     BinaryExpression* bex = Ast::Node::makeBinaryExpression();
                     bex->left = *var;
                     bex->right = Ast::Node::makeVariable();
@@ -2986,6 +2997,7 @@ namespace Parser {
                     op = Lex::toBinaryOperator(token);
                     if (op < 0) return token;
                 } else {
+                    // We are lower precedence, so we just have to be hugged
                     prevBex->right = *var;
                     return Lex::toTokenAsBinaryOperator(op);
                 }

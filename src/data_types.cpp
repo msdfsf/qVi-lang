@@ -84,16 +84,16 @@ namespace Type {
         },
 
         {
-            .kind  = DT_STRING,
+            .kind  = DT_POINTER,
             .rank  = 5,
-            .size  = 16,
+            .size  = 8,
             .align = 8,
         },
 
         {
-            .kind  = DT_POINTER,
+            .kind  = DT_STRING,
             .rank  = 5,
-            .size  = 8,
+            .size  = 16,
             .align = 8,
         },
 
@@ -107,7 +107,7 @@ namespace Type {
         {
             .kind  = DT_SLICE,
             .rank  = 5,
-            .size  = 8,
+            .size  = 16,
             .align = 8,
         },
 
@@ -245,6 +245,55 @@ namespace Type {
                 break;
             }
         }
+    }
+
+    Type::TypeInfo* getDtype(void* data, Type::Kind dtype) {
+        if (dtype <= Type::DT_F64) {
+            return Type::basicTypes + dtype;
+        }
+
+        switch (dtype) {
+
+            case Type::DT_CUSTOM: {
+                TypeDefinition* def = (TypeDefinition*) data;
+                return (Type::TypeInfo*) def->typeInfo;
+            }
+
+            case Type::DT_UNION: {
+                break;
+            }
+
+            case Type::DT_ENUM: {
+                return Type::basicTypes + ((Enumerator*) data)->dtype;
+            }
+
+            case Type::DT_ERROR: {
+                break;
+            }
+
+            case Type::DT_FUNCTION: {
+                break;
+            }
+
+            case Type::DT_POINTER: {
+                return Type::basicTypes + dtype;
+            }
+
+            case Type::DT_ARRAY: {
+                return (Type::TypeInfo*) ((Array*) data)->type;
+            }
+
+            case Type::DT_STRING: {
+
+            }
+
+            default: {
+                // TODO
+            }
+
+        }
+
+        return Type::basicTypes + DT_VOID;
     }
 
 };

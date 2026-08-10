@@ -7,7 +7,7 @@ namespace DebugHelper {
         .userData = NULL,
         .style = {
             .format = Emitter::Format::PRETTY,
-            .indentStep = 0
+            .indentStep = 2
         },
         .indentLevel = 0
     };

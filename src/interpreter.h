@@ -55,10 +55,10 @@
  *                           via memcpy.
  *
  *                           Required arguments are not included, since they must
-//                           always be pushed explicitly onto the stack and are
-//                           therefore inherently call-specific.
- *   - exe->fixedSize:       Total count of slots for (Req Args + Def Args + Scope Vars).
- *   - exe->defaultArgsSize: Size of the Default Arguments section.
+ *                           always be pushed explicitly onto the stack and are
+ *                           therefore inherently call-specific.
+ *   - exe->fixedSize:       Byte size of the (Req Args + Def Args + Scope Vars).
+ *   - exe->defaultArgsSize: Byte size of the Default Arguments section.
  *
  * STACK STATE: IMMEDIATELY BEFORE OC_CALL
  * ------------------------------------------
@@ -92,7 +92,7 @@
  *  fp     | [ Required Argument 1   ] | Existing data          [ f
  *         | [ ...                   ] |                        [ i
  * --------|---------------------------|--------------- -[ exe: [ x  -[ exe:
- *         | [ Default Argument 1    ] | Existing data   [ l    [ e   [ defaultArgsCount
+ *         | [ Default Argument 1    ] | Existing data   [ l    [ e   [ defaultArgsSize
  *         | [ ...                   ] |                 [ o    [ d   [
  * --------|---------------------------|---------------  [ c    [ S  -[
  *         | [ Scope Local 1         ] | Initialized via [ a    [ i
@@ -111,9 +111,18 @@ namespace Interpreter {
     typedef uint64_t vmword;
     #define BYTES_TO_WORDS(bsize) (((bsize) + 7) >> 3)
 
+    union vmvalue {
+        int32_t  i32;
+        uint32_t u32;
+        int64_t  i64;
+        uint64_t u64;
+        float    f32;
+        double   f64;
+    };
+
+    // TODO : sync with Type::Kind
     // order of dtypes matters, see DtypeOffset
     enum Opcode : uint8_t {
-
         OC_PUSH_I8,
         OC_PUSH_U8,
         OC_PUSH_I16,
@@ -179,17 +188,52 @@ namespace Interpreter {
         OC_STORE_PTR,
         OC_STORE_BLOB,
 
+        // TODO : to docs:
+        //        stack:    u64: local offsets
+        //        operands: u64: ExeBlock ptr
+        OC_SET_GLOBAL_I8,
+        OC_SET_GLOBAL_U8,
+        OC_SET_GLOBAL_I16,
+        OC_SET_GLOBAL_U16,
+        OC_SET_GLOBAL_I32,
+        OC_SET_GLOBAL_U32,
+        OC_SET_GLOBAL_I64,
+        OC_SET_GLOBAL_U64,
+        OC_SET_GLOBAL_F32,
+        OC_SET_GLOBAL_F64,
+        OC_SET_GLOBAL_PTR,
+        OC_SET_GLOBAL_BLOB,
+
+        OC_GET_GLOBAL_I8,
+        OC_GET_GLOBAL_U8,
+        OC_GET_GLOBAL_I16,
+        OC_GET_GLOBAL_U16,
+        OC_GET_GLOBAL_I32,
+        OC_GET_GLOBAL_U32,
+        OC_GET_GLOBAL_I64,
+        OC_GET_GLOBAL_U64,
+        OC_GET_GLOBAL_F32,
+        OC_GET_GLOBAL_F64,
+        OC_GET_GLOBAL_PTR,
+        OC_GET_GLOBAL_BLOB,
+
         OC_LEA,
         OC_LEA_CONST,
-        OC_STORE_INDEXED,
-        OC_STORE_INDEXED_TMP,
+        OC_LEA_GLOBAL,
         OC_PTR_IDX,
-        OC_DEREF, // TODO : delete
 
         OC_POP,
         OC_POP_N,
         OC_DUP,
         OC_CROP,
+        OC_SWAP,
+
+        OC_NEG_I32,
+        OC_NEG_U32,
+        OC_NEG_I64,
+        OC_NEG_U64,
+        OC_NEG_F32,
+        OC_NEG_F64,
 
         OC_ADD_I32,
         OC_ADD_U32,
@@ -355,8 +399,8 @@ namespace Interpreter {
         OC_VEC_RESET,
 
         OC_COUNT
-
     };
+    static_assert(OC_COUNT <= 256);
 
     enum DtypeOffset {
         OFF_I8,
@@ -415,14 +459,9 @@ namespace Interpreter {
         uint64_t  align;
     };
 
-    struct LocalFcnInfo {
-        // for now enough
-        Function* fcn;
-    };
-
     struct LineInfo {
         uint64_t ocOffsetStart;
-        uint64_t ocOffsetEnd;
+        uint64_t ocOffsetEnd; // TODO : deprecate
         Span span;
     };
 
@@ -431,7 +470,6 @@ namespace Interpreter {
     };
 
     struct CompilerState {
-
         // We dont want to populate locals with call args
         // as they naturaly grow on stack. But we want
         // keep here default args and scope locals so we
@@ -448,15 +486,20 @@ namespace Interpreter {
         // bytecode can refer to
         Arena::Container rawData;
 
-        // keys are locals offsets, values are type of LocalVarInfo
+        // keys are locals offsets, values are instances of LocalVarInfo
         OrderedDict::Container localsInfoMap;
 
         // lines spans to map bytecode and lines in source code
         DArray::Container lines;
 
+        // Helper stack
+        DArray::Container tmpStack;
+
         // to track and build line spans
         Span currentLineSpan;
         uint64_t currentOffsetStart;
+
+        uint64_t currentLoopAddress;
 
         // max encoutered alignment during building locals stack
         uint64_t maxAlign;
@@ -470,24 +513,17 @@ namespace Interpreter {
         uint64_t maxArrayLiteralSize; // so we can prealocated just enough memory
         uint64_t currentArrayLiteralOffset; // offset in prealocated block
 
+        // Pointer of the result instance of the compilation
+        // Used to be linked to some symbols during compilation
+        // if there is a need to know the owning block.
+        ExeBlock* exe;
+
         Opcode lastOpcode;
-
-    };
-
-    enum ArgMappingType {
-        AM_VALUE,
-        AM_REFERENCE
-    };
-
-    struct ArgMapping {
-        uint32_t offset; // in vmword slots
-        ArgMappingType type;
     };
 
     struct ExeBlock {
-
         // raw bytes for initial local variable state
-        vmword* locals;
+        uint8_t* locals;
         uint64_t localsSize;
 
         uint8_t* bytecode;
@@ -499,28 +535,57 @@ namespace Interpreter {
         LineInfo* lines;
         uint64_t linesSize;
 
-        // maps offsets in locals to their info as LocalVarDebugInfo
+        // maps offsets in locals to their info as LocalVarInfo
         OrderedDict::Container* localsInfoMap;
 
         // for now like bool, later if there will be
         // more characteristics transform to flag
         bool isVariadic;
 
-        // For external functions
-        ArgMapping* argMappings;
-        uint64_t argMappingsCount;
-
-        // in vmword slots
+        // in bytes
         uint64_t fixedSize;
         uint64_t defaultArgsSize;
 
-        // original 'ast' node its based on
-        void* node;
+        // current frame pointer during execution;
+        // null when block is not currently being executed
+        // liveFp must be saved/restored on call/ret… For now
+        // it's safe to do nothing on ret
+        uint8_t* liveFp;
 
+        // original 'ast' node its based on
+        SyntaxNode* node;
     };
 
+    inline void clear(CompilerState* state) {
+        Arena::clear(&state->locals);
+        Arena::clear(&state->bytecode);
+        Arena::clear(&state->rawData);
+        DArray::clear(&state->lines);
+        DArray::clear(&state->tmpStack);
+        OrderedDict::clear(&state->localsInfoMap);
+
+        state->populateLocals = false;
+        state->currentLineSpan = { 0, 0 };
+        state->currentOffsetStart = 0;
+        state->maxAlign = 0;
+        state->fixedSize = 0;
+        state->defaultArgsSize = 0;
+        state->vecResult = { 0 };
+        state->maxArrayLiteralSize = 0;
+        state->currentArrayLiteralOffset = 0;
+        state->lastOpcode = Interpreter::OC_NOP;
+        state->exe = NULL;
+    }
+
+    inline ExeBlock* makeExeBlock() {
+        ExeBlock* exe = (ExeBlock*) alloc(alc, sizeof(ExeBlock));
+        memset(exe, 0, sizeof(ExeBlock));
+        return exe;
+    }
 
 
+
+    // TODO: manage init/clear/release flow better
     void initDebug(CompilerState* state);
     void initBuild(CompilerState* state);
     void initExec (CompilerState* state);
@@ -560,5 +625,7 @@ namespace Interpreter {
 
     vmword encodeVecDescriptor(const VecDescriptor desc);
     VecDescriptor decodeVecDescriptor(const vmword word);
+
+    LineInfo* findLineForOffset(ExeBlock * block, uint64_t targetOffset);
 
 };

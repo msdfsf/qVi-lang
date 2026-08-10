@@ -2,6 +2,8 @@
 #include "../compiler.h"
 #include "../interpreter.h"
 #include "../ansi_colors.h"
+#include "../file_driver.h"
+
 
 
 thread_local bool compilerStateInitilized = false;
@@ -9,6 +11,15 @@ thread_local Interpreter::CompilerState compilerState;
 
 static bool runVMPipline(Backend::BuildContext* ctx, Reg::Unit* unit) {
     Err::Err err = Err::OK;
+
+    Emitter::Context ectx = {
+        .userData = NULL,
+        .style {
+            .format = Emitter::Format::PRETTY,
+            .indentStep = 0
+        },
+        .indentLevel = 0
+    };
 
     IO::Stream stream = {
         .kind = IO::Stream::SK_C_STREAM,
@@ -26,20 +37,21 @@ static bool runVMPipline(Backend::BuildContext* ctx, Reg::Unit* unit) {
 
 
     if (ctx->command >= Compiler::BC_TRANSLATE) {
-        Emitter::Context ectx = {
-            .userData = NULL,
-            .style = {
-                .format = Emitter::Format::PRETTY,
-                .indentStep = 0
-            },
-            .indentLevel = 0
-        };
-
         Emitter::driverVM.emitUnit(&ectx, unit, &stream);
     }
 
-    if (ctx->command == Compiler::BC_BUILD) {
-        // FileDriver::openFile(ctx->outFile);
+    if (true || ctx->command == Compiler::BC_BUILD) {
+        // TODO
+        FILE* file = std::fopen("PUK.ansi", "wb");//FileDriver::openFile(ctx->outFile, "w");
+        if (!file) {
+            // TODO: error
+            return Err::UNEXPECTED_ERROR;
+        }
+
+        stream.cstream = file;
+        Emitter::driverVM.emitUnit(&ectx, unit, &stream);
+
+        std::fclose(file);
         // Interpreter::serialize(unit, );
     }
 

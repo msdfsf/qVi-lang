@@ -112,7 +112,7 @@ namespace TaskSystem {
 
 
 
-    inline uint64_t getWorkerId() {
+    uint64_t getWorkerId() {
         return gCurrentWorker->id;
     }
 
@@ -155,23 +155,7 @@ namespace TaskSystem {
             DArray::clear(&ctx->fCandidates);
         } else if (kind == TK_COMPILE_TIME_BUILD) {
             Interpreter::CompilerState* ctx = &state->c;
-
-            Arena::clear(&ctx->locals);
-            Arena::clear(&ctx->bytecode);
-            Arena::clear(&ctx->rawData);
-            DArray::clear(&ctx->lines);
-            OrderedDict::clear(&ctx->localsInfoMap);
-
-            ctx->populateLocals      = false;
-            ctx->currentLineSpan     = { 0, 0 };
-            ctx->currentOffsetStart  = 0;
-            ctx->maxAlign            = 0;
-            ctx->fixedSize           = 0;
-            ctx->defaultArgsSize     = 0;
-            ctx->vecResult           = { 0 };
-            ctx->maxArrayLiteralSize = 0;
-            ctx->currentArrayLiteralOffset = 0;
-            ctx->lastOpcode          = Interpreter::OC_NOP;
+            Interpreter::clear(ctx);
         } else {
             memset(state, 0, sizeof(TaskState));
         }
@@ -236,7 +220,7 @@ namespace TaskSystem {
 
                 clearTaskState(&worker->state, task.kind);
                 task.fcn(&worker->state, task.arg);
-                
+
                 gTaskCount.fetch_sub(1, std::memory_order_relaxed);
                 gTaskCount.notify_one();
 
@@ -465,41 +449,51 @@ namespace TaskSystem {
         }
     }
 
-    void dispatchCompileTimeBuild(Function* fcn, bool waitForExecution) {
+    // By setting the 'sync' flag, the task is appended to the thread's
+    // local stack. The current thread is processing the task and any
+    // subsequent sub-tasks it spawns iteratively.
+    //
+    // Note: If 'sync' is true, this function only guarantees that by
+    //       the time it returns, the target task and its entire sub-task
+    //       dependency tree are fully processed. It does not guarantees
+    //       order of execution.
+    //
+    // TODO: Implement work stealing by other threads controled either by other
+    //       flag, or global TaskSystem/Compiler configuration.
+    void dispatchLocalTask(Function* fcn, bool sync) {
         if (fcn->compilationStatus == TS_READY) return;
 
         Task task;
         task.arg.fcn = fcn;
         task.kind = TK_COMPILE_TIME_BUILD;
 
-        if (gCurrentWorker) {
-            task.fcn = &runCompileTimeBuildLocal;
-            DArray::push(&gCurrentWorker->localStack, &task);
-
-            if (waitForExecution) {
-                // We are called from context where we wait, so we act as master
-                int startSize = gCurrentWorker->localStack.size - 1;
-                while (gCurrentWorker->localStack.size > startSize) {
-                    Task task = *(Task*) DArray::getLast(&gCurrentWorker->localStack);
-                    DArray::pop(&gCurrentWorker->localStack);
-
-                    clearTaskState(&gCurrentWorker->state, task.kind);
-                    task.fcn(&gCurrentWorker->state, task.arg);
-                }
-            }
-        } else {
+        if (!gCurrentWorker) {
             // We are for some reason the master, so, I guess,
-            // we just queue the task...
+            // we just queue the task as global...
             task.fcn = &runCompileTimeBuild;
             gTaskCount.fetch_add(1, std::memory_order_relaxed);
             enqueue(task);
 
-            if (waitForExecution) {
+            if (sync) {
                 std::atomic_ref<TaskStatus> status(fcn->compilationStatus);
                 while (status == TS_RUNNING) {
                     status.wait(TS_RUNNING);
                     status = status.load();
                 }
+            }
+        }
+
+        task.fcn = &runCompileTimeBuildLocal;
+        DArray::push(&gCurrentWorker->localStack, &task);
+
+        if (sync) {
+            const int startSize = gCurrentWorker->localStack.size - 1;
+            while (gCurrentWorker->localStack.size > startSize) {
+                Task task = *(Task*) DArray::getLast(&gCurrentWorker->localStack);
+                DArray::pop(&gCurrentWorker->localStack);
+
+                clearTaskState(&gCurrentWorker->state, task.kind);
+                task.fcn(&gCurrentWorker->state, task.arg);
             }
         }
     }
