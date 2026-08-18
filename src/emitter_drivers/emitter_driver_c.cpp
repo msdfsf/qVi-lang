@@ -21,7 +21,6 @@ static void indent(Emitter::Context* ctx, IO::Stream* out) {
 
 static void emitName(IO::Stream* out, const INamed* name) {
     if (!name || !name->buff) return;
-
     IO::writef(out, "%.*s", (int) name->len, name->buff);
 }
 
@@ -35,6 +34,11 @@ static void emitName(IO::Stream* out, const INamedEx* name) {
     }
 }
 
+static void emitName(IO::Stream* out, const Type::_String* name) {
+    if (!name || !name->buff) return;
+    IO::writef(out, "%.*s", (int) name->len, name->buff);
+}
+
 static void emitArrayLenName(IO::Stream* out, Variable* var) {
     if (!var || !var->name.buff) return;
 
@@ -42,8 +46,13 @@ static void emitArrayLenName(IO::Stream* out, Variable* var) {
 }
 
 
-static void emitDataType(IO::Stream* out, const Type::Kind dtypeEnum) {
-    switch (dtypeEnum) {
+static void emitDataType(IO::Stream* out, Type::TypeInfo* type) {
+    if (!type) {
+        IO::write(out, "int");
+        return;
+    }
+
+    switch (type->kind) {
         case Type::DT_I8:      IO::write(out, "int8_t"); break;
         case Type::DT_I16:     IO::write(out, "int16_t"); break;
         case Type::DT_I32:     IO::write(out, "int32_t"); break;
@@ -54,58 +63,93 @@ static void emitDataType(IO::Stream* out, const Type::Kind dtypeEnum) {
         case Type::DT_U64:     IO::write(out, "uint64_t"); break;
         case Type::DT_F32:     IO::write(out, "float"); break;
         case Type::DT_F64:     IO::write(out, "double"); break;
-        case Type::DT_POINTER: IO::write(out, "void*"); break;
-        case Type::DT_STRING:  IO::write(out, "char*"); break;
-        case Type::DT_ERROR:   IO::write(out, "int"); break;
         case Type::DT_VOID:    IO::write(out, "void"); break;
+        case Type::DT_ERROR:   IO::write(out, "int"); break;
         default:               IO::write(out, "int"); break;
     }
 }
 
-static void emitDataType(Emitter::Context* ctx, IO::Stream* out, const Type::Kind dtypeEnum, void* dtype) {
-    if (dtypeEnum == Type::DT_POINTER && dtype) {
-        Pointer* const ptr = (Pointer*) dtype;
-        emitDataType(ctx, out, ptr->pointsToKind, ptr->pointsTo);
-        IO::write(out, '*');
-    } else if (dtypeEnum == Type::DT_ARRAY && dtype) {
-        Array* const arr = (Array*) dtype;
-        emitDataType(ctx, out, arr->base.pointsToKind, arr->base.pointsTo);
-    } else if (dtypeEnum == Type::DT_CUSTOM && dtype) {
-        TypeDefinition* td = (TypeDefinition*) dtype;
-        emitName(out, &td->name);
-    } else if (dtypeEnum == Type::DT_UNION && dtype) {
-        Union* u = (Union*) dtype;
-        emitName(out, &u->base.name);
-    } else if (dtypeEnum == Type::DT_FUNCTION && dtype) {
-        FunctionPrototype* fptr = (FunctionPrototype*) dtype;
-        if (fptr->outArg && fptr->outArg->var) {
-            emitDataType(ctx, out, fptr->outArg->var->value.typeKind, fptr->outArg->var->value.any);
-        } else {
-            IO::write(out, "void");
+static void emitDataType(Emitter::Context* ctx, IO::Stream* out, Type::TypeInfo* type) {
+    if (!type) {
+        IO::write(out, "int");
+        return;
+    }
+
+    Type::TypeInfoEx* typeEx = (Type::TypeInfoEx*) type;
+
+    switch (type->kind) {
+        case Type::DT_POINTER: {
+            Type::PointerInfo* pType = &typeEx->ptr;
+            emitDataType(ctx, out, pType->element);
+            IO::write(out, '*');
+            break;
         }
-        IO::write(out, "(*)");
-        IO::write(out, '(');
-        const int len = fptr->inArgCount;
-        for (int i = 0; i < len; i++) {
-            if (fptr->inArgs[i] && fptr->inArgs[i]->var) {
-                Value* val = &(fptr->inArgs[i]->var->value);
-                emitDataType(ctx, out, val->typeKind, val->any);
+
+        case Type::DT_ARRAY: {
+            Type::ArrayInfo* aType = &typeEx->arr;
+
+            emitDataType(ctx, out, aType->element);
+
+            IO::write(out, '[');
+            if (aType->elementCount == Type::ARRAY_LEN_UNKNOWN) {
+                IO::write(out, "0");
+            } else {
+                IO::write(out, "%llu", aType->elementCount);
             }
-            if (i != len - 1) {
-                IO::write(out, ", ");
-            }
+            IO::write(out, ']');
+            break;
         }
-        IO::write(out, ')');
-    } else {
-        emitDataType(out, dtypeEnum);
+
+        case Type::DT_SLICE: {
+            Type::SliceInfo* sType = &typeEx->slc;
+            emitDataType(ctx, out, sType->element);
+            IO::write(out, "*");
+            break;
+        }
+
+        case Type::DT_STRUCT:
+        case Type::DT_UNION: {
+            Type::StructInfo* sType = &typeEx->str;
+            emitName(out, &sType->name);
+            break;
+        }
+
+        case Type::DT_FUNCTION: {
+            Type::FunctionInfo* fType = &typeEx->fcn;
+
+            if (fType->retType) {
+                emitDataType(ctx, out, fType->retType);
+            } else {
+                IO::write(out, "void");
+            }
+
+            IO::write(out, " (*)");
+
+            IO::write(out, '(');
+            for (uint64_t i = 0; i < fType->argCount; i++) {
+                emitDataType(ctx, out, fType->argTypes[i]);
+                if (i != fType->argCount - 1) {
+                    IO::write(out, ", ");
+                }
+            }
+            IO::write(out, ')');
+            break;
+        }
+
+        default: {
+            emitDataType(out, type);
+            break;
+        }
     }
 }
 
 
 static void emitOperandValue(IO::Stream* out, Variable* op) {
-    if (!op) return;
+    if (!op || !op->value.type) return;
 
-    switch (op->value.typeKind) {
+    Type::Kind kind = op->value.type->kind;
+
+    switch (kind) {
         case Type::DT_I32:
             IO::writef(out, "%i", op->value.i32);
             break;
@@ -124,11 +168,6 @@ static void emitOperandValue(IO::Stream* out, Variable* op) {
             break;
         case Type::DT_F64:
             IO::writef(out, "%.17g%s", op->value.f64, std::fmod(op->value.f64, 1.0) == 0.0 ? "." : "");
-            break;
-        case Type::DT_STRING:
-            if (op->value.str) {
-                IO::writef(out, "\"%s\"", (char*) op->value.str);
-            }
             break;
         case Type::DT_ERROR:
             IO::writef(out, "%llu", (unsigned long long) op->value.i64);
@@ -176,285 +215,20 @@ static void emitOperator(IO::Stream* out, OperatorEnum opType) {
 
 static void emitVariable(Emitter::Context* ctx, IO::Stream* out, Variable* const node, Variable* lvalue) {
     if (!node) return;
-
-    if (node->def && (node->def->base.flags & IS_ARRAY_LIST)) {
-        if (node->base.flags & IS_SIZE) {
-            Variable* tmp = node->def->var;
-            IO::write(out, '(');
-            if (tmp) emitName(out, &tmp->name);
-            IO::write(out, "->size)");
-        } else if (node->base.flags & IS_LENGTH) {
-            Variable* tmp = node->def->var;
-            IO::write(out, '(');
-            if (tmp) emitName(out, &tmp->name);
-            IO::write(out, "->len)");
-        } else {
-            IO::write(out, '(');
-            emitName(out, &node->name);
-            IO::write(out, "->data)");
-        }
-        return;
-    }
-
-    if (node->def && (node->def->base.flags & IS_CMP_TIME) && node->def->var->value.typeKind != Type::DT_ARRAY) {
-        emitOperandValue(out, node->def->var);
-    } else if (node->name.len > 0 && node->name.buff) {
-        if (node->value.typeKind == Type::DT_FUNCTION) {
-            IO::write(out, '&');
-            emitName(out, &node->name);
-        } else {
-            emitName(out, &node->name);
-        }
-    } else {
-        if ((node->base.flags & IS_LENGTH) && node->def && node->def->var != lvalue) {
-            Variable* const tmp = node->def->var;
-            if (tmp && tmp->value.arr && tmp->value.arr->length && tmp->value.arr->length->value.hasValue) {
-                emitVariable(ctx, out, tmp->value.arr->length, lvalue);
-            } else if (tmp) {
-                emitArrayLenName(out, tmp);
-            }
-        } else if (node->expression && !node->value.hasValue) {
-            emitExpression(ctx, node->expression, out, lvalue);
-        } else {
-            emitOperandValue(out, node);
-        }
-    }
+    // TODO
 }
 
-static void emitFunctionCall(Emitter::Context* ctx, FunctionCall* const node, IO::Stream* out, Variable* lvalue = nullptr, Variable* err = nullptr) {
+static void emitFunctionCall(Emitter::Context* ctx, FunctionCall* const node, IO::Stream* out, Variable* lvalue = NULL, Variable* err = NULL) {
     if (!node) return;
-
-    if (node->fptr) {
-        emitName(out, &node->fptr->name);
-        IO::write(out, '(');
-    } else if (node->fcn && node->fcn->internalIdx <= 0) {
-        emitName(out, &node->fcn->name);
-        IO::write(out, '(');
-    } else if (node->fcn && node->fcn->internalIdx == Ast::Internal::IF_ALLOC) {
-        if (node->inArgCount > 0 && node->inArgs[0]) {
-            Variable* var = node->inArgs[0];
-            const Type::Kind dtype = var->value.typeKind;
-            IO::write(out, "malloc(sizeof(");
-
-            if (dtype == Type::DT_CUSTOM && var->value.def) {
-                TypeDefinition* customDtype = var->value.def;
-                emitName(out, &customDtype->name);
-                IO::write(out, "))");
-
-                if (lvalue && lvalue->value.ptr && var->expression) {
-                    TypeDefinition* lvalueDtype = (TypeDefinition*) (lvalue->value.ptr->pointsTo);
-                    TypeInitialization* typeInit = (TypeInitialization*) (var->expression);
-
-                    for (uint32_t i = 0; i < typeInit->attributeCount; i++) {
-                        IO::write(out, ';');
-                        indent(ctx, out);
-                        emitVariable(ctx, out, lvalue);
-                        IO::write(out, "->");
-
-                        if (lvalueDtype && typeInit->idxs && typeInit->idxs[i] >= 0) {
-                            emitVariable(ctx, out, lvalueDtype->vars[typeInit->idxs[i]]);
-                        }
-
-                        IO::write(out, '=');
-                        if (typeInit->attributes[i] && typeInit->attributes[i]->expression) {
-                            emitExpression(ctx, typeInit->attributes[i]->expression, out);
-                        }
-                    }
-                }
-            } else if (dtype == Type::DT_ARRAY && var->value.arr) {
-                Array* arr = var->value.arr;
-                emitDataType(ctx, out, arr->base.pointsToKind, arr->base.pointsTo);
-                IO::write(out, ")*");
-                emitVariable(ctx, out, arr->length, lvalue);
-                IO::write(out, ')');
-            } else {
-                emitDataType(out, dtype);
-                IO::write(out, "))");
-
-                if (var->value.hasValue && lvalue) {
-                    IO::write(out, ';');
-                    indent(ctx, out);
-                    emitVariable(ctx, out, lvalue);
-                    IO::write(out, '=');
-                    emitVariable(ctx, out, var);
-                } else if (var->expression && lvalue) {
-                    IO::write(out, ";*");
-                    emitVariable(ctx, out, lvalue);
-                    IO::write(out, '=');
-                    emitVariable(ctx, out, var);
-                }
-            }
-        } else {
-            IO::write(out, "malloc(0)");
-        }
-        return;
-    } else {
-        if (node->name.buff) {
-            IO::writef(out, "%.*s(", (int) node->name.len, node->name.buff);
-        } else {
-            IO::write(out, "func(");
-        }
-    }
-
-    Variable** const callInArgs = node->inArgs;
-    const int inArgsCnt = node->inArgCount;
-    bool multipleTypes = false;
-
-    for (int i = 0; i < inArgsCnt; i++) {
-        emitVariable(ctx, out, callInArgs[i]);
-
-        if (!multipleTypes) {
-            Variable* tmp = nullptr;
-            if (node->fcn && i < (int) node->fcn->prototype.inArgCount && node->fcn->prototype.inArgs[i]) {
-                tmp = node->fcn->prototype.inArgs[i]->var;
-            } else {
-                tmp = node->fptr;
-            }
-
-            if (tmp) {
-                if (tmp->value.typeKind == Type::DT_MULTIPLE_TYPES) {
-                    multipleTypes = true;
-                } else if (tmp->value.typeKind == Type::DT_ARRAY && tmp->value.arr && !(tmp->value.arr->flags & IS_ARRAY_LIST)) {
-                    IO::write(out, ", ");
-                    if (callInArgs[i] && callInArgs[i]->value.arr) {
-                        emitVariable(ctx, out, callInArgs[i]->value.arr->length);
-                    }
-                }
-            }
-        }
-
-        if (i < inArgsCnt - 1) {
-            IO::write(out, ", ");
-        }
-    }
-
-    if (err) {
-        if (inArgsCnt > 0) IO::write(out, ", ");
-        IO::write(out, '&');
-        emitVariable(ctx, out, err);
-    }
-
-    IO::write(out, ')');
+    // TODO
 }
 
 static void emitTypeInitialization(Emitter::Context* ctx, TypeInitialization* const node, IO::Stream* out, Variable* lvalue = nullptr) {
-    if (!node) return;
-
-    if (lvalue) {
-        TypeDefinition* const td = lvalue->def ? (lvalue->def->var ? lvalue->def->var->value.def : nullptr) : lvalue->value.def;
-        if (td) {
-            IO::write(out, "((");
-            emitName(out, &td->name);
-            IO::write(out, "){");
-        } else {
-            IO::write(out, '{');
-        }
-
-        if (lvalue->base.type == NT_UNION) {
-            if (node->attributeCount > 0 && node->attributes[0]) {
-                Variable* const var = node->attributes[0];
-                IO::write(out, '.');
-                emitName(out, &var->name);
-                IO::write(out, " = ");
-                if (var->expression) emitExpression(ctx, var->expression, out);
-                else emitOperandValue(out, var);
-            }
-        } else if (node->fillVar && td) {
-            uint32_t size = td->varCount;
-            for (uint32_t i = 0; i < size; i++) {
-                int idx = (node->idxs) ? node->idxs[i] : -1;
-                if (idx >= 0 && (uint32_t) idx < node->attributeCount && node->attributes[idx]) {
-                    Variable* const var = node->attributes[idx];
-                    if (var->expression) emitExpression(ctx, var->expression, out);
-                    else emitOperandValue(out, var);
-                } else {
-                    emitVariable(ctx, out, node->fillVar);
-                }
-                if (i < size - 1) IO::write(out, ", ");
-            }
-        } else {
-            uint32_t size = node->attributeCount;
-            for (uint32_t i = 0; i < size; i++) {
-                Variable* const var = node->attributes[i];
-                if (!var) continue;
-                if (var->name.len > 0) {
-                    IO::write(out, '.');
-                    emitName(out, &var->name);
-                    IO::write(out, " = ");
-                }
-                if (var->expression) emitExpression(ctx, var->expression, out);
-                else emitOperandValue(out, var);
-
-                if (i < size - 1) IO::write(out, ", ");
-            }
-        }
-        IO::write(out, "})");
-    } else {
-        IO::write(out, '{');
-        uint32_t size = node->attributeCount;
-        for (uint32_t i = 0; i < size; i++) {
-            Variable* const var = node->attributes[i];
-            if (!var) continue;
-            if (var->name.len > 0) {
-                IO::write(out, '.');
-                emitName(out, &var->name);
-                IO::write(out, " = ");
-            }
-            if (var->expression) emitExpression(ctx, var->expression, out);
-            else emitOperandValue(out, var);
-
-            if (i < size - 1) IO::write(out, ", ");
-        }
-        IO::write(out, '}');
-    }
+    // TODO
 }
 
 static void emitStringInitialization(Emitter::Context* ctx, StringInitialization* const node, IO::Stream* out, Variable* lvalue = nullptr) {
-    if (!node) return;
-
-    if (!node->wideStr.buff) {
-        if (node->rawStr.buff) {
-            IO::writef(out, "\"%.*s\"", (int) node->rawStr.len, node->rawStr.buff);
-        } else {
-            IO::write(out, "\"\"");
-        }
-        return;
-    }
-
-    IO::write(out, '{');
-    switch (node->wideType) {
-        case Type::DT_U8: {
-            uint8_t* arr = (uint8_t*) node->wideStr.buff;
-            for (uint64_t i = 0; i < node->wideStr.len; i++) {
-                IO::writef(out, "%u%s", arr[i], (i < node->wideStr.len - 1) ? "," : "");
-            }
-            break;
-        }
-        case Type::DT_U16: {
-            uint16_t* arr = (uint16_t*) node->wideStr.buff;
-            for (uint64_t i = 0; i < node->wideStr.len; i++) {
-                IO::writef(out, "%u%s", arr[i], (i < node->wideStr.len - 1) ? "," : "");
-            }
-            break;
-        }
-        case Type::DT_U32: {
-            uint32_t* arr = (uint32_t*) node->wideStr.buff;
-            for (uint64_t i = 0; i < node->wideStr.len; i++) {
-                IO::writef(out, "%u%s", arr[i], (i < node->wideStr.len - 1) ? "," : "");
-            }
-            break;
-        }
-        case Type::DT_U64: {
-            uint64_t* arr = (uint64_t*) node->wideStr.buff;
-            for (uint64_t i = 0; i < node->wideStr.len; i++) {
-                IO::writef(out, "%llu%s", (unsigned long long) arr[i], (i < node->wideStr.len - 1) ? "," : "");
-            }
-            break;
-        }
-        default:
-            break;
-    }
-    IO::write(out, '}');
+   // TODO
 }
 
 static void emitArrayInitialization(Emitter::Context* ctx, ArrayInitialization* const node, IO::Stream* out, Variable* lvalue = nullptr) {
@@ -529,11 +303,9 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
 
         case EXT_BINARY: {
             BinaryExpression* bex = (BinaryExpression*) exp;
-            if (bex->left && bex->left->value.typeKind == Type::DT_ARRAY && isMemberSelection(bex->base.opType)) {
+            if (bex->left && bex->left->value.type->kind == Type::DT_ARRAY && isMemberSelection(bex->base.opType)) {
                 IO::write(out, '(');
-                if (bex->left->value.arr && bex->left->value.arr->length) {
-                    emitVariable(ctx, out, bex->left->value.arr->length);
-                }
+                //emitVariable(ctx, out, bex->left->value.arr->length);
                 IO::write(out, ')');
                 return;
             }
@@ -611,19 +383,9 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
         }
 
         case EXT_GET_LENGTH: {
-            GetLength* glen = (GetLength*) exp;
-            if (glen->arr && glen->arr->value.arr && glen->arr->value.arr->length) {
-                emitVariable(ctx, out, glen->arr->value.arr->length, lvalue);
-            }
-            break;
         }
 
         case EXT_GET_SIZE: {
-            GetSize* gsz = (GetSize*) exp;
-            if (gsz->arr && gsz->arr->value.arr && gsz->arr->value.arr->length) {
-                emitVariable(ctx, out, gsz->arr->value.arr->length, lvalue);
-            }
-            break;
         }
 
         default:
@@ -635,8 +397,8 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
 static void emitFunctionDefinition(Emitter::Context* ctx, IO::Stream* out, Function* const node, bool isHeader) {
     if (!node) return;
 
-    if (node->prototype.outArg && node->prototype.outArg->var) {
-        emitDataType(ctx, out, node->prototype.outArg->var->value.typeKind, node->prototype.outArg->var->value.any);
+    if (node->prototype.outArg && node->prototype.outArg->var && node->prototype.outArg->var->value.type) {
+        emitDataType(ctx, out, node->prototype.outArg->var->value.type);
     } else {
         IO::write(out, "void");
     }
@@ -648,13 +410,15 @@ static void emitFunctionDefinition(Emitter::Context* ctx, IO::Stream* out, Funct
     const int inArgCnt = (int) node->prototype.inArgCount;
     for (int i = 0; i < inArgCnt; i++) {
         VariableDefinition* const varDef = node->prototype.inArgs[i];
-        if (varDef && varDef->var) {
-            emitDataType(ctx, out, varDef->var->value.typeKind, varDef->var->value.any);
+        if (varDef && varDef->var && varDef->var->value.type) {
+            emitDataType(ctx, out, varDef->var->value.type);
             IO::write(out, ' ');
             emitName(out, &varDef->var->name);
 
-            if (varDef->var->value.typeKind == Type::DT_ARRAY && varDef->var->value.arr) {
-                if (!(varDef->var->value.arr->flags & IS_ARRAY_LIST)) {
+            Type::Kind kind = varDef->var->value.type->kind;
+            if (kind == Type::DT_ARRAY) {
+                Type::TypeInfoEx* typeEx = (Type::TypeInfoEx*) varDef->var->value.type;
+                if (typeEx->arr.elementCount != Type::ARRAY_LEN_UNKNOWN) {
                     IO::write(out, ", uint64_t ");
                     emitArrayLenName(out, varDef->var);
                 }
@@ -696,7 +460,7 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
 
         case NT_VARIABLE_DEFINITION: {
             VariableDefinition* varDef = (VariableDefinition*) node;
-            if ((varDef->base.flags & IS_CMP_TIME) && varDef->var && varDef->var->value.typeKind != Type::DT_ARRAY) {
+            if ((varDef->base.flags & IS_CMP_TIME) && varDef->var && varDef->var->value.type && varDef->var->value.type->kind != Type::DT_ARRAY) {
                 break;
             }
 
@@ -710,65 +474,74 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
 
             if (varDef->var) {
                 Variable* var = varDef->var;
-                Type::Kind dtype = var->value.typeKind;
+                Type::Kind dtype = var->value.type ? var->value.type->kind : Type::DT_UNDEFINED;
 
-                if (dtype == Type::DT_ARRAY && var->value.arr) {
-                    Array* arr = var->value.arr;
-                    if (arr->flags & IS_ARRAY_LIST) {
-                        emitDataType(ctx, out, arr->base.pointsToKind, arr->base.pointsTo);
+                if (dtype == Type::DT_ARRAY && var->value.type) {
+                    Type::TypeInfoEx* typeEx = (Type::TypeInfoEx*) var->value.type;
+                    Type::TypeInfo* elementType = typeEx->arr.element;
+                    Variable* arrLength = nullptr;
+
+                    bool isArrayList = (var->base.flags & IS_ARRAY_LIST);
+                    bool isAllocated = (var->base.flags & IS_ALLOCATED);
+
+                    if (isArrayList) {
+                        emitDataType(ctx, out, elementType);
                         IO::write(out, "* ");
                         emitName(out, &var->name);
                         IO::write(out, " = arrayListCreate(");
-                        if (arr->length) {
-                            emitVariable(ctx, out, arr->length);
+                        if (arrLength) {
+                            emitVariable(ctx, out, arrLength);
                         }
                         IO::write(out, ");\n");
                         break;
-                    } else if (arr->flags & IS_ALLOCATED) {
+                    } else if (isAllocated) {
                         IO::write(out, "uint64_t ");
                         emitArrayLenName(out, var);
                         IO::write(out, " = ");
-                        if (arr->length) {
-                            emitVariable(ctx, out, arr->length);
+                        if (arrLength) {
+                            emitVariable(ctx, out, arrLength);
                         } else {
                             IO::write(out, '0');
                         }
                         IO::write(out, ";\n");
                         indent(ctx, out);
-                        emitDataType(ctx, out, arr->base.pointsToKind, arr->base.pointsTo);
+                        emitDataType(ctx, out, elementType);
                         IO::write(out, "* ");
                         emitName(out, &var->name);
                     } else {
-                        emitDataType(ctx, out, arr->base.pointsToKind, arr->base.pointsTo);
+                        emitDataType(ctx, out, elementType);
                         IO::write(out, ' ');
                         emitName(out, &var->name);
                         IO::write(out, '[');
-                        if (arr->length) {
-                            emitVariable(ctx, out, arr->length);
+                        if (arrLength) {
+                            emitVariable(ctx, out, arrLength);
+                        } else if (typeEx->arr.elementCount != Type::ARRAY_LEN_UNKNOWN) {
+                            IO::write(out, "%llu", typeEx->arr.elementCount);
                         }
                         IO::write(out, ']');
                     }
-                } else if (dtype == Type::DT_FUNCTION) {
-                    FunctionPrototype* fptr = (FunctionPrototype*) var->value.any;
-                    if (fptr && fptr->outArg && fptr->outArg->var) {
-                        emitDataType(ctx, out, fptr->outArg->var->value.typeKind, fptr->outArg->var->value.any);
+                } else if (dtype == Type::DT_FUNCTION && var->value.type) {
+                    Type::TypeInfoEx* typeEx = (Type::TypeInfoEx*) var->value.type;
+                    Type::FunctionInfo* fptr = &typeEx->fcn;
+                    if (fptr->retType) {
+                        emitDataType(ctx, out, fptr->retType);
                     } else {
                         IO::write(out, "void");
                     }
                     IO::write(out, " (*");
                     emitName(out, &var->name);
                     IO::write(out, ")(");
-                    if (fptr) {
-                        for (uint32_t i = 0; i < fptr->inArgCount; i++) {
-                            if (fptr->inArgs[i] && fptr->inArgs[i]->var) {
-                                emitDataType(ctx, out, fptr->inArgs[i]->var->value.typeKind, fptr->inArgs[i]->var->value.any);
+                    if (fptr->argTypes) {
+                        for (uint64_t i = 0; i < fptr->argCount; i++) {
+                            if (fptr->argTypes[i]) {
+                                emitDataType(ctx, out, fptr->argTypes[i]);
                             }
-                            if (i < fptr->inArgCount - 1) IO::write(out, ", ");
+                            if (i < fptr->argCount - 1) IO::write(out, ", ");
                         }
                     }
                     IO::write(out, ')');
                 } else {
-                    emitDataType(ctx, out, var->value.typeKind, var->value.any);
+                    emitDataType(ctx, out, var->value.type);
                     IO::write(out, ' ');
                     emitName(out, &var->name);
                 }
@@ -837,17 +610,19 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
                 if (!var) continue;
                 indent(ctx, out);
 
-                if (var->value.typeKind == Type::DT_ARRAY && var->value.arr) {
-                    emitDataType(ctx, out, var->value.arr->base.pointsToKind, var->value.arr->base.pointsTo);
+                Type::Kind kind = var->value.type ? var->value.type->kind : Type::DT_UNDEFINED;
+                if (kind == Type::DT_ARRAY && var->value.type) {
+                    Type::TypeInfoEx* typeEx = (Type::TypeInfoEx*) var->value.type;
+                    emitDataType(ctx, out, typeEx->arr.element);
                     IO::write(out, ' ');
                     emitName(out, &var->name);
                     IO::write(out, '[');
-                    if (var->value.arr->length) {
-                        emitVariable(ctx, out, var->value.arr->length, var);
+                    if (typeEx->arr.elementCount != Type::ARRAY_LEN_UNKNOWN) {
+                        IO::write(out, "%llu", typeEx->arr.elementCount);
                     }
                     IO::write(out, ']');
                 } else {
-                    emitDataType(ctx, out, var->value.typeKind, var->value.any);
+                    emitDataType(ctx, out, var->value.type);
                     IO::write(out, ' ');
                     emitName(out, &var->name);
                 }

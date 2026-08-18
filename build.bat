@@ -10,12 +10,13 @@
 :: from the 'microsoft family', allowing a single tool
 :: to do the job.
 ::
-:: $1 choose the compiler ['clang-cl', 'clang++', 'g++']
+:: $1 choose the project ['compiler', 'lsp', 'test']
+::    default: 'compiler'
+:: $2 choose the compiler ['clang-cl', 'clang++', 'g++']
 ::    default: any thats avaliable in the PATH
 ::    in given order
-:: $2 choose the mode ['release', 'debug']
+:: $3 choose the mode ['release', 'debug']
 ::    default: 'release'
-
 
 
 @echo off
@@ -26,12 +27,31 @@ setlocal EnableDelayedExpansion
 :: CONFIGURATION
 :: =============================================
 
-set "TARGET_COMPILER=%~1"
-set "TARGET_MODE=%~2"
+set "TARGET_PROJECT=%~1"
+set "TARGET_COMPILER=%~2"
+set "TARGET_MODE=%~3"
 
-set "SRC_DIR=src"
+set "SRC_DIRS=src"
 set "LIB_DIR=lib"
 set "BUILD_DIR=build"
+
+if "%TARGET_PROJECT%"=="" set "TARGET_PROJECT=compiler"
+if "%TARGET_MODE%"=="" set "TARGET_MODE=release"
+
+if /i "%TARGET_PROJECT%"=="compiler" (
+    set "OUT_BIN=compiler.exe"
+    set "SRC_DIRS=src"
+) else if /i "%TARGET_PROJECT%"=="lsp" (
+    set "OUT_BIN=lsp.exe"
+    set "SRC_DIRS=src lsp/src"
+) else if /i "%TARGET_PROJECT%"=="test" (
+    set "OUT_BIN=test.exe"
+    set "SRC_DIRS=src test"
+) else (
+    call :print_error "Invalid target project: '%TARGET_PROJECT%'"
+    echo         Available: 'compiler', 'lsp', 'test'
+    exit /b 1
+)
 
 if /i "%TARGET_MODE%" NEQ "debug" (
     if /i "%TARGET_MODE%" NEQ "release" (
@@ -83,6 +103,7 @@ if "%TARGET_COMPILER%"=="" (
 )
 
 :compiler_found
+call :print_info "Project:  %TARGET_PROJECT%"
 call :print_info "Compiler: %TARGET_COMPILER%"
 call :print_info "Mode:     %TARGET_MODE%"
 
@@ -91,10 +112,26 @@ call :print_info "Mode:     %TARGET_MODE%"
 :: =============================================
 :: FIND ALL SOURCES
 :: =============================================
-
 set "SOURCES="
-for /r "%SRC_DIR%" %%f in (*.cpp *.s *.asm) do (
-    set "SOURCES=!SOURCES! "%%f""
+for %%d in (%SRC_DIRS%) do (
+    PUSHD "%%d"
+    if not errorlevel 1 (
+
+        for /r . %%f in (*.cpp *.s *.asm) do (
+            set "SKIP=false"
+
+            :: Exclude compiler's main.cpp when building test or lsp targets
+            if /i "%TARGET_PROJECT%"=="test" if /i "%%~nxf"=="main.cpp" if /i "%%~dpf"=="%CD%\src\" set "SKIP=true"
+            if /i "%TARGET_PROJECT%"=="lsp"  if /i "%%~nxf"=="main.cpp" if /i "%%~dpf"=="%CD%\src\" set "SKIP=true"
+
+            if "!SKIP!"=="false" (
+                set "SOURCES=!SOURCES! "%%f""
+            )
+        )
+
+        POPD
+
+    )
 )
 
 if "%SOURCES%"=="" (
@@ -114,9 +151,9 @@ if /i "%TARGET_COMPILER%"=="clang-cl" (
     set "LIBS="
 
     if /i "%TARGET_MODE%"=="debug" (
-        set "FLAGS=!FLAGS! /Zi /Od /Fe"compiler.exe""
+        set "FLAGS=!FLAGS! /Zi /Od /Fe"%OUT_BIN%""
     ) else (
-        set "FLAGS=!FLAGS! /O2 /Fe"compiler.exe""
+        set "FLAGS=!FLAGS! /O2 /Fe"%OUT_BIN%""
     )
 
 ) else (
@@ -125,9 +162,9 @@ if /i "%TARGET_COMPILER%"=="clang-cl" (
     set "LIBS="
 
     if /i "%TARGET_MODE%"=="debug" (
-        set "FLAGS=!FLAGS! -DNOMINMAX -g -o "compiler.exe""
+        set "FLAGS=!FLAGS! -DNOMINMAX -g -o "%OUT_BIN%""
     ) else (
-        set "FLAGS=!FLAGS! -DNOMINMAX -O3 -o "compiler.exe""
+        set "FLAGS=!FLAGS! -DNOMINMAX -O3 -o "%OUT_BIN%""
     )
 
 )
@@ -153,7 +190,7 @@ del *.obj >nul 2>&1
 
 popd
 
-call :print_custom "SUCCESS" "1;32" "Build complete."
+call :print_custom "SUCCESS" "1;32" "Build complete:: %BUILD_DIR%\%OUT_BIN%"
 exit /b
 
 

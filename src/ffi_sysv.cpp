@@ -1,5 +1,6 @@
 #include "data_types.h"
 #include "foreign_code.h"
+#include "syntax.h"
 #include <cstdint>
 
 namespace Extern::Abi {
@@ -30,12 +31,12 @@ namespace Extern::Abi {
         return SC_SSE;
     }
 
-    void classify(SysVClass chunks[2], Type::TypeInfo* type, uint32_t baseOffset) {
+    constexpr int chunksCount = 2;
+    void classify(SysVClass chunks[chunksCount], Type::TypeInfo* type, uint32_t baseOffset) {
         const int chunkIdx = baseOffset % 8;
 
         if (baseOffset % type->align != 0) {
-            constexpr int count = sizeof(chunks) / sizeof(SysVClass);
-            for (int i = 0; i < count; i++) {
+            for (int i = 0; i < chunksCount; i++) {
                 chunks[chunkIdx] = SC_MEMORY;
             }
             return;
@@ -59,8 +60,10 @@ namespace Extern::Abi {
         }
     }
 
-    void sysVClassify(Arg* arg, Value* val) {
-        switch (val->typeKind) {
+    void sysVClassify(Arg* arg, Abi::TypeInfo* abiType) {
+        Type::TypeInfoEx* type = abiType->type;
+
+        switch (type->base.kind) {
             case Type::DT_F32:
             case Type::DT_F64: {
                 arg->kind = AK_FLOAT;
@@ -82,20 +85,17 @@ namespace Extern::Abi {
                 break;
             }
 
-            case Type::DT_CUSTOM:
+            case Type::DT_STRUCT:
             case Type::DT_UNION: {
-                Type::StructInfo* sInfo = &val->def->typeInfoAbi->info->str;
-                const uint32_t size = sInfo->base.size;
-
                 // TODO : for now only max 16 bytes support
-                if (size > 8 * 2) {
+                if (type->base.size > 8 * 2) {
                     arg->kind = Abi::AK_AGGREGATE;
                     arg->pass = Abi::PK_MEM_STRUCT;
                     break;
                 }
 
                 SysVClass chunks[2];
-                classify(chunks, &sInfo->base, 0);
+                classify(chunks, &type->base, 0);
 
                 arg->kind = (Abi::ArgKind) chunks[0];
                 arg->pass = chunks[0] == SC_MEMORY ? PK_MEM_STRUCT : PK_REG_STRUCT_SPLIT;

@@ -48,16 +48,12 @@ static void writeValue(IO::Stream* out, Value* val) {
         return;
     }
 
-    switch (val->typeKind) {
+    switch (val->type->kind) {
         case Type::DT_I32: IO::writef(out, AC_NUMBER "%i" AC_RESET, val->i32); break;
         case Type::DT_I64: IO::writef(out, AC_NUMBER "%lli" AC_RESET, val->i64); break;
         case Type::DT_F32: IO::writef(out, AC_NUMBER "%g" AC_RESET, (double)val->f32); break;
         case Type::DT_F64: IO::writef(out, AC_NUMBER "%g" AC_RESET, val->f64); break;
-        case Type::DT_STRING:
-            if (val->str) IO::writef(out, AC_TYPE "\"%s\"" AC_RESET, (char*)val->str);
-            else IO::writef(out, AC_DIM "null" AC_RESET);
-            break;
-        default: IO::writef(out, AC_DIM "(%s)" AC_RESET, Type::str(val->typeKind)); break;
+        default: IO::writef(out, AC_DIM "(%s)" AC_RESET, Type::str(val->type)); break;
     }
 }
 
@@ -188,13 +184,10 @@ void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
                 IO::write(out, "\n", 1);
             }
 
-            if (def->dtype) {
+            if (def->type.baseType == Type::DT_UNDEFINED) {
                 writeAttr(ctx, out, "Declared Type");
-                writeQualifiedName(out, def->dtype);
+                writeQualifiedName(out, def->type.baseName);
 
-                if (def->lastPtr) {
-                    IO::writef(out, AC_BOLD_YELLOW "*" AC_RESET);
-                }
                 IO::write(out, "\n", 1);
             }
 
@@ -202,9 +195,9 @@ void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
                 writeAttr(ctx, out, "Resolved Type");
 
                 IO::writef(out, AC_TYPE);
-                Type::writeTypeName(out, def->var->value.any, def->var->value.typeKind);
+                Type::writeTypeName(out, def->var->value.type);
                 IO::writef(out, AC_RESET " (" AC_NUMBER "Kind: %d" AC_RESET ")\n",
-                (int) def->var->value.typeKind);
+                (int) def->var->value.type->kind);
             }
 
             writeAttr(ctx, out, "VM Offset");

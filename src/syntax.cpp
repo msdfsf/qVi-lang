@@ -65,15 +65,13 @@ void Ast::init() {
     VariableDefinition* fPrintArg1 = (VariableDefinition*) nalloc(alc, NT_VARIABLE_DEFINITION);
     fPrintArg1->var = (Variable*) nalloc(alc, NT_VARIABLE);
     fPrintArg1->var->base.scope = SyntaxNode::root;
-    fPrintArg1->var->value.typeKind = Type::DT_STRING;
-    fPrintArg1->var->value.any = NULL;
+    fPrintArg1->var->value.type = Type::makeSlice(Type::basicTypes + Type::DT_U8, IS_CONST);
     fPrintArg1->var->value.hasValue = 0;
 
     VariableDefinition* fPrintArg2 = (VariableDefinition*) nalloc(alc, NT_VARIABLE_DEFINITION);
     fPrintArg2->var = (Variable*) nalloc(alc, NT_VARIABLE);
     fPrintArg2->var->base.scope = SyntaxNode::root;
-    fPrintArg2->var->value.typeKind = Type::DT_MULTIPLE_TYPES;
-    fPrintArg2->var->value.any = NULL;
+    fPrintArg2->var->value.type = Type::basicTypes + Type::DT_MULTIPLE_TYPES;
     fPrintArg2->var->value.hasValue = 0;
 
     fPrintf->prototype.inArgs[0] = fPrintArg1;
@@ -96,7 +94,7 @@ void Ast::init() {
     VariableDefinition* fAllocArg1 = (VariableDefinition*) nalloc(nalc, NT_VARIABLE_DEFINITION);
     fAllocArg1->var = (Variable*) nalloc(nalc, NT_VARIABLE);
     fAllocArg1->var->base.scope = SyntaxNode::root;
-    fAllocArg1->var->value.typeKind = Type::DT_U64;
+    fAllocArg1->var->value.type = Type::basicTypes + Type::DT_U64;
 
     fAlloc->prototype.inArgs[0] = fAllocArg1;
     fAlloc->prototype.inArgCount = 1;
@@ -117,7 +115,7 @@ void Ast::init() {
     VariableDefinition* fFreeArg1 = (VariableDefinition*) nalloc(nalc, NT_VARIABLE_DEFINITION);
     fFreeArg1->var = (Variable*) nalloc(nalc, NT_VARIABLE);
     fFreeArg1->var->base.scope = SyntaxNode::root;
-    fFreeArg1->var->value.typeKind = Type::DT_POINTER;
+    fFreeArg1->var->value.type = Type::basicTypes + Type::DT_POINTER;
 
     fFree->prototype.inArgs[0] = fFreeArg1;
     fFree->prototype.inArgCount = 1;
@@ -125,8 +123,12 @@ void Ast::init() {
 
     // internal Variables such as null, true, false etc...
     Variable* vNull = Internal::variables + Internal::IV_NULL;
-    vNull->value = { Type::DT_POINTER, 1, 0 };
     vNull->base.scope = SyntaxNode::root;
+
+    vNull->value.type = Type::makePointer(Type::basicTypes + Type::DT_VOID);
+    vNull->value.hasValue = true;
+    vNull->value.u64 = 0;
+
     vNull->name.buff = (char*) Internal::IVS_NULL;
     vNull->name.len = sizeof(Internal::IVS_NULL) - 1;
     vNull->base.flags = IS_CMP_TIME;
@@ -138,7 +140,11 @@ void Ast::init() {
 
     Variable* vTrue = Internal::variables + Internal::IV_TRUE;
     vTrue->base.scope = SyntaxNode::root;
-    vTrue->value = { Type::DT_INT, 1, 1 };
+
+    vTrue->value.type = Type::basicTypes + Type::DT_INT;
+    vTrue->value.hasValue = true;
+    vTrue->value.u64 = 0;
+
     vTrue->name.buff = (char*) Internal::IVS_TRUE;
     vTrue->name.len = sizeof(Internal::IVS_TRUE) - 1;
     vTrue->base.flags = IS_CMP_TIME;
@@ -150,7 +156,11 @@ void Ast::init() {
 
     Variable* vFalse = Internal::variables + Internal::IV_FALSE;
     vFalse->base.scope = SyntaxNode::root;
-    vFalse->value = { Type::DT_INT, 1, 1 };
+
+    vFalse->value.type = Type::basicTypes + Type::DT_INT;
+    vFalse->value.hasValue = true;
+    vFalse->value.u64 = 0;
+
     vFalse->name.buff = (char*) Internal::IVS_FALSE;
     vFalse->name.len = sizeof(Internal::IVS_FALSE) - 1;
     vFalse->base.flags = IS_CMP_TIME;
@@ -161,7 +171,6 @@ void Ast::init() {
 }
 
 Variable* unwrap(Variable* var) {
-
     Expression* ex = var->expression;
     while (ex && ex->type == EXT_UNARY) {
 
@@ -176,19 +185,7 @@ Variable* unwrap(Variable* var) {
     }
 
     return var;
-
 }
-
-Type::TypeInfo* getTypeInfo(Variable* var) {
-    if (Type::isPrimitive(var->value.typeKind)) {
-        return Type::basicTypes + var->value.typeKind;
-    } else if (Type::DT_CUSTOM == var->value.typeKind) {
-        return (Type::TypeInfo*) var->value.def->typeInfo;
-    }
-
-    return NULL;
-}
-
 
 
 
@@ -229,85 +226,6 @@ void releaseNode(uint8_t* statusField, bool success) {
     std::atomic_ref<uint8_t> status(*statusField);
     status.store(success ? TS_READY : TS_PENDING, std::memory_order_release);
     status.notify_all();
-}
-
-
-// whatever
-//
-
-int validateScopeNames(Scope* sc, INamedLoc** names, uint32_t namesCount, Namespace** nspace, ErrorSet** eset) {
-
-    if (namesCount == 0) return 0;
-
-    Namespace* tmpNspace = NULL;
-
-    int i = 0;
-    const int len = namesCount;
-
-    for (; i < len; i++) {
-
-        //MemberOffset arrOff = getMemberOffset(Scope, namespaces);
-        //MemberOffset nameOff = getMemberOffset(scope);
-        String name = *((String*) (names + i));
-        tmpNspace = Ast::Find::inScopeNamespace(sc, &name);
-
-        if (!tmpNspace) {
-
-            ErrorSet* tmpEset = Ast::Find::inScopeErrorSet(sc, &name);
-            if (!tmpEset) {
-
-                // check implicit errors
-                /*
-                if (sc->fcn && sc->fcn->errorSet) {
-                    tmpEset = sc->fcn->errorSet;
-                } else {
-                    Logger::log(logErr, Err::str(Err::UNKNOWN_NAMESPACE), sc->base.span, name.len, name.buff);
-                    return Err::UNKNOWN_NAMESPACE;
-                }
-                */
-
-            }
-
-            // *eset = tmpEset;
-
-            // need to test that other fields align with error set
-            i++;
-            for (; i < len; i++) {
-
-                Variable* tmp = Ast::Find::inArray(tmpEset->vars, tmpEset->varCount, &name);
-                if (!tmp) {
-                    Logger::log(logErr, Err::str(Err::UNKNOWN_NAMESPACE));
-                    return Err::UNKNOWN_NAMESPACE;
-                }
-
-                if (tmp->value.typeKind == Type::DT_ERROR && !(tmp->value.hasValue)) {
-                    tmpEset = tmp->value.err;
-                } else if (i + 1 < len) {
-                    Logger::log(logErr, Err::str(Err::UNKNOWN_ERROR_SET), tmp->base.span);
-                    return Err::UNKNOWN_ERROR_SET;
-                }
-
-            }
-
-            *eset = tmpEset;
-
-            break;
-
-        }
-
-        sc = (Scope*) tmpNspace;
-
-    }
-
-    *nspace = (Namespace*) tmpNspace;
-    return Err::OK;
-
-}
-
-int findMember(INamed* member, TypeDefinition* dtype) {
-
-    return 0;
-
 }
 
 
@@ -897,7 +815,7 @@ void Ast::Node::init(CodeBlock* node) {
 _defineMake(CodeBlock, NT_CODE_BLOCK);
 
 void Ast::Node::init(Enumerator* node) {
-    node->dtype = Type::DT_VOID;
+    node->memberType = Type::basicTypes + Type::DT_VOID;
     node->vars = NULL;
     node->varCount = 0;
 
@@ -917,10 +835,9 @@ _defineMake(Statement, NT_STATEMENT);
 void Ast::Node::init(VariableDefinition* node) {
     node->var = makeVariable();
     node->var->def = node;
-    node->lastPtr = NULL;
-    node->dtype = NULL;
     node->vmOwnerExe = NULL;
     ::init(&node->base);
+    Ast::Node::init(&node->type);
     node->base.type = NT_VARIABLE_DEFINITION;
 }
 _defineMake(VariableDefinition, NT_VARIABLE_DEFINITION);
@@ -1046,10 +963,9 @@ void Ast::Node::init(Label* node) {
 _defineMake(Label, NT_LABEL);
 
 void Ast::Node::init(TypeDefinition* node) {
-    node->typeInfo = NULL;
+    node->type = NULL;
     node->vars = NULL;
     node->varCount = 0;
-    node->typeInfo = NULL;
     ::init(&node->base);
     node->base.flags |= IS_UNORDERED;
     node->base.type = NT_TYPE_DEFINITION;
@@ -1138,11 +1054,9 @@ void Ast::Node::init(FunctionPrototype* node) {
 _defineMake(FunctionPrototype, AT_FUNCTION_PROTOTYPE);
 
 void Ast::Node::init(StringInitialization* node) {
-    node->rawStr.buff = NULL;
-    node->rawStr.len = 0;
-    node->wideType = Type::DT_VOID;
-    node->wideStr.buff = NULL;
-    node->wideStr.len = 0;
+    node->rawData.buff = NULL;
+    node->rawData.len = 0;
+    node->charType = NULL;
 
     ::init(&node->base);
     node->base.type = EXT_STRING_INITIALIZATION;
@@ -1169,30 +1083,24 @@ void Ast::Node::init(TypeInitialization* node) {
 }
 _defineMake(TypeInitialization, AT_EXT_TYPE_INITIALIZATION);
 
-void Ast::Node::init(Pointer* node) {
-   node->parentPointer = NULL;
-   node->pointsTo = NULL;
-   node->pointsToKind = Type::DT_VOID;
-}
-_defineMake(Pointer, AT_POINTER);
-
-void Ast::Node::init(Array* node) {
-    node->flags = 0;
-    node->length = NULL;
-    node->type = NULL;
-    init(&node->base);
-}
-_defineMake(Array, AT_ARRAY);
-
-void Ast::Node::init(Slice* node) {
-    node->arr = NULL;
+void Ast::Node::init(RangeExpression* node) {
     node->bidx = NULL;
     node->eidx = NULL;
-    node->len = NULL;
+    node->step = NULL;
     ::init(&node->base);
-    node->base.type = EXT_SLICE;
+    node->base.type = EXT_RANGE;
 }
-_defineMake(Slice, AT_EXT_SLICE);
+_defineMake(RangeExpression, AT_EXT_RANGE);
+
+void Ast::Node::init(TypeSpecifier* node) {
+    node->baseType = Type::DT_VOID;
+    node->decoratorCount = NULL;
+    node->baseFcn = NULL;
+    node->decorators = NULL;
+    node->decoratorCount = 0;
+    node->span = NULL;
+}
+_defineMake(TypeSpecifier, AT_TYPE_SPECIFIER);
 
 void Ast::Node::init(Catch* node) {
     node->call = NULL;
@@ -1204,7 +1112,7 @@ void Ast::Node::init(Catch* node) {
 _defineMake(Catch, AT_EXT_CATCH);
 
 void Ast::Node::init(Cast* node) {
-    node->target = Type::DT_VOID;
+    node->target = NULL;
     node->operand = NULL;
     node->base.type = EXT_CAST;
 }
@@ -1290,7 +1198,7 @@ Variable* Ast::Node::copy(Variable* dest, Variable* src) {
 }
 
 // TODO: for now here
-//       quite strange function with wierd name, as
+//       quite strange function with weird name, as
 //       I am not sure if it needs to exist
 Variable* Ast::Node::copyRef(Variable* dest, Variable* src) {
 
@@ -1397,8 +1305,8 @@ const char* Ast::Node::str(ExpressionType type) {
             return "EXT_STRING_INITIALIZATION";
         case EXT_ARRAY_INITIALIZATION:
             return "EXT_ARRAY_INITIALIZATION";
-        case EXT_SLICE:
-            return "EXT_SLICE";
+        case EXT_RANGE:
+            return "EXT_RANGE";
         case EXT_CATCH:
             return "EXT_CATCH";
         case EXT_CAST:

@@ -1,27 +1,14 @@
 #pragma once
 
 #include "io.h"
+#include "keywords.h"
 #include "string.h"
 #include <cstdint>
 
 
 
-// TODO :
-//   The entire 'type system' feels weird.
-//   Conceptually, it feels correct to create explicit Type objects only
-//   for fundamental types (int/float), user-defined structs/unions,
-//   and enums.
-//
-//   In the case of fixed-length arrays, defining a unique Type object for each
-//   size (int[5] vs int[6]) feels wasteful and incorrect. However,
-//   avoiding this leads to a fragmented implementation where we cannot
-//   simply inspect the Type object itself but must juggle extra metadata
-//   (like AST nodes) to calculate basic properties like size.
-//
-//   I might refactor the 'type system' later, perhaps by adding cache nodes,
-//   a lookup mechanism, or something else to make the code feel better.
-//   But until then, I shall excuse myself and simply write what works to
-//   get the job done.
+struct SyntaxNode;
+namespace Extern { namespace Abi { struct TypeInfo; } };
 
 namespace Type {
 
@@ -39,22 +26,51 @@ namespace Type {
         DT_U64,
         DT_F32,
         DT_F64,
+
+        // Scalar Pointer type. Tracks pointer metadata via 'PointerInfo'.
         DT_POINTER,
-        DT_STRING,
-        DT_ARRAY,
-        DT_SLICE,
+
+        // Aggregate Container Types
+        DT_ARRAY,   // Fixed-size compile-time array
+        DT_SLICE, // Dynamic runtime slice view (pointer + length pair)
+
+        // Meta-type:
+        // Range specifier (start:step:end).
+        DT_RANGE,
+
+        // Meta-type:
+        // Placeholder for variadic arguments
         DT_MULTIPLE_TYPES,
-        DT_CUSTOM, // TODO : rename as DT_STRUCT
+
+        // User-defined aggregate types
+        DT_STRUCT,
         DT_UNION,
         DT_ERROR,
         DT_ENUM,
-        DT_FUNCTION, // FunctionPrototype
+
+        // FunctionPrototype
+        DT_FUNCTION,
+
+        // Meta-type:
+        // represents the right-hand side of a member selection
+        // expression (e.g., 'b' in 'a.b'). Holds 'StructMemberInfo'
+        // as its payload, while the expression evaluates to the
+        // member's resolved type.
         DT_MEMBER,
+
+        // Type was tried to be resolved but failed
         DT_UNDEFINED,
+
         DT_COUNT,
 
         DT_INT  = DT_I64, // TODO : delete?
         DT_BOOL = DT_U64,
+    };
+
+    // Expected to be used during resolving to signal status
+    enum ResolutionStatus : int64_t {
+        RS_CONCRETE  = 0,
+        RS_AMBIGUOUS = 1, // Contains inferred dimensions ([?]), uses tmpArena
     };
 
     // As we may want to use it in runtime
@@ -68,8 +84,14 @@ namespace Type {
     struct TypeInfo {
         Kind     kind;
         uint8_t  rank;
+        uint8_t  align;
         uint32_t size;
-        uint32_t align;
+
+        // NOTE: We also try to put this into TypeInfoEx only
+        //       and resolve it via a function, while abis
+        //       providing theirs definitions to basic types...
+        // NOTE: For now only one ABI against which we may compile
+        Extern::Abi::TypeInfo* abi;
     };
 
     struct StructMemberInfo {
@@ -87,10 +109,29 @@ namespace Type {
         StructMemberInfo* members;
     };
 
+    struct EnumMemberInfo {
+        _String name;
+        int64_t value;
+    };
+
+    struct EnumInfo {
+        TypeInfo base;
+        _String  name;
+        Kind     memberKind;
+        uint64_t memberCount;
+        EnumMemberInfo* members;
+    };
+
     struct ArrayInfo {
         TypeInfo  base;
         TypeInfo* element;
         uint64_t  elementCount;
+    };
+
+    struct SliceInfo {
+        TypeInfo  base;
+        TypeInfo* element;
+        uint64_t  flags; // to distinguish between [const], [auton], [muton] etc.
     };
 
     struct PointerInfo {
@@ -98,18 +139,36 @@ namespace Type {
         TypeInfo* element;
     };
 
+    struct FunctionInfo {
+        TypeInfo   base;
+        TypeInfo** argTypes;
+        uint64_t   argCount;
+        TypeInfo*  retType;
+        uint64_t   flags;
+    };
+
+    // TODO : we have to somehow ensure that everything 'indexable'
+    //        inherit from pointer
+    //        Type::getMember ?
+
     struct TypeInfoEx {
         union {
-            TypeInfo base;
-            StructInfo  str; // TODO : better name?
-            ArrayInfo   arr;
-            PointerInfo ptr;
+            TypeInfo     base;
+            StructInfo   str; // TODO : better name?
+            ArrayInfo    arr;
+            SliceInfo    slc;
+            PointerInfo  ptr;
+            FunctionInfo fcn;
+            EnumInfo     en;
         };
+        SyntaxNode* astNode;
     };
 
     // Definition for each 'enum Kind' value
     extern TypeInfo basicTypes[DT_COUNT];
     extern TypeInfoEx* usersTypes;
+
+    constexpr int64_t ARRAY_LEN_UNKNOWN = -1;
 
 
 
@@ -117,42 +176,135 @@ namespace Type {
         return x >= DT_I8 && x <= DT_U64;
     }
 
+    inline int isInt(TypeInfo* x) {
+        return isInt(x->kind);
+    }
+
     inline int isSignedInt(int x) {
         return x >= DT_I8 && x <= DT_I64;
+    }
+
+    inline int isSignedInt(TypeInfo* x) {
+        return isSignedInt(x->kind);
     }
 
     inline int isUnsignedInt(int x) {
         return x >= DT_U8 && x <= DT_U64;
     }
 
+    inline int isUnsignedInt(TypeInfo* x) {
+        return isUnsignedInt(x->kind);
+    }
+
     inline int isFloat(int x) {
         return x >= DT_F32 && x <= DT_F64;
+    }
+
+    inline int isFloat(TypeInfo* x) {
+        return isFloat(x->kind);
     }
 
     inline int isTruthy(int x) {
         return isInt(x);
     }
 
+    inline int isTruthy(TypeInfo* x) {
+        return isInt(x->kind);
+    }
+
     inline int isPrimitive(int x) {
         return (x >= DT_I8 && x <= DT_F64) || x == DT_POINTER;
+    }
+
+    inline int isPrimitive(TypeInfo* x) {
+        return isPrimitive(x->kind);
+    }
+
+    inline bool isScalar(int x) {
+        return isPrimitive(x) || x == DT_ENUM;
+    }
+
+    inline bool isScalar(TypeInfo* x) {
+        return isScalar(x->kind);
+    }
+
+    inline bool isIntegerOrEnum(int x) {
+        return (x >= DT_I8 && x <= DT_U64) || x == DT_ENUM;
+    }
+
+    inline bool isIntegerOrEnum(TypeInfo* x) {
+        return isIntegerOrEnum(x->kind);
     }
 
     inline int isBasic(int x) {
         return (x > Type::DT_VOID && x <= Type::DT_F64);
     }
 
+    inline int isBasic(TypeInfo* x) {
+        return isBasic(x->kind);
+    }
+
     inline int isStructLike(int x) {
-        return x == DT_CUSTOM || x == DT_UNION;
+        return x == DT_STRUCT || x == DT_UNION;
+    }
+
+    inline int isStructLike(TypeInfo* x) {
+        return isStructLike(x->kind);
+    }
+
+    inline int isArrayLike(int x) {
+        return x == DT_ARRAY || x == DT_SLICE;
+    }
+
+    inline int isArrayLike(TypeInfo* x) {
+        return isArrayLike(x->kind);
     }
 
     inline int isIndexable(int x) {
         return x == DT_POINTER || x == DT_ARRAY || x == DT_SLICE;
     }
 
-    Type::TypeInfo* getDtype(void* data, Type::Kind dtype);
+    inline int isIndexable(TypeInfo* x) {
+        return isIndexable(x->kind);
+    }
+
+    // TODO: better name?
+    inline Kind getUnderlyingKind(TypeInfo* type) {
+        if (type->kind == DT_ENUM) {
+            EnumInfo* eInfo = (EnumInfo*) type;
+            return eInfo->memberKind;
+        }
+
+        return type->kind;
+    }
+
+    void init();
+    void release();
+
+    TypeInfo* tmpMakePointer(TypeInfo* info);
+    TypeInfo* tmpMakeArray(TypeInfo* info, int64_t len);
+    TypeInfo* tmpMakeSlice(TypeInfo* info, uint64_t flags);
+
+    bool isTmp(TypeInfo* type);
+    void tmpClear();
+
+    TypeInfo* makePointer(TypeInfo* info);
+    TypeInfo* makeArray(TypeInfo* info, int64_t len);
+    TypeInfo* makeSlice(TypeInfo* info, uint64_t flags);
+
+    EnumMemberInfo* findMember(EnumInfo* type, String name);
+    EnumMemberInfo* findMember(EnumInfo* type, String* name);
+    EnumMemberInfo* findMember(EnumInfo* type, String name, int* idx);
+    EnumMemberInfo* findMember(EnumInfo* type, String* name, int* idx);
+
+    StructMemberInfo* findMember(StructInfo* type, String name);
+    StructMemberInfo* findMember(StructInfo* type, String* name);
+    StructMemberInfo* findMember(StructInfo* type, String name, int* idx);
+    StructMemberInfo* findMember(StructInfo* type, String* name, int* idx);
 
     const char* str(Kind kind);
+    const char* str(TypeInfo* info);
 
-    void writeTypeName(IO::Stream* stream, void* type, Type::Kind typeKind);
+    void writeTypeName(IO::Stream* stream, Type::TypeInfo* type);
 
 };

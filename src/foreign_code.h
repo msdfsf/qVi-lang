@@ -68,7 +68,8 @@ namespace Extern {
         // behaviour, when, although same interface, the interpretation,
         // of data may slightly differ for and between abis
         struct TypeInfo {
-            Type::TypeInfoEx* info;
+            Type::TypeInfoEx* type;
+            Type::TypeInfo*   ogType;
             Abi::ArgKind      argKind;
         };
 
@@ -87,7 +88,7 @@ namespace Extern {
 
             LayoutConfig layout;
 
-            void        (*classify) (Arg* arg, Value* value);
+            void        (*classify) (Arg* arg, Abi::TypeInfo* value);
             void        (*invoke)   (CallContext* ctx);
         };
 
@@ -104,13 +105,19 @@ namespace Extern {
             Driver*  abi;
         };
 
+        enum MarshalMode : uint8_t {
+            TYPE_DEFAULT, // writes exact byte as defined in given type info
+            SLOT_ZE8,     // align given value to 8-byte words and zero extend if primitive
+            SLOT_SE8,     // align given value to 8-byte words and sign extend if primitive
+        };
+
         const char* str(ArgPassKind pass);
 
         bool isRegFloat(ArgPassKind pass);
         bool isRegInt(ArgPassKind pass);
 
-        Err::Err        ensureTypeInfoReady (AstContext* ast, TypeDefinition* td, Driver* driver);
-        Type::TypeInfo* computeTypeInfo     (Abi::LayoutConfig* cfg, Type::TypeInfo*  tempInfo);
+        Err::Err ensureTypeInfoReady(AstContext* ast, Type::TypeInfo* type, Driver* driver);
+        void     ensureTypeInfoReady(Abi::LayoutConfig* cfg, Type::TypeInfo*  tempType);
 
         // Fills ctx->args using syntax nodes
         void fillArgs      (AstContext* ast, Abi::CallContext* ctx, Variable** args, uint32_t argCount);
@@ -120,11 +127,11 @@ namespace Extern {
 
         // AST Variable -> ABI Arg
         // 'dest' shall be pre-allocated to fit the data.
-        Err::Err marshal(AstContext* ast, Variable* src, uint8_t* dest, Type::TypeInfo* typeInfo);
+        Err::Err marshal(AstContext* ast, Type::TypeInfo* type, Variable* src, uint8_t* dest, MarshalMode mode);
 
         // ABI Arg -> AST Variable
         // 'dest' shall be pre-allocated to fit the data.
-        Err::Err unmarshal(AstContext* ast, uint8_t* src, Variable* dest, Type::TypeInfo* typeInfo);
+        Err::Err unmarshal(AstContext* ast, Type::TypeInfo* type, const uint8_t* src, Variable* dest, MarshalMode mode);
 
         // ABI Arg A -> ABI Arg B
         // Directly moves data between two ABI representations.

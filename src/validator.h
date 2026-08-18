@@ -83,10 +83,12 @@ namespace Validator {
     Err::Err resolveResultType(ValidationContext* ctx, UnaryExpression* uex, Variable* var);
     Err::Err resolveResultType(ValidationContext* ctx, BinaryExpression* bex, Variable* var);
     Err::Err resolveResultType(ValidationContext* ctx, FunctionCall* fex, Variable* var);
-    Err::Err applyImplicitCast(ValidationContext* ctx, Value* lval, Variable* rvar);
-    Err::Err computeTypeInfo  (ValidationContext* ctx, Value* val, Type::TypeInfo** outInfo);
-    Err::Err computeTypeInfo  (ValidationContext* ctx, TypeDefinition* td);
-    void     castLiteral      (ValidationContext* ctx, Value* val, Type::Kind toDtype);
+    Err::Err applyImplicitCast(ValidationContext* ctx, Variable* source, Type::TypeInfo* target);
+    // Err::Err computeTypeInfo  (ValidationContext* ctx, Value* val, Type::TypeInfo** outInfo);
+    Err::Err computeTypeInfo(ValidationContext* ctx, Enumerator* en);
+    Err::Err computeTypeInfo(ValidationContext* ctx, TypeDefinition* td);
+    void     castLiteral    (ValidationContext* ctx, Value* val, Type::Kind toDtype);
+    void     castLiteral    (ValidationContext* ctx, Value* val, Type::TypeInfo* toType);
 
     Err::Err validate(ValidationContext* ctx, VariableDefinition* node);
     Err::Err validate(ValidationContext* ctx, Function* node);
@@ -94,7 +96,7 @@ namespace Validator {
 
     Err::Err validate(ValidationContext* ctx, SyntaxNode* node);
 
-    Err::Err validate(ValidationContext* ctx, Variable* node, Variable* target = NULL);
+    Err::Err validate(ValidationContext* ctx, Variable* node, Type::TypeInfo* target = NULL);
     Err::Err validate(ValidationContext* ctx, Scope* node);
     Err::Err validate(ValidationContext* ctx, VariableAssignment* node);
     Err::Err validate(ValidationContext* ctx, Branch* node);
@@ -106,10 +108,10 @@ namespace Validator {
     Err::Err validate(ValidationContext* ctx, Statement* node);
     Err::Err validate(ValidationContext* ctx, ErrorSet* node);
 
-    Err::Err validateCall(ValidationContext* ctx, Variable* callOp);
+    Err::Err validateExpression(ValidationContext* ctx, Variable* var, Type::TypeInfo* target = NULL);
 
-    Err::Err validateImplicitCast(const Type::Kind dtype, const Type::Kind dtypeRef);
-    Err::Err validateImplicitCast(ValidationContext* ctx, void* dtype, void* dtypeRef, Type::Kind dtypeEnum, Type::Kind dtypeEnumRef);
+    bool     validateImplicitCast(const Type::Kind dtype, const Type::Kind dtypeRef);
+    Err::Err validateImplicitCast(ValidationContext* ctx, Type::TypeInfo* source, Type::TypeInfo* target);
     Err::Err validateAttributeCast(Variable* var, Variable* attribute);
     Err::Err validatePointerAssignment(AstContext* ast, const Value* const val);
 
@@ -127,11 +129,7 @@ namespace Validator {
     Function*   findClosestFunction(SymbolIndexEntry* entry, Variable* callOp);
     SyntaxNode* findInternalSymbol (const String* name);
 
-    Value toValue(Type::Kind kind);
-
     bool areInOrder(Span* before, Span* after);
     bool isOrderingValid(SymbolIndexEntry* entry, QualifiedName* name);
-
-    Type::Kind getFirstNonArrayDtype(Array* arr, int maxLevel = -1, int* level = NULL, void** outType = NULL);
 
 }

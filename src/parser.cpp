@@ -70,7 +70,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <exception>
 
 #include "allocator.h"
 #include "array_list.h"
@@ -83,7 +82,6 @@
 #include "operators.h"
 #include "string.h"
 #include "syntax.h"
-#include "dynamic_arena.h"
 #include "file_system.h"
 #include "diagnostic.h"
 #include "task_system.h"
@@ -358,6 +356,30 @@ namespace Parser {
             case ST_SEEK_BLOCK_BEGIN: {
                 return Lex::syncToken(span, Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN);
             }
+
+            case ST_FCN_NAME: {
+                // TODO
+                return Lex::syncToken(span, Lex::TK_KEYWORD, Lex::TK_END);
+                break;
+            }
+
+            case ST_FCN_SCOPE_BEGIN: {
+                // TODO
+                return Lex::syncToken(span, Lex::TK_KEYWORD, Lex::TK_END);
+                break;
+            }
+
+            case ST_ELSE_IF: {
+                // TODO
+                return Lex::syncToken(span, Lex::TK_KEYWORD, Lex::TK_END);
+                break;
+            }
+
+            case ST_SCOPE_BEGIN: {
+                // TODO
+                return Lex::syncToken(span, Lex::TK_KEYWORD, Lex::TK_END);
+                break;
+            }
         }
     }
 
@@ -514,14 +536,12 @@ namespace Parser {
 
         Variable* format = Ast::Node::makeVariable();
         format->base.scope = ctx->currentScope;
-        format->value.typeKind = Type::DT_STRING;
         format->base.span = getSpanStamp(&lspan);
-        format->value.any = startTokenVal->any;
+        format->expression = (Expression*) startTokenVal->any;
 
         Variable* callWrapper = Ast::Node::makeVariable();
         callWrapper->base.scope = ctx->currentScope;
         callWrapper->expression = (Expression*) call;
-        callWrapper->value.str = NULL;
 
         DArray::push(&ctx->nodeStack, &format);
         token = parseList(ctx, &lspan, Lex::TK_LIST_SEPARATOR, Lex::TK_STATEMENT_END);
@@ -672,11 +692,6 @@ namespace Parser {
         varAssignment->lvar = lvar;
         varAssignment->rvar = rvar;
 
-        // TODO : move to parseRValue?
-        if (lvar->value.typeKind == Type::DT_ARRAY) {
-            DArray::push(&ctx->unit->reg->arraysAllocations, &varAssignment);
-        }
-
         DArray::push(&ctx->unit->reg->variableAssignments, &varAssignment);
         DArray::push(&ctx->nodeStack, &varAssignment);
 
@@ -705,11 +720,6 @@ namespace Parser {
 
         token = parseRValue(ctx, &lspan, varAssignment->rvar, endToken);
 
-        // TODO : move to parseRValue?
-        if (varAssignment->lvar->value.typeKind == Type::DT_ARRAY) {
-            DArray::push(&ctx->unit->reg->arraysAllocations, (void*) &varAssignment);
-        }
-
         DArray::push(&ctx->unit->reg->variableAssignments, (void*) &varAssignment);
         DArray::push(&ctx->nodeStack, (void*) &varAssignment);
 
@@ -720,30 +730,26 @@ namespace Parser {
     Lex::Token parseKnownDataType(ParseContext* ctx, Span* const span, Type::Kind type, String dtypeName, VariableDefinition* def, Lex::TokenValue* outLastValue) {
         Lex::Token token;
 
-        if (type == Type::DT_CUSTOM) {
-            def->var->value.typeKind = Type::DT_CUSTOM;
-            def->var->value.any = NULL;
-            def->dtype = Ast::Node::makeQualifiedName();
-            def->dtype->buff = dtypeName.buff;
-            def->dtype->len = dtypeName.len;
-            def->dtype->span = getSpanStamp(span);
+        if (type == Type::DT_UNDEFINED) {
+            def->type.baseType = Type::DT_UNDEFINED;
+            def->type.baseName = Ast::Node::makeQualifiedName();
+            def->type.baseName->buff = dtypeName.buff;
+            def->type.baseName->len  = dtypeName.len;
+            def->type.baseName->span = getSpanStamp(span);
 
             DArray::push(&ctx->unit->reg->customDataTypesReferences, &def);
         } else if (type == Type::DT_FUNCTION) {
             FunctionPrototype* fptr;
             token = parseFunctionPointer(ctx, span, &fptr);
 
-            def->var->value.fcn = fptr;
-            def->var->value.typeKind = Type::DT_FUNCTION;
+            def->type.baseFcn  = fptr;
+            def->type.baseType = Type::DT_FUNCTION;
         } else {
-            def->var->value.typeKind = type;
-            def->var->value.any = Type::basicTypes + type;
+            def->type.baseType = type;
         }
 
-        Pointer* lastPtr = NULL;
-        token = parseDataTypeDecorators(ctx, span, def->var, ALLOW_QUALIFIER, outLastValue, &lastPtr);
+        token = parseTypeDecorators(ctx, span, &def->type, outLastValue);
 
-        def->lastPtr = lastPtr;
         def->var->base.span = getSpanStamp(span);
 
         return token;
@@ -774,7 +780,7 @@ namespace Parser {
         def->base.scope = ctx->currentScope;
 
         if (token.kind == Lex::TK_IDENTIFIER) {
-            token = parseKnownDataType(ctx, span, Type::DT_CUSTOM, *tokenVal.str, def, outLastValue);
+            token = parseKnownDataType(ctx, span, Type::DT_UNDEFINED, *tokenVal.str, def, outLastValue);
         } else {
             if (!Lex::isDtype(token)) {
                 Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, "Data type");
@@ -1076,21 +1082,11 @@ namespace Parser {
         Lex::Token token;
         Lex::TokenValue tokenVal;
 
-        Type::Kind mainDtype = outVar->value.typeKind;
-        if (mainDtype == Type::DT_POINTER) {
-            mainDtype = outVar->value.ptr->pointsToKind;
-        } else if (mainDtype == Type::DT_ARRAY) {
-            mainDtype = outVar->value.arr->base.pointsToKind;
-        }
-
         Pos startPos = span->start;
 
         token = Lex::nextToken(span, NULL);
         if (Lex::isKeyword(token, KW_ALLOC)) {
-
             Pos startPos = span->end;
-
-            Pointer* lastPtr = NULL;
 
             Alloc* alloc = Ast::Node::makeAlloc();
 
@@ -1102,47 +1098,28 @@ namespace Parser {
 
             token = Lex::nextToken(span, &tokenVal);
             if (token.kind == Lex::TK_IDENTIFIER) {
-
-                var->value.typeKind = Type::DT_CUSTOM;
-                var->value.any = NULL;
-
-                varDef->dtype = Ast::Node::makeQualifiedName();
-                varDef->dtype->buff = tokenVal.str->buff;
-                varDef->dtype->len = tokenVal.str->len;
-                varDef->dtype->span = getSpanStamp(span);
-
+                varDef->type.baseName = Ast::Node::makeQualifiedName();
+                varDef->type.baseName->buff = tokenVal.str->buff;
+                varDef->type.baseName->len  = tokenVal.str->len;
+                varDef->type.baseName->span = getSpanStamp(span);
             } else if (token.kind == Lex::TK_KEYWORD) {
-
                 if (!Lex::isDtype(token)) {
                     Diag::report(ctx->unit->ast, span, Err::INVALID_DATA_TYPE, "TODO : data type expected, no place for generic keyword!");
                     return sync(span, { Lex::TK_STATEMENT_END });
                 }
 
-                var->value.typeKind = Lex::toDtype((Keyword) token.detail);
-                var->value.any = Type::basicTypes + Lex::toDtype((Keyword) token.detail);
-
-            } else if (mainDtype <= 0) {
-
-                Diag::report(ctx->unit->ast, span, Err::INVALID_DATA_TYPE, "TODO : error parseRValue alloc requires dtype name! Can be omitted only in definition!");
-                return sync(span, { Lex::TK_STATEMENT_END });
-
+                var->value.type = Type::basicTypes + Lex::toDtype((Keyword) token.detail);
             } else {
-
-                var->value.typeKind = mainDtype;
-                var->value.any = mainDtype == Type::DT_CUSTOM ? NULL : Type::basicTypes + mainDtype;
-
                 if (outVar->def) {
-                    varDef->dtype = Ast::Node::makeQualifiedName();
-                    varDef->dtype = outVar->def->dtype;
-                    varDef->dtype->span = getSpanStamp(span);
+                    varDef->type.baseName = Ast::Node::makeQualifiedName();
+                    varDef->type.baseName = outVar->def->type.baseName;
+                    varDef->type.baseName->span = getSpanStamp(span);
                 }
 
                 span->end = startPos;
-
             }
 
-            token = parseDataTypeDecorators(ctx, span, var, ALLOW_QUALIFIER, &tokenVal, &lastPtr);
-            varDef->lastPtr = lastPtr;
+            token = parseTypeDecorators(ctx, span, &varDef->type, &tokenVal);
 
             if (token.kind == Lex::TK_STATEMENT_BEGIN) {
                 token = parseExpression(ctx, span, var, INVALID_POS, endToken);
@@ -1153,77 +1130,41 @@ namespace Parser {
 
             outVar->expression = (Expression*) alloc;
             DArray::push(&ctx->unit->reg->allocations, &outVar);
-            // initializations.push_back(varDef);
-
-            // ...
-            // DArray::push(&Reg.customDataTypesReferences.base, &varDef);
 
             outVar->base.flags |= IS_ALLOCATION;
-
         } else {
-
             outVar->base.scope = ctx->currentScope;
             token = parseExpression(ctx, span, outVar, startPos, endToken);
-
         }
 
         return token;
     }
 
-
-    // pointers can ocur only before arrays
-    // for now only one array
-    Lex::Token parseDataTypeDecorators(ParseContext* ctx, Span* const span, Variable* var, Flags flags, Lex::TokenValue* outLastValue, Pointer** outLastPointer) {
+    Lex::Token parseTypeDecorators(ParseContext* ctx, Span* const span, TypeSpecifier* spec, Lex::TokenValue* outLastValue) {
         Lex::Token token;
         Lex::TokenValue tokenVal;
 
-        int wasArray = 0;
+        StackMark smark = markStack(&ctx->nodeStack);
 
-        Pointer* mainPtr = NULL;
         while (1) {
-
             token = Lex::nextToken(span, &tokenVal);
+
             if (token.kind == Lex::TK_POINTER) {
+                TypeDecorator* dec = (TypeDecorator*) alloc(alc, sizeof(TypeDecorator));
+                dec->kind = TypeDecorator::DEC_POINTER;
+                dec->span = getSpanStamp(span);
 
-                if (wasArray) {
-                    Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, "Pointer can't be used after array declaration!");
-                    return sync(span, { Lex::TK_STATEMENT_END });
-                }
-
-                Pointer* ptr = Ast::Node::makePointer();
-                if (!mainPtr) *outLastPointer = ptr;
-                else mainPtr->parentPointer = ptr;
-
-                ptr->parentPointer = mainPtr;
-                ptr->pointsTo = var->value.any;
-                ptr->pointsToKind = var->value.typeKind;
-
-                var->value.typeKind = Type::DT_POINTER;
-                var->value.ptr = ptr;
-
-                mainPtr = ptr;
-
+                DArray::push(&ctx->nodeStack, &dec);
             } else if (token.kind == Lex::TK_ARRAY_BEGIN) {
-                // either const / embed or expression
-
                 Pos arrStart = span->end;
 
-                if (wasArray) {
-                    Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, "Multidimensional arrays not allowed!");
-                    sync(span, { Lex::TK_STATEMENT_END });
-                }
-
-                wasArray = 1;
-
-                Array* arr = Ast::Node::makeArray();
-                if (!mainPtr) *outLastPointer = (Pointer*) arr;
-                else mainPtr->parentPointer = (Pointer*) arr;
-
-                arr->base.pointsTo = var->value.any;
-                arr->base.pointsToKind = var->value.typeKind;
+                TypeDecorator* dec = (TypeDecorator*) alloc(alc, sizeof(TypeDecorator));
+                dec->span = getSpanStamp(span);
 
                 token = Lex::nextToken(span, &tokenVal);
+
                 if (token.kind == Lex::TK_KEYWORD) {
+                    // Slice with qualifier ex. [const]
                     const int keyword = token.detail;
 
                     token = Lex::nextToken(span, NULL);
@@ -1232,57 +1173,48 @@ namespace Parser {
                         return sync(span, { Lex::TK_ARRAY_END });
                     }
 
+                    dec->kind = TypeDecorator::Kind::DEC_ARRAY;
                     if (keyword == KW_CONST) {
-                        arr->flags = IS_CONST;
+                        dec->flags = IS_CONST;
                     } else if (keyword == KW_AUTON) {
-                        arr->flags = IS_ARRAY_LIST;
+                        dec->flags = IS_ARRAY_LIST;
                     } else if (keyword == KW_MUTON) {
-                        arr->flags = IS_DYNAMIC;
+                        dec->flags = IS_DYNAMIC;
                     } else {
-                        arr->flags = 0;
+                        dec->flags = 0;
                     }
-
-                    arr->length = NULL; // var->allocSize = NULL;
                 } else if (token.kind == Lex::TK_ARRAY_END) {
-                    arr->flags = IS_CMP_TIME;
-                    arr->length = NULL;
+                    // Empty is fixed-size but has to be compile time resolved
+                    dec->kind  = TypeDecorator::DEC_ARRAY;
+                    dec->flags = 0;
                 } else {
+                    // Fixed-size array
                     Variable* lenVar = Ast::Node::makeVariable();
-                    lenVar->base.span = getSpanStamp(span);
+                    lenVar->base.span  = getSpanStamp(span);
                     lenVar->base.scope = ctx->currentScope;
-                    lenVar->name.len = 0;
 
-                    token = parseExpression(ctx, span, lenVar, arrStart, End{ Lex::TK_ARRAY_END }, EMPTY_EXPRESSION_ALLOWED);
+                    token = parseExpression(ctx, span, lenVar, arrStart, End { Lex::TK_ARRAY_END }, EMPTY_EXPRESSION_ALLOWED);
 
-                    arr->flags = IS_CMP_TIME;
-                    arr->length = lenVar; // var->allocSize = lenVar;
+                    dec->kind = TypeDecorator::DEC_ARRAY;
+                    dec->len  = lenVar;
                 }
 
-                // var->flags = varDef->flags ^ IS_ARRAY;
-                var->value.typeKind = Type::DT_ARRAY;
-                var->value.arr = arr;
-                // var->dtype = (void*) arr;
-                var->base.flags = 0;
-
-                if (flags & INCLUDE_TO_TREE) {
-                    DArray::push(&ctx->unit->reg->arrays, &var);
-                }
+                dec->span->end = span->end;
+                DArray::push(&ctx->nodeStack, &dec);
 
             } else {
-
                 break;
-
             }
-
         }
 
-        outLastValue->any = tokenVal.any;
+        if (outLastValue) {
+            outLastValue->any = tokenVal.any;
+        }
+
+        spec->decorators = (TypeDecorator**) commitStack(&ctx->nodeStack, smark, &spec->decoratorCount);
+
         return token;
     }
-
-
-
-
 
     Lex::Token parseKeywordStatement(ParseContext* ctx, Span* const span, const Keyword keyword, Flags flags) {
         FullToken prevToken = { Lex::TK_KEYWORD, keyword };
@@ -1815,27 +1747,46 @@ namespace Parser {
         return token;
     }
 
-    // start? : end, start := <Expression>, end := <Expression>
+    // start? : <step :? end, start := <Expression>, end := <Expression>
     // returns if outLeftExp not null, returns 'start' expression if its not a range
-    Lex::Token parseRange(ParseContext* ctx, Span* span, Range** range, Variable** outLeftExp) {
+    Lex::Token parseRangeExpression(ParseContext* ctx, Span* span, RangeExpression** range, Variable** outLeftExp) {
         Lex::Token token;
 
         Variable* leftExp;
-        token = parseExpression(ctx, span, &leftExp, INVALID_POS, { Lex::TK_RANGE },
+        if (!outLeftExp) {
+            token = parseExpression(ctx, span, &leftExp, INVALID_POS, { Lex::TK_RANGE },
             ALLOW_UNEXPECTED_END | EMPTY_EXPRESSION_ALLOWED);
 
-        if (token.kind != Lex::TK_RANGE) {
-            *outLeftExp = leftExp;
-            return token;
+            if (token.kind != Lex::TK_RANGE) {
+                *outLeftExp = leftExp;
+                return token;
+            }
+        } else {
+            leftExp = *outLeftExp;
         }
 
-        Variable* rightExp;
-        token = parseExpression(ctx, span, &rightExp, INVALID_POS,
-            { Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN }, USE_KEYWORD_AS_END);
+        // second expression could be 'eidx' OR 'step'
+         Variable* secondExp = NULL;
+         token = parseExpression(ctx, span, &secondExp, INVALID_POS,
+             { Lex::TK_RANGE, Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN },
+             ALLOW_UNEXPECTED_END | EMPTY_EXPRESSION_ALLOWED | USE_KEYWORD_AS_END);
 
-        *range = (Range*) alloc(alc, sizeof(Range));
-        (*range)->bidx = leftExp;
-        (*range)->eidx = rightExp;
+         Variable* stepExp  = NULL;
+         Variable* rightExp = NULL;
+
+         if (token.kind == Lex::TK_RANGE) {
+             stepExp = secondExp;
+
+             token = parseExpression(ctx, span, &rightExp, INVALID_POS,
+                 { Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN }, USE_KEYWORD_AS_END);
+         } else {
+             rightExp = secondExp;
+         }
+
+         *range = (RangeExpression*) alloc(alc, sizeof(RangeExpression));
+         (*range)->bidx = leftExp;
+         (*range)->step = stepExp;
+         (*range)->eidx = rightExp;
 
         return token;
     }
@@ -1862,7 +1813,7 @@ namespace Parser {
 
         // Arg - optional - Range or Array expression
         Variable* array = NULL;
-        token = parseRange(ctx, &lspan, &loop->arg.range, &array);
+        token = parseRangeExpression(ctx, &lspan, &loop->arg.range, &array);
         if (array) {
             loop->arg.array = array;
             loop->arg.kind = Loop::Arg::ARRAY;
@@ -2125,20 +2076,15 @@ namespace Parser {
         }
 
         if (token.kind != Lex::TK_SKIP) {
-
             Variable* newVar;
             token = parseExpression(ctx, &lspan, &newVar, startPos, End { Lex::TK_LIST_SEPARATOR, Lex::TK_STATEMENT_END });
 
             // TODO
             newVar->base.span = getSpanStamp(&lspan);
-            newVar->value.typeKind = Type::DT_I64;
 
             ret->var = newVar;
-
         } else {
-
             token = Lex::nextToken(&lspan);
-
         }
 
         if (token.kind == Lex::TK_STATEMENT_END) {
@@ -2159,7 +2105,6 @@ namespace Parser {
 
         // TODO
         newVar->base.span = getSpanStamp(&lspan);
-        newVar->value.typeKind = Type::DT_I64;
 
         ret->err = newVar;
 
@@ -2176,7 +2121,7 @@ namespace Parser {
         Lex::Token token;
 
         Enumerator* enumerator = Ast::Node::makeEnumerator();
-        enumerator->dtype = Type::DT_INT;
+        enumerator->memberType = Type::basicTypes + Type::DT_I64;
         enumerator->base.scope = ctx->currentScope;
 
         token = Lex::nextToken(&lspan, &tokenVal);
@@ -2202,7 +2147,7 @@ namespace Parser {
                 return Lex::toToken(Err::UNKNOWN_DATA_TYPE);
             }
 
-            enumerator->dtype = Lex::toDtype((Keyword) token.detail);
+            enumerator->memberType = Type::basicTypes + Lex::toDtype((Keyword) token.detail);
 
             token = Lex::nextToken(&lspan);
 
@@ -2230,13 +2175,12 @@ namespace Parser {
             Variable* newVar = Ast::Node::makeVariable();
             newVar->base.scope = ctx->currentScope;
             newVar->base.span = getSpanStamp(&lspan);
-            newVar->value.typeKind = enumerator->dtype;
 
             newVarDef->var = newVar;
             newVarDef->var->value.hasValue = 0;
-            newVarDef->var->value.typeKind = enumerator->dtype;
             newVarDef->base.span = getSpanStamp(&lspan);
             newVarDef->base.flags = IS_CMP_TIME;
+            newVarDef->type.baseType = enumerator->memberType->kind;
 
             newVar->def = newVarDef;
             newVar->name.buff = tokenVal.str->buff;
@@ -2363,9 +2307,9 @@ namespace Parser {
         VariableDefinition* def = Ast::Node::makeVariableDefinition();
         def->var->name.buff = tokenVal.str->buff;
         def->var->name.len = tokenVal.str->len;
-        def->var->value.typeKind = Type::DT_ERROR;
         def->var->base.span = getSpanStamp(span);
         def->base.scope = ctx->currentScope;
+        def->type.baseType = Type::DT_ERROR;
         setDefinitionIdx(ctx, (SyntaxNode*) def->var);
 
         DArray::push(&ctx->defStack, &def->var);
@@ -2392,7 +2336,6 @@ namespace Parser {
     }
 
     Lex::Token parseErrorDefinition(ParseContext* ctx, Span* const span) {
-
         SpanEx lspan = markSpanStart(span);
 
         Lex::Token token;
@@ -2416,7 +2359,6 @@ namespace Parser {
 
         StackMark smark = markStack(&ctx->nodeStack);
         while (1) {
-
             token = Lex::nextToken(&lspan, &tokenVal);
             if (token.kind == Lex::TK_SCOPE_END) break;
 
@@ -2426,7 +2368,7 @@ namespace Parser {
             var->name.len = tokenVal.str->len;
             var->base.span = getSpanStamp(&lspan);
             var->value.hasValue = 0;
-            var->value.typeKind = Type::DT_ERROR;
+            var->value.type = Type::basicTypes + Type::DT_ERROR;
 
             assignId(&var->value.u64, &ctx->errId);
 
@@ -2438,7 +2380,6 @@ namespace Parser {
 
             Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL);
             return Lex::toToken(Err::UNEXPECTED_SYMBOL);
-
         }
         errorSet->vars = (Variable**) commitStack(&ctx->nodeStack, smark, &errorSet->varCount);
 
@@ -2447,7 +2388,6 @@ namespace Parser {
 
         errorSet->base.span = finalizeSpan(&lspan, span);
         return token;
-
     }
 
     Lex::Token parseError(ParseContext* ctx, Span* const span) {
@@ -2621,7 +2561,6 @@ namespace Parser {
     }
 
     Lex::Token parseCatch(ParseContext* ctx, Span* const span, Variable* var) {
-
         Lex::Token token;
         Lex::TokenValue tokenVal;
 
@@ -2629,7 +2568,7 @@ namespace Parser {
 
         Variable* errVar = Ast::Node::makeVariable();
         errVar->base.scope = var->base.scope;
-        errVar->value.typeKind = Type::DT_ERROR;
+        errVar->value.type = Type::basicTypes + Type::DT_ERROR;
 
         Scope* newScope = Ast::Node::makeScope();
         newScope->base.scope = var->base.scope;
@@ -2681,7 +2620,6 @@ namespace Parser {
             !Lex::isKeyword(token, KW_RETURN)
         ) {
             // 'catch err' case
-
             errVar->name = *errName;
 
             DArray::push(&ctx->unit->reg->variables, &var);
@@ -2690,7 +2628,6 @@ namespace Parser {
             cex->scope = NULL;
 
             return token;
-
         }
 
 
@@ -2700,7 +2637,7 @@ namespace Parser {
         errDef->var = errVar;
         errDef->base.scope = newScope;
         errDef->var->base.scope = newScope;
-        errDef->var->value.typeKind = Type::DT_ERROR;
+        errDef->var->value.type = Type::basicTypes + Type::DT_ERROR;
         errDef->var->base.span = getSpanStamp(span);
         errDef->var->base.definitionIdx = -1;
 
@@ -2787,7 +2724,7 @@ namespace Parser {
                 //var->name.len = 0;
                 var->expression = NULL;
                 var->value.hasValue = true;
-                var->value.typeKind = Lex::toDtype(token);
+                var->value.type = Type::basicTypes + Lex::toDtype(token);
 
                 if (token.detail == Lex::TD_DT_U64) {
                     var->value.u64 = tokenVal.ival;
@@ -2806,14 +2743,15 @@ namespace Parser {
                 var->expression = NULL;
                 var->value.hasValue = true;
 
+                // TODO: why we are not using predefined vars?
                 if (token.detail == Lex::TD_KW_TRUE) {
-                    var->value.typeKind = Type::DT_BOOL;
+                    var->value.type = Type::basicTypes + Type::DT_BOOL;
                     var->value.u64 = 1;
                 } else if (token.detail == Lex::TD_KW_FALSE) {
-                    var->value.typeKind = Type::DT_BOOL;
+                    var->value.type = Type::basicTypes + Type::DT_BOOL;
                     var->value.u64 = 0;
                 } else if (token.detail == Lex::TD_KW_NULL) {
-                    var->value.typeKind = Type::DT_POINTER;
+                    var->value.type = Type::makePointer(Type::basicTypes + Type::DT_VOID);
                     var->value.u64 = 0;
                 }
 
@@ -2838,7 +2776,7 @@ namespace Parser {
             }
 
             case Lex::TK_CHAR: {
-                var->value.typeKind = Type::DT_I64;
+                var->value.type = Type::basicTypes + Type::DT_I64;
                 var->value.i64 = tokenVal.ival;
 
                 break;
@@ -2905,28 +2843,8 @@ namespace Parser {
                 token = parseExpression(ctx, span, bex->right, INVALID_POS, End { Lex::TK_ARRAY_END, Lex::TK_SLICE });
 
                 if (token.kind == Lex::TK_SLICE) {
-                    Slice* slice = Ast::Node::makeSlice();
-
-                    slice->bidx = bex->right;
-
-                    slice->eidx = Ast::Node::makeVariable();
-                    token = parseExpression(ctx, span, slice->eidx, INVALID_POS, End{ Lex::TK_ARRAY_END, Lex::TK_NONE });
-
-                    bex->right = Ast::Node::makeVariable();
-                    bex->right->expression = (Expression*) slice;
-
-                    if (token.kind != Lex::TK_ARRAY_END) {
-                        Logger::logNoFlush(
-                            { .level = Logger::ERROR, .tag = ctx->unit->ast->tag },
-                            "Unexpected token!", span
-                        );
-
-                        Logger::write("Following token expected: ");
-                        logToken(Lex::TK_ARRAY_END);
-
-                        Diag::commit(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL);
-                        token = sync(span, { Lex::TK_ARRAY_END });
-                    }
+                    RangeExpression* range;
+                    parseRangeExpression(ctx, span, &range, &bex->right);
                 }
 
                 var->expression = (Expression*) bex;

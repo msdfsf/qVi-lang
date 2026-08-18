@@ -25,8 +25,8 @@ namespace Set {
     };
 
     enum KeyStorage {
-        KS_POINTER,
-        KS_VALUE,
+        KS_VALUE = 0,
+        KS_POINTER = 1,
     };
 
     enum SlotType {
@@ -64,7 +64,6 @@ namespace Set {
     // String interface for convenience
     // NOTE : make sure keyOffset is 0 and hashMethod is
     //        appropriate (>= HM_STRING_STRUCT_START)
-    bool insert(Container* set, String key, uint8_t* data);
     bool remove(Container* set, String key);
     uint8_t* find(Container* set, String key);
 

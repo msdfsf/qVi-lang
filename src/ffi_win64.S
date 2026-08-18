@@ -22,10 +22,11 @@
 # Regs aliases
 # using preprocessor, as I just dont know
 # how to make this thing work other way :(
-#define R_CTX rbx
-#define R_ARG rsi
-#define R_IDX rdi
-#define R_CNT r10
+#define R_CTX  rbx
+#define R_ARG  rsi
+#define R_IDX  rdi
+#define R_CNT  r10
+#define R_CNTd r10d
 #define R_ARG_KIND r11
 #define R_RET_ARG  r12
 
@@ -46,11 +47,12 @@ asm_win64Invoke:
     # Prepare Stack:
     # - 32 bytes for reg args + stack args
     # - be 16 byte aligned, which, I guess, we are
-    mov rax, [R_CTX + offset_ctx_arg_stack_size]
+    # have to use eax as dword ptr is too much of a concept
+    mov eax, [R_CTX + offset_ctx_arg_stack_size]
     add rax, 32
     sub rsp, rax
 
-    mov R_CNT, [R_CTX + offset_ctx_arg_count]
+    mov R_CNTd, [R_CTX + offset_ctx_arg_count]
     mov R_ARG, [R_CTX + offset_ctx_args]
     mov R_RET_ARG, R_CTX
     add R_RET_ARG, offset_ctx_ret_arg

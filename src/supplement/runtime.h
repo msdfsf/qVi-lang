@@ -1,7 +1,5 @@
 #include "stdint.h"
-#include "../array_list.h"
 #include "../data_types.h"
-#include <cstdint>
 
 
 
@@ -40,8 +38,7 @@ namespace Runtime {
     extern _TypeInfo primitives[];
     extern _ArrayInfo primitiveArrayTemplates[];
 
-    _TypeInfo* resolve(Type::TypeInfoEx* astType, void* payload);
-    _TypeInfo* getType(Variable* var);
+    _TypeInfo* toRuntimeType(Type::TypeInfo* type);
 
     void print(char* fmt, int fmtLen, int argsCnt, _Any* args);
     void printValue(_Any val);

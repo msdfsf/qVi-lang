@@ -87,6 +87,7 @@ namespace Compiler {
         initAlloc(&arena);
         initNAlloc(&arena);
 
+        Type::init();
         Ast::init();
         FileSystem::init();
         TaskSystem::init(0);

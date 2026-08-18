@@ -62,10 +62,9 @@ namespace OrderedDict {
 
         DArray::shiftRight(&dict->pairs, slot.idx);
 
-        Pair pair = {
-            .key.str.len = key.len,
-            .data = dataPtr,
-        };
+        Pair pair = {};
+        pair.key.str.len = key.len;
+        pair.data = dataPtr;
 
         if (dict->flags & COPY_STRINGS) {
             pair.key.str.buff = (char*) alloc(alc, key.len + 1);
@@ -85,10 +84,9 @@ namespace OrderedDict {
 
         DArray::shiftRight(&dict->pairs, slot.idx);
 
-        Pair pair = {
-            .key.idx = key,
-            .data = dataPtr
-        };
+        Pair pair = {};
+        pair.key.idx = key;
+        pair.data = dataPtr;
 
         DArray::set(&dict->pairs, slot.idx, &pair);
         return 1;
@@ -103,6 +101,10 @@ namespace OrderedDict {
         if (dict->it >= dict->pairs.size) dict->it = 0;
 
         return pair;
+    }
+
+    void resetIterator(Container* dict) {
+        dict->it = 0;
     }
 
     void clear(Container* dict) {

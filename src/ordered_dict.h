@@ -36,6 +36,8 @@ namespace OrderedDict {
 
     Pair* getNext(Container* dict);
 
+    void resetIterator(Container* dict);
+
     void clear(Container* dict);
 
     Container* tightCopy(Container* src);

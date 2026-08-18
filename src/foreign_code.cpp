@@ -12,8 +12,6 @@
 #include "foreign_code.h"
 
 #include <cstdint>
-#include <libloaderapi.h>
-#include <minwindef.h>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -383,7 +381,7 @@ namespace Extern {
     Err::Err VariableToStack(AstContext* ast, uint8_t* buff, int64_t buffSize, Variable* var) {
         Value* val = &var->value;
 
-        switch (val->typeKind) {
+        switch (val->type->kind) {
             case Type::DT_I8:
             case Type::DT_U8:
             case Type::DT_I16:
@@ -394,7 +392,7 @@ namespace Extern {
             case Type::DT_U64:
             case Type::DT_F32:
             case Type::DT_F64: {
-                const int size = (Type::basicTypes + val->typeKind)->size;
+                const int size = (Type::basicTypes + val->type->kind)->size;
                 if (buffSize < size) {
                     Diag::report(ast, var->base.span,
                         Err::UNEXPECTED_ERROR, Diag::Format {
@@ -411,9 +409,9 @@ namespace Extern {
             }
 
             // TODO : sanity check for memberCount == varCount?
-            case Type::DT_CUSTOM: {
-                TypeDefinition* def = val->def;
-                Type::StructInfo* sInfo = (Type::StructInfo*) def->typeInfo;
+            case Type::DT_STRUCT: {
+                Type::TypeInfoEx* type = (Type::TypeInfoEx*) val->type;
+                TypeDefinition* td = (TypeDefinition*) type->astNode;
 
                 var = unwrap(var);
                 if (var->def) var = unwrap(var->def->var);
@@ -426,8 +424,8 @@ namespace Extern {
                 }
 
                 TypeInitialization* init = (TypeInitialization*) var->expression;
-                for (int i = 0; i < sInfo->memberCount; i++) {
-                    Type::StructMemberInfo* mInfo = sInfo->members + i;
+                for (int i = 0; i < type->str.memberCount; i++) {
+                    Type::StructMemberInfo* mInfo = type->str.members + i;
 
                     Variable* mVar = NULL;
                     if (i < init->attributeCount) {
@@ -435,7 +433,7 @@ namespace Extern {
                     } else if (init->fillVar) {
                         mVar = init->fillVar;
                     } else {
-                        mVar = def->vars[i];
+                        mVar = td->vars[i];
                     }
 
                     uint8_t* mBuff = buff + mInfo->offset;
@@ -457,7 +455,7 @@ namespace Extern {
                 Diag::report(ast, var->base.span,
                     Err::NOT_YET_IMPLEMENTED, Diag::Format {
                         "Compile-time conversion for %s not yet implemented"
-                    }, Type::str(val->typeKind));
+                    }, Type::str(val->type->kind));
                 return Err::NOT_YET_IMPLEMENTED;
             }
 
@@ -465,7 +463,7 @@ namespace Extern {
                 Diag::report(ast, var->base.span,
                     Err::UNEXPECTED_ERROR, Diag::Format {
                         "Invalid type kind (%i) in ValueToStack"
-                    }, val->typeKind);
+                    }, val->type->kind);
                 return Err::UNEXPECTED_ERROR;
             }
         }
@@ -506,7 +504,7 @@ namespace Extern {
             Value* src = &args[i]->var->value;
             Abi::Arg* dest = abiArgs + i;
 
-            abi->classify(dest, src);
+            abi->classify(dest, src->type->abi);
             if (Abi::isRegFloat(dest->pass)) {
                 if (fRegUsed < abi->fRegCount) {
                     dest->offset = fRegUsed++;
@@ -525,11 +523,11 @@ namespace Extern {
 
             uintptr_t ptr = Utils::alignForward(stackOffset, abi->stackAlign);
 
-            if (Type::isStructLike(src->typeKind)) {
-                Abi::ensureTypeInfoReady(ast, src->def, abi);
-                dest->size = src->def->typeInfoAbi->info->base.size;
+            if (Type::isStructLike(src->type->kind)) {
+                Abi::ensureTypeInfoReady(ast, src->type, abi);
+                dest->size = src->type->abi->type->base.size;
             } else {
-                dest->size = Type::basicTypes[src->typeKind].size;
+                dest->size = src->type->size;
             }
         }
 
@@ -545,7 +543,7 @@ namespace Extern {
 
         // and also precompute return info
         Value* retVal = &fcn->prototype.outArg->var->value;
-        abi->classify(&abiCtx->retArg, retVal);
+        abi->classify(&abiCtx->retArg, retVal->type->abi);
 
         return Err::OK;
     }
@@ -558,8 +556,8 @@ namespace Extern {
             ast,
             (uint8_t*) &fcn->abiCtx->retArg.data.i64,
             out,
-            Type::getDtype(outVar->value.any, outVar->value.typeKind),// TODO : we need a way to get ABI dtype
-            Type::getDtype(outVar->value.any, outVar->value.typeKind)
+            outVar->value.type,
+            outVar->value.type
         );
         if (err != Err::OK) return err;
 
@@ -621,42 +619,61 @@ namespace Extern::Abi {
     //       raw data that by the logic of the language reassembly in
     //       right bit representation!
     // NOTE: these functions are meant to do transformations for compile
-    //       time evaluation, therefore the src is expected to be evaluated,
-    //       so the value is first class citizen.
-    Err::Err marshal(AstContext* ast, Variable* src, uint8_t* dest, Type::TypeInfo* typeInfo) {
-        Value* val = &src->value;
+    //       time evaluation, therefore the src is expected to be evaluated
+    Err::Err marshal(AstContext* ast, Type::TypeInfo* type, Variable* src, uint8_t* dest, MarshalMode mode) {
+        if (Type::isPrimitive(type)) {
 
-        switch (val->typeKind) {
-            case Type::DT_I8:
-            case Type::DT_U8:
-            case Type::DT_I16:
-            case Type::DT_U16:
-            case Type::DT_I32:
-            case Type::DT_U32:
-            case Type::DT_I64:
-            case Type::DT_U64:
-            case Type::DT_F32:
-            case Type::DT_F64: {
-                const int size = (Type::basicTypes + val->typeKind)->size;
-                memcpy(dest, &val->u64, size);
-                break;
+            switch (mode) {
+                case SLOT_SE8: {
+                    int64_t val = src->value.i64;
+                    switch (type->kind) {
+                        case Type::DT_I8:  val = (int64_t) (int8_t) val;  break;
+                        case Type::DT_I16: val = (int64_t) (int16_t) val; break;
+                        case Type::DT_I32: val = (int64_t) (int32_t) val; break;
+                        default: break;
+                    }
+
+                    *(int64_t*) dest = val;
+                    break;
+                }
+
+                case SLOT_ZE8: {
+                    uint64_t val = src->value.u64;
+                    switch (type->kind) {
+                        case Type::DT_U8:  val = (uint64_t) (uint8_t) val;  break;
+                        case Type::DT_U16: val = (uint64_t) (uint16_t) val; break;
+                        case Type::DT_U32: val = (uint64_t) (uint32_t) val; break;
+
+                        default: break;
+                    }
+
+                    *(uint64_t*) dest = val;
+                    break;
+                }
+
+                case TYPE_DEFAULT: {
+                    memcpy(dest, &src->value.i64, type->size);
+                    break;
+                }
             }
 
-            case Type::DT_CUSTOM: {
-                Type::StructInfo* sInfo = (Type::StructInfo*) typeInfo;
+            return Err::OK;
+        }
+
+        switch (type->kind) {
+            case Type::DT_STRUCT: {
+                Type::StructInfo* sInfo = (Type::StructInfo*) type;
 
                 src = unwrap(src);
-                if (src->def) src = unwrap(src->def->var);
-
                 // TODO : for now assuming that it can be only init
-                if (!src->expression || src->expression->type != EXT_TYPE_INITIALIZATION) {
+                if (!src->value.exp || src->value.exp->type != EXT_TYPE_INITIALIZATION) {
                     Diag::report(ast, src->base.span, Err::UNEXPECTED_SYMBOL,
                         "Expected struct initialization expression.");
                     return Err::UNEXPECTED_ERROR;
                 }
 
-                TypeInitialization* init = (TypeInitialization*) src->expression;
-                for (int i = 0; i < sInfo->memberCount; i++) {
+                TypeInitialization* init = src->value.tex;
+                for (uint32_t i = 0; i < sInfo->memberCount; i++) {
                     Type::StructMemberInfo* mInfo = sInfo->members + i;
 
                     Variable* mVar = NULL;
@@ -665,26 +682,82 @@ namespace Extern::Abi {
                     } else if (init->fillVar) {
                         mVar = init->fillVar;
                     } else {
-                        mVar = val->def->vars[i];
+                        TypeDefinition* td = (TypeDefinition*) ((Type::TypeInfoEx*) sInfo)->astNode;
+                        mVar = td->vars[i];
                     }
 
-                    Err::Err err = marshal(ast, mVar, dest + mInfo->offset, mInfo->type);
+                    marshal(ast, mInfo->type, mVar, dest + mInfo->offset, TYPE_DEFAULT);
+                }
+
+                return Err::OK;
+            }
+
+            case Type::DT_UNION: {
+                Type::StructInfo* uType = (Type::StructInfo*) type;
+
+                // TODO:
+                /*
+                memset(dest, 0, type->size);
+                if (uType->memberCount == 0) {
+                    return Err::OK;
+                }
+
+                src = unwrap(src);
+                // TODO : for now assuming that it can be only init
+                if (!src->value.exp || src->value.exp->type != EXT_TYPE_INITIALIZATION) {
+                    Diag::report(ast, src->base.span, Err::UNEXPECTED_SYMBOL,
+                        "Expected struct initialization expression.");
+                    return Err::UNEXPECTED_ERROR;
+                }
+
+                TypeInitialization* init = src->value.tex;
+                const uint64_t idx = init->idxs[0];
+
+                Variable* var = init->attributes[idx];
+                Type::StructMemberInfo* mType = uType->members + idx;
+
+                return marshal(ast, mType->type, var, dest, TYPE_DEFAULT);
+                */
+                Diag::report(ast, src->base.span,
+                    Err::NOT_YET_IMPLEMENTED, Diag::Format {
+                        "Compile-time unmarshalling for %s not yet implemented"
+                    }, Type::str(type));
+
+               return Err::OK;
+            }
+
+            case Type::DT_ARRAY: {
+                Type::ArrayInfo* aType = (Type::ArrayInfo*) type;
+
+                src = unwrap(src);
+                // TODO : for now assuming that it can be only init
+                if (!src->value.exp || src->value.exp->type != EXT_ARRAY_INITIALIZATION) {
+                    Diag::report(ast, src->base.span, Err::UNEXPECTED_SYMBOL,
+                        "Expected struct initialization expression.");
+                    return Err::UNEXPECTED_ERROR;
+                }
+
+                ArrayInitialization* init = src->value.aex;
+                for (uint64_t i = 0; i < aType->elementCount; i++) {
+                    Variable* var = init->attributes[i];
+                    uint64_t offset = i * aType->element->size;
+
+                    Err::Err err = marshal(ast, aType->element, var, dest + offset, TYPE_DEFAULT);
                     if (err != Err::OK) return err;
                 }
 
-                break;
+                return Err::OK;
             }
 
             case Type::DT_SLICE:
             case Type::DT_ERROR:
             case Type::DT_FUNCTION:
             case Type::DT_COUNT:
-            case Type::DT_MULTIPLE_TYPES:
-            case Type::DT_ARRAY: {
+            case Type::DT_MULTIPLE_TYPES: {
                 Diag::report(ast, src->base.span,
                     Err::NOT_YET_IMPLEMENTED, Diag::Format {
                         "Compile-time conversion for %s not yet implemented"
-                    }, Type::str(val->typeKind));
+                    }, Type::str(type));
                 return Err::NOT_YET_IMPLEMENTED;
             }
 
@@ -692,75 +765,162 @@ namespace Extern::Abi {
                 Diag::report(ast, src->base.span,
                     Err::UNEXPECTED_ERROR, Diag::Format {
                         "Invalid type kind (%i) in ValueToStack"
-                    }, val->typeKind);
+                    }, type->kind);
                 return Err::UNEXPECTED_ERROR;
             }
-
         }
 
         return Err::OK;
     }
 
-    Err::Err unmarshal(AstContext* ast, uint8_t* src, Variable* dest, Type::TypeInfo* typeInfo) {
-        switch (typeInfo->kind) {
-            case Type::DT_I8:
-            case Type::DT_U8:
-            case Type::DT_I16:
-            case Type::DT_U16:
-            case Type::DT_I32:
-            case Type::DT_U32:
-            case Type::DT_I64:
-            case Type::DT_U64:
-            case Type::DT_F32:
-            case Type::DT_F64: {
-                dest->value.u64 = 0;
-                memcpy(&dest->value.u64, src, typeInfo->size);
-                break;
+    Err::Err unmarshal(AstContext* ast, Type::TypeInfo* type, const uint8_t* src, Variable* dest, MarshalMode mode) {
+        if (!type || !src || !dest) return Err::OK;
+
+        dest->value.type = type;
+
+        if (Type::isPrimitive(type)) {
+            dest->value.i64 = 0;
+
+            switch (mode) {
+                case SLOT_SE8: {
+                    int64_t val = *(const int64_t*) src;
+                    switch (type->kind) {
+                        case Type::DT_I8:  val = (int64_t) (int8_t)  val; break;
+                        case Type::DT_I16: val = (int64_t) (int16_t) val; break;
+                        case Type::DT_I32: val = (int64_t) (int32_t) val; break;
+                        default: break;
+                    }
+
+                    dest->value.i64 = val;
+                    break;
+                }
+
+                case SLOT_ZE8: {
+                    uint64_t val = *(const uint64_t*) src;
+                    switch (type->kind) {
+                        case Type::DT_U8:  val = (uint64_t) (uint8_t)  val; break;
+                        case Type::DT_U16: val = (uint64_t) (uint16_t) val; break;
+                        case Type::DT_U32: val = (uint64_t) (uint32_t) val; break;
+                        default: break;
+                    }
+
+                    dest->value.u64 = val;
+                    break;
+                }
+
+                case TYPE_DEFAULT: {
+                    memcpy(&dest->value.i64, src, type->size);
+                    break;
+                }
             }
 
-            case Type::DT_CUSTOM: {
-                Type::StructInfo* sInfo = (Type::StructInfo*) typeInfo;
+            return Err::OK;
+        }
+
+        switch (type->kind) {
+            case Type::DT_STRUCT: {
+                Type::StructInfo* sInfo = (Type::StructInfo*) type;
 
                 TypeInitialization* init = Ast::Node::makeTypeInitialization();
                 init->attributeCount = sInfo->memberCount;
-                init->attributes = (Variable**) alloc(alc, init->attributeCount * sizeof(Variable*));
+                init->attributes = (Variable**) alloc(alc, sizeof(Variable*) * sInfo->memberCount);
 
-                for (int i = 0; i < (int) sInfo->memberCount; i++) {
-                    Type::StructMemberInfo* mInfo = sInfo->members + i;
+                for (uint32_t i = 0; i < sInfo->memberCount; i++) {
+                    Type::StructMemberInfo* mType = sInfo->members + i;
 
                     Variable* mVar = Ast::Node::makeVariable();
-                    mVar->value.typeKind = mInfo->type->kind;
-                    mVar->value.def =
-                        mInfo->type->kind == Type::DT_CUSTOM ?
-                        (TypeDefinition*) mInfo->type : NULL;
+                    mVar->name = { mType->name.buff, mType->name.len };
 
-                    uint8_t* mBuff = src + mInfo->offset;
-
-                    Err::Err err = unmarshal(ast, mBuff, mVar, mInfo->type);
+                    Err::Err err = unmarshal(ast, mType->type, src + mType->offset, mVar, TYPE_DEFAULT);
                     if (err != Err::OK) return err;
 
                     init->attributes[i] = mVar;
                 }
 
-                dest->expression = (Expression*) init;
-                break;
+                dest->value.tex = init;
+                dest->value.exp = (Expression*) init;
+
+                return Err::OK;
+            }
+
+            case Type::DT_UNION: {
+                Type::StructInfo* uType = (Type::StructInfo*) type;
+
+                // TODO
+                /*
+                if (uType->memberCount <= 0) {
+                    TypeInitialization* init = Ast::Node::makeTypeInitialization();
+                    init->attributeCount = 0;
+                    init->attributes = NULL;
+                    init->idxs = NULL;
+                }
+
+                TypeInitialization* init = Ast::Node::makeTypeInitialization();
+                init->attributeCount = 1;
+                init->attributes = (Variable**) alloc(alc, sizeof(Variable*));
+                init->idxs = (int*) alloc(alc, sizeof(int));
+                init->idxs[0] = 0;
+
+                Type::StructMemberInfo* mType = uType->members;
+                Variable* mVar = Ast::Node::makeVariable();
+                mVar->name = mType->name;
+
+                Err::Err err = unmarshal(ast, mType->type, src, mVar, TYPE_DEFAULT);
+                if (err != Err::OK) return err;
+
+                init->attributes[0] = mVar;
+
+                dest->value.tex = init;
+                dest->value.exp = (Expression*) init;
+                */
+                Diag::report(ast, dest->base.span,
+                    Err::NOT_YET_IMPLEMENTED, Diag::Format {
+                        "Compile-time unmarshalling for %s not yet implemented"
+                    }, Type::str(type));
+
+                return Err::OK;
+            }
+
+            case Type::DT_ARRAY: {
+                Type::ArrayInfo* aType = (Type::ArrayInfo*) type;
+
+                ArrayInitialization* init = Ast::Node::makeArrayInitialization();
+                init->attributeCount = aType->elementCount;
+                init->attributes = (Variable**) alloc(alc, sizeof(Variable*) * aType->elementCount);
+
+                for (uint64_t i = 0; i < aType->elementCount; i++) {
+                    Variable* var = Ast::Node::makeVariable();
+                    uint64_t offset = i * aType->element->size;
+
+                    Err::Err err = unmarshal(ast, aType->element, src + offset, var, TYPE_DEFAULT);
+                    if (err != Err::OK) return err;
+
+                    init->attributes[i] = var;
+                }
+
+                dest->value.aex = init;
+                dest->value.exp = (Expression*) init;
+
+                return Err::OK;
             }
 
             case Type::DT_SLICE:
-            case Type::DT_ARRAY:
-            case Type::DT_FUNCTION: {
+            case Type::DT_ERROR:
+            case Type::DT_FUNCTION:
+            case Type::DT_COUNT:
+            case Type::DT_MULTIPLE_TYPES: {
                 Diag::report(ast, dest->base.span,
-                    Err::NOT_YET_IMPLEMENTED, Diag::Format{
-                        "Stack-to-Variable conversion for %s not yet implemented"
-                    }, Type::str(typeInfo->kind));
+                    Err::NOT_YET_IMPLEMENTED, Diag::Format {
+                        "Compile-time unmarshalling for %s not yet implemented"
+                    }, Type::str(type));
                 return Err::NOT_YET_IMPLEMENTED;
             }
 
             default: {
                 Diag::report(ast, dest->base.span,
-                    Err::UNEXPECTED_ERROR, Diag::Format{
-                        "Invalid type kind (%i) in stackToVar"
-                    }, typeInfo->kind);
+                    Err::UNEXPECTED_ERROR, Diag::Format {
+                        "Invalid type kind (%i) in unmarshal"
+                    }, type->kind);
                 return Err::UNEXPECTED_ERROR;
             }
         }
@@ -787,7 +947,7 @@ namespace Extern::Abi {
                 break;
             }
 
-            case Type::DT_CUSTOM: {
+            case Type::DT_STRUCT: {
                 Type::StructInfo* srcSInfo  = (Type::StructInfo*) srcTypeInfo;
                 Type::StructInfo* destSInfo = (Type::StructInfo*) destTypeInfo;
 
@@ -871,10 +1031,10 @@ namespace Extern::Abi {
 
                 case Abi::PK_MEM_STRUCT_REFERENCE:
                 case Abi::PK_REG_STRUCT_REFERENCE: {
-                    Type::TypeInfo* typeInfo = &src->value.def->typeInfoAbi->info->base;
+                    Type::TypeInfo* type = &src->value.type->abi->type->base;
 
                     stack = Utils::alignForward(stack, ctx->abi->indirectAlignment);
-                    Abi::marshal(ast, src, (uint8_t*) stack, typeInfo);
+                    Abi::marshal(ast, type, src, (uint8_t*) stack, MarshalMode::TYPE_DEFAULT);
                     dest->data.i64 = stack;
 
                     stack += ctx->abi->layout.wordSize;
@@ -882,12 +1042,12 @@ namespace Extern::Abi {
                 }
 
                 case Abi::PK_REG_STRUCT: {
-                    Type::TypeInfo* typeInfo = &src->value.def->typeInfoAbi->info->base;
+                    Type::TypeInfo* type = &src->value.type->abi->type->base;
 
                     stack = Utils::alignForward(stack, ctx->abi->layout.wordSize);
 
                     const size_t offset = ctx->abi->layout.wordSize - dest->size;
-                    Abi::marshal(ast, src, ((uint8_t*) stack) + offset, typeInfo);
+                    Abi::marshal(ast, type, src, ((uint8_t*) stack) + offset, MarshalMode::TYPE_DEFAULT);
 
                     memset((void*) stack, 0, offset);
                     dest->data.i64 = *((int64_t*) stack);
@@ -897,14 +1057,14 @@ namespace Extern::Abi {
                 }
 
                 case Abi::PK_MEM_STRUCT: {
-                    Type::TypeInfo* typeInfo = &src->value.def->typeInfoAbi->info->base;
+                    Type::TypeInfo* type = &src->value.type->abi->type->base;
 
-                    stack = Utils::alignForward(stack, typeInfo->align);
-                    Abi::marshal(ast, src, (uint8_t*) stack, typeInfo);
+                    stack = Utils::alignForward(stack, type->align);
+                    Abi::marshal(ast, type, src, (uint8_t*) stack, MarshalMode::TYPE_DEFAULT);
 
                     dest->data.i64 = *((int64_t*) stack);
 
-                    stack += typeInfo->size;
+                    stack += type->size;
                     break;
                 }
 
@@ -979,97 +1139,203 @@ namespace Extern::Abi {
         }
     }
 
-    // TODO : for now, to make this function work reqursivly, we return pointer
-    // which it may be allocate. Therefore user cannot cleanly use this ex. to
-    // set structs that utilize Type::TypeInfo not as pointer... This is because
-    // primitive types are predefined and used uniformly as pointers...
-    // So, just think if it needs to be 'solved', or its just fine of limitation...
-    Type::TypeInfo* computeTypeInfo(Abi::LayoutConfig* cfg, Type::TypeInfo*  tempInfo) {
-        if (Type::isPrimitive(tempInfo->kind)) {
-            return tempInfo;
+    Type::TypeInfo* computeTypeInfo(Abi::LayoutConfig* cfg, Type::TypeInfo* tempType) {
+        // We treat primitives the same across all abis/compiler. Its up to user
+        // to pick the right primitive for the abi call, or do a conversion at language
+        // level...
+        if (Type::isPrimitive(tempType->kind)) {
+            return tempType;
         }
 
-        Type::TypeInfoEx*  ansInfo = (Type::TypeInfoEx*) alloc(alc, sizeof(Type::TypeInfoEx));
+        Type::TypeInfoEx* ansType = (Type::TypeInfoEx*) alloc(alc, sizeof(Type::TypeInfoEx));
+        ansType->base.kind = tempType->kind;
+        ansType->base.rank = tempType->rank;
 
-        ansInfo->base.kind = tempInfo->kind;
-        ansInfo->base.rank = tempInfo->rank;
+        switch (tempType->kind) {
+            case Type::DT_STRUCT: {
+                Type::StructInfo* tempSType = (Type::StructInfo*) tempType;
 
-        switch (tempInfo->kind) {
-            case Type::DT_CUSTOM: {
-                Type::StructInfo* tempStruct = (Type::StructInfo*) tempInfo;
-
-                uint64_t memberCount = tempStruct->memberCount;
-                ansInfo->str.name = tempStruct->name;
-                ansInfo->str.memberCount = memberCount;
-                ansInfo->str.members = (Type::StructMemberInfo*) alloc(alc,
-                    sizeof(Type::StructMemberInfo) * memberCount);
+                ansType->str.name        = tempSType->name;
+                ansType->str.memberCount = tempSType->memberCount;
+                ansType->str.members     = (Type::StructMemberInfo*) alloc(
+                    alc, sizeof(Type::StructMemberInfo) * tempSType->memberCount
+                );
 
                 uint64_t currentOffset = 0;
                 uint32_t maxAlignFound = cfg->minAlign;
 
-                for (uint64_t i = 0; i < memberCount; i++) {
-                    Type::StructMemberInfo* member = tempStruct->members + i;
-                    ansInfo->str.members[i].name = member->name;
-                    ansInfo->str.members[i].type =
-                        (Type::TypeInfo*) computeTypeInfo(cfg, member->type);
+                for (uint64_t i = 0; i < tempSType->memberCount; i++) {
+                    Type::StructMemberInfo* tempMType = tempSType->members + i;
+                    Type::TypeInfo* ansMType = computeTypeInfo(cfg, tempMType->type);
 
+                    ansType->str.members[i].name = tempMType->name;
+                    ansType->str.members[i].type = ansMType;
 
-                    uint32_t mAlign = member->type->align;
-                    uint32_t mSize  = member->type->size;
+                    // NOTE: I guess we dont have to clamp here, as this shall naturally
+                    //       happen during member computing
+                    if (ansMType->align > maxAlignFound) {
+                        maxAlignFound = ansMType->align;
+                    }
 
-                    if (mAlign > maxAlignFound) maxAlignFound = mAlign;
+                    // Align forward for current field offset
+                    currentOffset = Utils::alignForward(currentOffset, ansMType->align);
+                    ansType->str.members[i].offset = currentOffset;
 
-                    currentOffset = Utils::alignForward(currentOffset, mAlign);
-                    ansInfo->str.members[i].offset = currentOffset;
-
-                    currentOffset += mSize;
+                    currentOffset += ansMType->size;
                 }
 
-                ansInfo->base.align = maxAlignFound;
-                ansInfo->base.size  = Utils::alignForward(currentOffset, maxAlignFound);
+                ansType->base.align = maxAlignFound;
+                ansType->base.size  = Utils::alignForward(currentOffset, maxAlignFound);
+
+                break;
+            }
+
+            case Type::DT_UNION: {
+                Type::StructInfo* tempSType = (Type::StructInfo*) tempType;
+
+                ansType->str.name        = tempSType->name;
+                ansType->str.memberCount = tempSType->memberCount;
+                ansType->str.members     = (Type::StructMemberInfo*) alloc(
+                    alc, sizeof(Type::StructMemberInfo) * tempSType->memberCount
+                );
+
+                uint32_t maxSizeFound  = 0;
+                uint32_t maxAlignFound = cfg->minAlign;
+
+                for (uint64_t i = 0; i < tempSType->memberCount; i++) {
+                    Type::StructMemberInfo* tempMType = tempSType->members + i;
+                    Type::TypeInfo* ansMType = computeTypeInfo(cfg, tempMType->type);
+
+                    ansType->str.members[i].name   = tempMType->name;
+                    ansType->str.members[i].type   = ansMType;
+                    ansType->str.members[i].offset = 0;
+
+                    if (ansMType->align > maxAlignFound) {
+                        maxAlignFound = ansMType->align;
+                    }
+
+                    if (ansMType->size > maxSizeFound) {
+                        maxSizeFound  = ansMType->size;
+                    }
+                }
+
+                ansType->base.align = maxAlignFound;
+                ansType->base.size  = Utils::alignForward(maxSizeFound, maxAlignFound);
 
                 break;
             }
 
             case Type::DT_ARRAY: {
-                Type::ArrayInfo* tempArray = (Type::ArrayInfo*) tempInfo;
+                Type::ArrayInfo* tempAType = (Type::ArrayInfo*) tempType;
 
-                Type::TypeInfo* element = computeTypeInfo(cfg, tempArray->element);
-                ansInfo->arr.element = element;
-                ansInfo->arr.elementCount = tempArray->elementCount;
+                Type::TypeInfo* ansEType = computeTypeInfo(cfg, tempAType->element);
+                ansType->arr.element      = ansEType;
+                ansType->arr.elementCount = tempAType->elementCount;
 
-                ansInfo->base.align = element->align;
-                ansInfo->base.size = element->size * tempArray->elementCount;
+                ansType->base.align = ansEType->align;
+                ansType->base.size  = ansEType->size * tempAType->elementCount;
 
+                break;
+            }
+
+            case Type::DT_SLICE: {
+                Type::SliceInfo* tempSType = (Type::SliceInfo*) tempType;
+
+                Type::TypeInfo* tempMType = computeTypeInfo(cfg, tempSType->element);
+                ansType->slc.element = tempMType;
+                ansType->slc.flags   = tempSType->flags;
+
+                ansType->base.align = cfg->wordSize;
+                ansType->base.size  = cfg->wordSize * 2;
+
+                break;
+            }
+
+            case Type::DT_POINTER: {
+                Type::PointerInfo* tempPType = (Type::PointerInfo*) tempType;
+
+                ansType->ptr.element = computeTypeInfo(cfg, tempPType->element);
+
+                ansType->base.align = cfg->wordSize;
+                ansType->base.size  = cfg->wordSize;
+
+                break;
+            }
+
+            case Type::DT_FUNCTION: {
+                Type::FunctionInfo* tempFType = (Type::FunctionInfo*) tempType;
+
+                ansType->fcn.retType  = computeTypeInfo(cfg, tempFType->retType);
+                ansType->fcn.argCount = tempFType->argCount;
+                ansType->fcn.flags    = tempFType->flags;
+
+                if (tempFType->argCount > 0) {
+                    ansType->fcn.argTypes = (Type::TypeInfo**) alloc(
+                        alc, sizeof(Type::TypeInfo*) * tempFType->argCount
+                    );
+
+                    for (uint64_t i = 0; i < tempFType->argCount; i++) {
+                        ansType->fcn.argTypes[i] = computeTypeInfo(cfg, tempFType->argTypes[i]);
+                    }
+                } else {
+                    ansType->fcn.argTypes = NULL;
+                }
+
+                ansType->base.align = cfg->wordSize;
+                ansType->base.size  = cfg->wordSize;
+
+                break;
+            }
+
+            case Type::DT_ENUM: {
+                // TODO: not sure if we even can end-up here
+                ansType->base.align = cfg->wordSize;
+                ansType->base.size  = cfg->wordSize;
                 break;
             }
 
             default: {
-                // Error : not yet implemented
+                ansType->base.align = cfg->wordSize;
+                ansType->base.size  = cfg->wordSize;
                 break;
             }
         }
 
-        return (Type::TypeInfo*) ansInfo;
+        return (Type::TypeInfo*) ansType;
+    }
+
+    void ensureTypeInfoReady(Abi::LayoutConfig* cfg, Type::TypeInfo*  tempType) {
+        if (tempType->abi) return;
+
+        tempType->abi = (Abi::TypeInfo*) alloc(alc, sizeof(Abi::TypeInfo));
+        tempType->abi->type = (Type::TypeInfoEx*) computeTypeInfo(cfg, tempType);
+        tempType->abi->ogType = tempType;
     }
 
     // TODO : we reuse for now cmpStatus, but later think of either
     // implementing custom task states or add linear task states levels
     // ex TS_READY_2, TS_RUNNING_2 etc.
-    Err::Err ensureTypeInfoReady(AstContext* ast, TypeDefinition* td, Driver* driver) {
+    // NOTE: we have to lock whatever node type info is related to, if it can be shared
+    //       across different compilation units
+    Err::Err ensureTypeInfoReady(AstContext* ast, Type::TypeInfo* type, Driver* driver) {
         Err::Err err = Err::OK;
 
-        if (td->base.cmpStatus == TS_READY) return Err::OK;
+        SyntaxNode* node = (SyntaxNode*) ((Type::TypeInfoEx*) type)->astNode;
+        if (!node) {
+            ensureTypeInfoReady(&driver->layout, type);
+        }
+
+        if (node->cmpStatus == TS_READY) return Err::OK;
 
         AcquireNodeReturn ans =
-            acquireNode(&td->base.cmpStatus, &td->base.workerId, TaskSystem::getWorkerId(), true);
+            acquireNode(&node->cmpStatus, &node->workerId, TaskSystem::getWorkerId(), true);
 
         if (ans == ANR_ACQUIRED_FOR_WORK) {
-            td->typeInfoAbi->info = (Type::TypeInfoEx*) computeTypeInfo(&driver->layout, &td->typeInfo->base);
-            releaseNode(&td->base.cmpStatus, true);
+            ensureTypeInfoReady(&driver->layout, type);
+            releaseNode(&node->cmpStatus, true);
         } else if (ans == ANR_ALREADY_ACQUIRED_BY_CALLER) {
             // TODO : Proper Errors
-            Diag::report(ast, td->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
+            Diag::report(ast, node->span, Err::UNEXPECTED_ERROR, Diag::Format {
                 "TODO : Node being validated is already on stack! Causing circular dependency!"
             });
             return Err::UNEXPECTED_ERROR;

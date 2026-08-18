@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "array_list.h"
 #include "data_types.h"
 #include "dynamic_arena.h"
 #include "io.h"
@@ -432,10 +433,12 @@ namespace Interpreter {
         DE_F_DEST_SHIFT  = 31,
         DE_F_LEFT_SHIFT  = 30,
         DE_F_RIGHT_SHIFT = 29,
+        DE_F_IS_DEST_STACK_SHIFT = 28,
 
         DE_F_DEST  = 1U << DE_F_DEST_SHIFT,
         DE_F_LEFT  = 1U << DE_F_LEFT_SHIFT,
         DE_F_RIGHT = 1U << DE_F_RIGHT_SHIFT,
+        DE_F_IS_DEST_STACK = 1U << DE_F_IS_DEST_STACK_SHIFT,
     };
 
     struct VecDescriptor {
@@ -469,6 +472,8 @@ namespace Interpreter {
         bool isTmp;
     };
 
+    constexpr uint64_t patchListHeadNull = 0xFFFF;
+
     struct CompilerState {
         // We dont want to populate locals with call args
         // as they naturaly grow on stack. But we want
@@ -492,14 +497,44 @@ namespace Interpreter {
         // lines spans to map bytecode and lines in source code
         DArray::Container lines;
 
-        // Helper stack
-        DArray::Container tmpStack;
-
         // to track and build line spans
         Span currentLineSpan;
         uint64_t currentOffsetStart;
 
+        SyntaxNode* currentLoop;
         uint64_t currentLoopAddress;
+
+        // Currently, forward jumps and control-flow (`break`/`continue`) use flat
+        // tracking lists. Once labeled jumps and nested scopes are fully supported,
+        // this should transition to a 'Scope Frame' approach.
+        //
+        // ScopeFrames:
+        //    When compiling a Loop, Switch, or Block, push a `ScopeFrame` onto a
+        //    local compiler stack via CompilerState.
+        //    - It should track the SyntaxNode it represents.
+        //    - It should track `breakListHead` and `continueListHead`.
+        //
+        // When compiling a `break`, traverse up the `ScopeFrame` stack to find
+        // the matching SyntaxNode target. Emit JUMP with the frame's current
+        // `breakListHead` as dummy operand offset. Then, update the `breakListHead`
+        // to point to this new jump. This builds a linked list of offsets reusing
+        // bytecodes yet unused memory.
+        //
+        // Fast Patching:
+        //    When the block finishes compiling, it simply traverses its own
+        //    `breakListHead` chain in the bytecode and replaces the linked-list
+        //    pointers with the real, calculated jump distances.
+        //
+        // (The same applies to `continue` or any other `named-patch-thing`)
+        // (For now and later for non 'named-patch-things' separate `listHeader`
+        //  is used directly in CompilerState without the `ScopeFrame` stack)
+        //
+        // This allows:
+        // - instant jumps registration for non `named-patch-thing`.
+        // - Zero memory allocations and node compilation is capsulated.
+        //
+        uint64_t listHeadBreak;
+        uint64_t listHeadContinue;
 
         // max encoutered alignment during building locals stack
         uint64_t maxAlign;
@@ -561,7 +596,6 @@ namespace Interpreter {
         Arena::clear(&state->bytecode);
         Arena::clear(&state->rawData);
         DArray::clear(&state->lines);
-        DArray::clear(&state->tmpStack);
         OrderedDict::clear(&state->localsInfoMap);
 
         state->populateLocals = false;

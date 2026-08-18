@@ -126,15 +126,14 @@ namespace Set {
     }
 
     void init(Container* set, uint64_t tableSize) {
-
         tableSize = Utils::getPow2Ceil(tableSize);
 
         set->table = allocTable(tableSize);
         set->tableSize = tableSize;
         set->usedSize = 0;
+        set->keyOffset = 0;
         set->hashMethod = HM_MURMUR3;
-        set->keyStorage = KS_POINTER;
-
+        set->keyStorage = KS_VALUE;
     }
 
     void release(Container* set) {
@@ -159,7 +158,6 @@ namespace Set {
     }
 
     bool insert(Container* set, uint8_t* data) {
-
         const uint64_t key = getKey(set, (uint64_t) data);
 
         if (set->usedSize * 10 >= set->tableSize * 7) {
@@ -198,11 +196,9 @@ namespace Set {
         set->usedSize++;
 
         return true;
-
     }
 
     bool remove(Container* set, uint64_t key) {
-
         if (set->tableSize == 0) return false;
 
         const uint64_t mask = set->tableSize - 1;
@@ -226,11 +222,9 @@ namespace Set {
         }
 
         return false;
-
     }
 
     uint8_t* find(Container* set, uint64_t key) {
-
         if (set->tableSize == 0) return NULL;
 
         const uint64_t mask = set->tableSize - 1;
@@ -251,7 +245,6 @@ namespace Set {
         }
 
         return NULL;
-
     }
 
 
@@ -284,7 +277,7 @@ namespace Set {
 
 
     void clear(Container *set) {
-        memset(set->table, 0, set->tableSize);
+        memset(set->table, 0, set->tableSize * sizeof(Slot));
         set->usedSize = 0;
     }
 

@@ -92,7 +92,7 @@ void printFloat(bool sign, uint64_t mantissa, int64_t exp, FloatFormat format) {
     uint8_t idx = 63;
 
     uint64_t val = mantissa;
-    
+
     // remove trailing zeros
     while (val > 0) {
         if (val % 10) break;
@@ -214,7 +214,7 @@ uint64_t u128MultHigh(u128 a, uint64_t b) {
 
 // TODO : go through few more time to make
 //        it make more sence...
-// 
+//
 // Based on:
 // The Schubfach way to render doubles
 // Raffaello Giulietti
@@ -449,7 +449,6 @@ void printArray(Runtime::_ArrayInfo* arr, Runtime::_Slice* slice) {
 }
 
 void printStruct(Runtime::_StructInfo* info, uint8_t* data) {
-
     const uint64_t count = info->memberCount;
 
     printString(info->name);
@@ -463,8 +462,10 @@ void printStruct(Runtime::_StructInfo* info, uint8_t* data) {
         Runtime::_Any member;
         member.info = memberInfo->type;
 
-        if (isPrimitive(member.info->kind)) {
-            member.u = *(uint64_t*) (basePtr + memberInfo->offset);
+        // TODO : we need a way to distinguish in typeinfo
+        //        between fixed size array and runtime-array
+        if (Type::isPrimitive(memberInfo->type->kind)) {
+            memcpy(&member.u, basePtr + memberInfo->offset, memberInfo->type->size);
         } else {
             member.p = (basePtr + memberInfo->offset);
         }
@@ -477,24 +478,39 @@ void printStruct(Runtime::_StructInfo* info, uint8_t* data) {
     }
 
     printf("}\n");
-
 }
 
 void Runtime::printValue(_Any val) {
-
     switch (val.info->kind) {
-
-        case Type::DT_I8:
-        case Type::DT_I16:
-        case Type::DT_I32:
+        case Type::DT_I8: {
+            printI64((int64_t) (int8_t) val.i);
+            break;
+        }
+        case Type::DT_I16: {
+            printI64((int64_t) (int16_t) val.i);
+            break;
+        }
+        case Type::DT_I32: {
+            printI64((int64_t) (int32_t) val.i);
+            break;
+        }
         case Type::DT_I64: {
             printI64(val.i);
             break;
         }
 
-        case Type::DT_U8:
-        case Type::DT_U16:
-        case Type::DT_U32:
+        case Type::DT_U8: {
+            printI64((uint64_t) (uint8_t) val.u);
+            break;
+        }
+        case Type::DT_U16: {
+            printI64((uint64_t) (uint16_t) val.u);
+            break;
+        }
+        case Type::DT_U32: {
+            printI64((uint64_t) (uint32_t) val.u);
+            break;
+        }
         case Type::DT_U64: {
             printI64(val.u);
             break;
@@ -510,18 +526,13 @@ void Runtime::printValue(_Any val) {
             break;
         }
 
-        case Type::DT_CUSTOM: {
+        case Type::DT_STRUCT: {
             printStruct((_StructInfo*) val.info, val.bp);
             break;
         }
 
         case Type::DT_POINTER: {
             printAsHex(val.u);
-            break;
-        }
-
-        case Type::DT_STRING: {
-            printString((_ArrayInfo*) val.info, val.s);
             break;
         }
 
@@ -534,9 +545,7 @@ void Runtime::printValue(_Any val) {
             printf("TODO");
             break;
         }
-
     }
-
 }
 
 void Runtime::print(char* fmt, int fmtLen, int argsCnt, _Any* args) {

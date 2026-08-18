@@ -1,6 +1,6 @@
 build/*
 doc/*
-test/*
+test/examples/*
 out/*
 src/.vscode/
 tmp/*
@@ -25,21 +25,21 @@ TODO.md
 !doc/bytecode.html
 !doc/grammar.ebnf
 
-!test/Allocations
-!test/Arrays
-!test/Comments
-!test/Literals
-!test/Operators
-!test/Pointers
-!test/CompileTime
-!test/HelloWorld
-!test/Imports
-!test/Strings
-!test/Structs
-!test/Functions
-!test/Loops
-!test/Namespaces
-!test/Tetris
+!test/examples/Allocations
+!test/examples/Arrays
+!test/examples/Comments
+!test/examples/Literals
+!test/examples/Operators
+!test/examples/Pointers
+!test/examples/CompileTime
+!test/examples/HelloWorld
+!test/examples/Imports
+!test/examples/Strings
+!test/examples/Structs
+!test/examples/Functions
+!test/examples/Loops
+!test/examples/Namespaces
+!test/examples/Tetris
 
 !build/compiler.bat
 !build/libtcc.dll

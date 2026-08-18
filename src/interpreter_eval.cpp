@@ -81,11 +81,10 @@ namespace Interpreter {
 
     template<Type::Kind TargetType>
     inline void cast(Value* value) {
-
         using T = typename DataTypeToCppType<TargetType>::type;
         auto M = DataTypeToCppType<TargetType>::member;
 
-        switch (value->typeKind) {
+        switch (value->type->kind) {
             case Type::DT_I8:     value->*M = static_cast<T>(value->i8);  break;
             case Type::DT_I16:    value->*M = static_cast<T>(value->i16); break;
             case Type::DT_I32:    value->*M = static_cast<T>(value->i32); break;
@@ -101,8 +100,7 @@ namespace Interpreter {
 
         }
 
-        value->typeKind = TargetType;
-
+        value->type->kind = TargetType;
     }
 
     // There doesn't seem to be a clever trick to handle all casts
@@ -124,11 +122,10 @@ namespace Interpreter {
             case Type::DT_U64 :   cast<Type::DT_U64>(value); return;
             case Type::DT_F32 :   cast<Type::DT_F32>(value); return;
             case Type::DT_F64 :   cast<Type::DT_F64>(value); return;
-            case Type::DT_STRING :    /* TODO */ return;
             case Type::DT_POINTER :   /* TODO */ return;
             case Type::DT_ARRAY :     /* TODO */ return;
             case Type::DT_SLICE :     /* TODO */ return;
-            case Type::DT_CUSTOM :    /* TODO */ return;
+            case Type::DT_STRUCT :    /* TODO */ return;
             case Type::DT_ENUM :      /* TODO */ return;
             case Type::DT_UNION :     /* TODO */ return;
             default: return; // TODO
@@ -550,7 +547,7 @@ namespace Interpreter {
         Value* left = &leftVar->value;
         Value* right = &rightVar->value;
 
-        switch (left->typeKind) {
+        switch (left->type->kind) {
             case Type::DT_I8: {
                 result->i8 = applyArithmetic(ctx, span, op, left->i8, right->i8);
                 break;
@@ -606,13 +603,12 @@ namespace Interpreter {
     void applyOperator(AstContext* ctx, Span* span, OperatorEnum op, Variable* var, Value* result) {
         Value* value = &var->value;
 
-        switch (op) {
-            case OP_NONE: {
-                // Just propagate result
-                *result = var->value;
-                break;
-            }
+        if (op == OP_NONE) {
+            *result = var->value;
+            return;
+        }
 
+        switch (var->value.type->kind) {
             case Type::DT_I8: {
                 result->i8 = applyUnary(ctx, span, op, value->i8);
                 break;
@@ -668,11 +664,12 @@ namespace Interpreter {
     void initEval(CompilerState* state) {
     }
 
+    /*
     void flatten(AstContext* ast, Variable* var) {
         if (!var || !var->expression) return;
 
-        switch (var->value.typeKind) {
-            case Type::DT_CUSTOM: {
+        switch (var->value.type->kind) {
+            case Type::DT_STRUCT: {
                 Variable* unwrappedVar = unwrap(var);
 
                 if (unwrappedVar->expression->type != EXT_TYPE_INITIALIZATION) {
@@ -703,6 +700,7 @@ namespace Interpreter {
 
         // TODO : tag for the linker/optimizer as constant
     }
+    */
 
     // TODO : we need to track enqountered variables to prevent locking
     Err::Err eval(Validator::ValidationContext* ctx, Variable* var) {
@@ -827,8 +825,8 @@ namespace Interpreter {
                 if (err != Err::OK) return err;
 
                 Value* srcValue = &castExpr->operand->value;
-                Type::Kind srcType = srcValue->typeKind;
-                Type::Kind dstType = castExpr->target;
+                Type::Kind srcType = srcValue->type->kind;
+                Type::Kind dstType = castExpr->target->kind;
 
                 switch (dstType) {
                     case Type::DT_I8:

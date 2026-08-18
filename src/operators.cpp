@@ -29,6 +29,7 @@ const char* OperatorToStr(OperatorEnum op) {
         case OP_INCREMENT:                     return "inc";
         case OP_DECREMENT:                     return "dec";
         case OP_SUBSCRIPT:                     return "subscript";
+        case OP_SLICE:                         return "slice";
         case OP_MEMBER_SELECTION:              return "member_selection";
         case OP_DEREFERENCE_MEMBER_SELECTION:  return "dereference_member_selection";
         case OP_NEGATION:                      return "neg";

@@ -49,6 +49,15 @@ namespace Interpreter {
         .showUnderline = false
     };
 
+    Logger::SpanStyle gSpanStyleMain = {
+        .colorText      = AC_BRIGHT_CYAN,
+        .colorHighlight = AC_BRIGHT_CYAN,
+
+        .contextLines  = 0,
+        .showGutter    = true,
+        .showUnderline = false
+    };
+
     void initDebug(CompilerState* state) {
         Set::init(&functionsSet, 256);
         DArray::init(&functionsArray, 128, sizeof(Function*));
@@ -132,8 +141,8 @@ namespace Interpreter {
             case OC_LOAD_U64:
             case OC_LOAD_F32:
             case OC_LOAD_F64:
-            case OC_LOAD_PTR:
-            case OC_LOAD_BLOB:  return 1;
+            case OC_LOAD_PTR:  return 1;
+            case OC_LOAD_BLOB: return 1 + 8;
 
             case OC_STORE_I8:
             case OC_STORE_U8:
@@ -145,8 +154,8 @@ namespace Interpreter {
             case OC_STORE_U64:
             case OC_STORE_F32:
             case OC_STORE_F64:
-            case OC_STORE_PTR:
-            case OC_STORE_BLOB: return 1;
+            case OC_STORE_PTR:  return 1;
+            case OC_STORE_BLOB: return 1 + 8;
 
             case OC_LEA:
             case OC_LEA_CONST:  return (1 + 8);
@@ -401,6 +410,9 @@ namespace Interpreter {
 
             case OC_PTR_IDX: return "ptr_idx";
 
+            case OC_POP_N: return "pop_n";
+            case OC_SWAP:  return "swap";
+
             case OC_LOAD_I8:   return "load_i8";
             case OC_LOAD_U8:   return "load_u8";
             case OC_LOAD_I16:  return "load_i16";
@@ -461,6 +473,35 @@ namespace Interpreter {
             case OC_DIV_U64: return "div_u64";
             case OC_DIV_F32: return "div_f32";
             case OC_DIV_F64: return "div_f64";
+
+            case OC_LE_I32: return "le_i32";
+            case OC_LE_U32: return "le_u32";
+            case OC_LE_I64: return "le_i64";
+            case OC_LE_U64: return "le_u64";
+            case OC_LE_F32: return "le_f32";
+            case OC_LE_F64: return "le_f64";
+
+            case OC_GE_I32: return "ge_i32";
+            case OC_GE_U32: return "ge_u32";
+            case OC_GE_I64: return "ge_i64";
+            case OC_GE_U64: return "ge_u64";
+            case OC_GE_F32: return "ge_f32";
+            case OC_GE_F64: return "ge_f64";
+
+            case OC_EQ_I32: return "eq_i32";
+            case OC_EQ_I64: return "eq_i64";
+            case OC_EQ_F32: return "eq_f32";
+            case OC_EQ_F64: return "eq_f64";
+
+            case OC_NE_I32: return "ne_i32";
+            case OC_NE_I64: return "ne_i64";
+            case OC_NE_F32: return "ne_f32";
+            case OC_NE_F64: return "ne_f64";
+
+            case OC_MOD_I32: return "mod_i32";
+            case OC_MOD_U32: return "mod_u32";
+            case OC_MOD_I64: return "mod_i64";
+            case OC_MOD_U64: return "mod_u64";
 
             case OC_AND_I32: return "and_i32";
             case OC_AND_U32: return "and_u32";
@@ -568,7 +609,10 @@ namespace Interpreter {
             case OC_VEC_MEM_RESET: return "vec_mem_reset";
             case OC_VEC_RESET:     return "vec_reset";
 
-            case OC_NOP: return "no_operation";
+
+            case OC_HALT: return "halt";
+            case OC_NOP:  return "no_operation";
+
             default: return "unknown";
 
         }
@@ -589,19 +633,23 @@ namespace Interpreter {
             case Type::DT_F32:  return "f32";
             case Type::DT_F64:  return "f64";
 
-            case Type::DT_STRING:  return "string";
             case Type::DT_POINTER: return "ptr";
             case Type::DT_ARRAY:   return "array";
-            case Type::DT_SLICE:   return "slice";
-            case Type::DT_CUSTOM:  return "DT_CUSTOM";
-            case Type::DT_UNION:   return "DT_UNION";
-            case Type::DT_ERROR:   return "DT_ERROR";
-            case Type::DT_ENUM:    return "DT_ENUM";
+            case Type::DT_SLICE: return "slice";
+            case Type::DT_STRUCT:  return "struct";
+            case Type::DT_UNION:   return "union";
+            case Type::DT_ERROR:   return "error";
+            case Type::DT_ENUM:    return "enum";
 
-            case Type::DT_FUNCTION: return "DT_FUNCTION";
+            case Type::DT_RANGE:  return "<range>";
+            case Type::DT_MEMBER: return "<member>";
 
-            case Type::DT_UNDEFINED:      return "DT_UNDEFINED";
-            case Type::DT_MULTIPLE_TYPES: return "DT_MULTIPLE_TYPES";
+            case Type::DT_FUNCTION: return "function";
+
+            case Type::DT_UNDEFINED:      return "<undefined>";
+            case Type::DT_MULTIPLE_TYPES: return "<varargs>";
+
+            case Type::DT_COUNT: return "<type_count>";
         }
         return "Unknown";
     }
@@ -700,51 +748,18 @@ namespace Interpreter {
     }
 
     // only definitions
-    void printDtype(const Type::Kind dtypeEnum, void* payload) {
-
-        switch (dtypeEnum) {
-            case Type::DT_ARRAY: {
-                Array* arr = (Array*) payload;
-                printDtype(arr->base.pointsToKind, arr->base.pointsTo);
-                IO::write(stream, '[');
-                if (arr->length) {
-                    IO::writef(stream, "%llu", arr->length->value.u64);
-                } else {
-                    const uint64_t flags = arr->flags;
-                    if (flags & IS_CONST) {
-                        IO::write(stream, "const");
-                    } else if (flags & IS_EMBEDED) {
-                        IO::write(stream, "embed");
-                    } else {
-                        IO::write(stream, "unknown");
-                    }
-                }
-                IO::write(stream, ']');
-                break;
-            }
-
-            case Type::DT_CUSTOM: {
-                TypeDefinition* def = (TypeDefinition*) payload;
-                IO::writef(stream, "%.*s", def->name.len, def->name.buff);
-                break;
-            }
-
-            default: {
-                IO::writef(stream, "%s", toStr(dtypeEnum));
-            }
-        }
-
+    void printDtype(Type::TypeInfo* type) {
+        Type::writeTypeName(stream, type);
     }
 
     void printSignature(Function* fcn) {
-
         FunctionPrototype* fp = &fcn->prototype;
 
         const int size = fp->inArgCount;
         for (int i = 0; i < size; i++) {
             VariableDefinition* def = fp->inArgs[i];
             Value* val = &def->var->value;
-            printDtype(val->typeKind, val->any);
+            printDtype(val->type);
             if (i != size - 1) IO::write(stream, ", ");
             else IO::write(stream, ' ');
         }
@@ -752,8 +767,7 @@ namespace Interpreter {
         IO::write(stream, "-> ");
 
         Value* outVal = &fp->outArg->var->value;
-        printDtype(outVal->typeKind, outVal->any);
-
+        printDtype(outVal->type);
     }
 
     // TODO : to a generic file
@@ -773,7 +787,6 @@ namespace Interpreter {
 
             case Type::DT_ARRAY:
             case Type::DT_SLICE:
-            case Type::DT_STRING:
                 return 2;
 
             case Type::DT_MULTIPLE_TYPES:
@@ -803,7 +816,7 @@ namespace Interpreter {
         const int size = fp->inArgCount;
         for (int i = 0; i < size; i++) {
             VariableDefinition* def = fp->inArgs[i];
-            popSize += getTypeStackSlots(def->var->value.typeKind);
+            popSize += getTypeStackSlots(def->var->value.type->kind);
         }
 
         return popSize;
@@ -888,7 +901,8 @@ namespace Interpreter {
             while (offset >= lineEnd) {
                 // TODO: maybe safety size check?
                 LineInfo* line = block->lines + lineIdx;
-                Logger::printSpanStrict(stream, &line->span);
+                Logger::printSpan(stream, &line->span, &gSpanStyleMain);
+                //Logger::printSpanStrict(stream, &line->span);
                 lineEnd = line->ocOffsetEnd;
                 lineIdx++;
             }
@@ -1084,7 +1098,7 @@ namespace Interpreter {
                     buffer += 8;
 
                     idealLen = snprintf(operandStr, operandStrSize, "%.*s[%llu]",
-                        def->var->name.len, def->var->name.buff, offset);
+                        (int) def->var->name.len, def->var->name.buff, offset);
 
                     // idealLen = printLocalName(block, offset, operandStr, operandStrSize);
                     break;
@@ -1121,8 +1135,18 @@ namespace Interpreter {
 
                     String* name = (String*) &def->var->name;
                     idealLen = snprintf(operandStr, operandStrSize, "%.*s[size=%llu offset=%llu]",
-                        name->len, name->buff, size, offset);
+                        (int) name->len, name->buff, size, offset);
 
+                    break;
+                }
+
+                case OC_LOAD_BLOB:
+                case OC_STORE_BLOB: {
+                    uint64_t size;
+                    memcpy(&size, buffer, 8);
+                    buffer += 8;
+
+                    idealLen = snprintf(operandStr, operandStrSize, "size=%llu", size);
                     break;
                 }
 
@@ -1155,10 +1179,10 @@ namespace Interpreter {
                     Function* fcn = (Function*) target;
                     pop(&typeStack, (computePopSize(fcn) + varargSize + 2) * sizeof(vmword));
                     if (fcn->prototype.outArg) {
-                        push(&typeStack, fcn->prototype.outArg->var->value.typeKind);
+                        push(&typeStack, fcn->prototype.outArg->var->value.type->kind);
                     }
 
-                    idealLen = snprintf(operandStr, operandStrSize, AC_MAGENTA "%.*s" AC_RESET, fcn->name.len, fcn->name.buff);
+                    idealLen = snprintf(operandStr, operandStrSize, AC_MAGENTA "%.*s" AC_RESET, (int) fcn->name.len, fcn->name.buff);
                     idealDif = sizeof(AC_MAGENTA) + sizeof(AC_RESET) - 2;
                     idealLen -= idealDif;
                     break;
@@ -1192,10 +1216,8 @@ namespace Interpreter {
                     memcpy(&offset, buffer, 8);
                     buffer += 8;
 
-                    if (def) {
-                        idealLen = snprintf(operandStr, operandStrSize, "%.*s", def->var->name.len, def->var->name.buff);
-                    }
-                    idealLen += snprintf(operandStr, operandStrSize, "[%llu]", offset);
+                    idealLen = snprintf(operandStr, operandStrSize, "% .*s[%llu]",
+                        (int) def->var->name.len, def->var->name.buff, offset);
 
                     break;
                 }
@@ -1235,7 +1257,7 @@ namespace Interpreter {
                     memcpy(&memberSize, buffer, 8);
                     buffer += 8;
 
-                    idealLen = snprintf(operandStr, operandStrSize, "blob_size: %llu, member_offset: %llu, member_size: %llu", blobSize, memberOffset, memberSize);
+                    idealLen = snprintf(operandStr, operandStrSize, "%llu[%llu, %llu]", blobSize, memberOffset, memberSize);
                     break;
                 }
 
@@ -1377,7 +1399,7 @@ namespace Interpreter {
             if (targetJump) {
                 IO::write(stream, "          " AC_BRIGHT_MAGENTA "-> " AC_RESET);
                 Logger::printSpan(stream, &targetJump->span, &gSpanStyleSub);
-                IO::write(stream, '\n');
+                //IO::write(stream, '\n');
                 targetJump = NULL;
             }
         }
@@ -1400,7 +1422,7 @@ namespace Interpreter {
 
         if constexpr (printFullNames) {
             do {
-                LocalVarInfo* info = (LocalVarInfo*)ptr->data;
+                LocalVarInfo* info = (LocalVarInfo*) ptr->data;
                 maxNameSize = max(info->var->name.len, maxNameSize);
                 ptr = OrderedDict::getNext(dict);
             } while (ptr && ptr != first);
@@ -1409,7 +1431,6 @@ namespace Interpreter {
         }
 
         do {
-
             if (!ptr) break;
 
             uint64_t offset = ptr->key.idx;
@@ -1451,13 +1472,13 @@ namespace Interpreter {
             }
 
             // type
-            printDtype(info->var->value.typeKind, info->var->value.any);
+            printDtype(info->var->value.type);
             IO::write(stream, '\n');
 
             ptr = OrderedDict::getNext(dict);
-
         } while (ptr && ptr != first);
 
+        OrderedDict::resetIterator(dict);
     }
 
     void printConstants(uint8_t* buffer, uint64_t size) {

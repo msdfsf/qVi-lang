@@ -13,6 +13,7 @@
 
 // Expects null terminated buffer
 namespace Lex {
+    constexpr int32_t CHAR_EOS = -1;
 
     Logger::Type logErr = { .level = Logger::ERROR, .tag = "lexer" };
 
@@ -311,9 +312,10 @@ namespace Lex {
         } else {
 
             uint64_t integer = 0;
+            char ch = 0;
             for (int i = 0;; i++) {
 
-                const char ch = str[i];
+                ch = str[i];
 
                 if (ch >= '0' && ch <= '9') integer = integer * 10 + (ch - '0');
                 else if (ch == '.') {
@@ -328,7 +330,7 @@ namespace Lex {
 
                         i++;
 
-                        const char ch = str[i];
+                        ch = str[i];
                         if (ch >= '0' && ch <= '9') {
                             frac += (ch - '0') * scale;
                             scale *= 0.1;
@@ -376,44 +378,6 @@ namespace Lex {
 
     }
 
-    int parseEscapeChar(const char* str, int* idx) {
-
-        const char ch = str[*idx];
-        *idx += 1;
-
-        switch(ch) {
-
-            case 'a':
-                return 0x07;
-            case 'b':
-                return 0x08;
-            case 'f':
-                return 0x0C;
-            case 'n':
-                return 0x0A;
-            case 'r':
-                return 0x0D;
-            case 't':
-                return 0x09;
-            case 'v':
-                return 0x0B;
-            case '\\':
-                return 0x5C;
-            case '\'':
-                return 0x27;
-            case '\"':
-                return 0x22;
-            case '\?':
-                return 0x3F;
-            case '\0':
-                return 0;
-            default:
-                return -1;
-
-        }
-
-    };
-
     uint64_t parseHexInt(const char* const str, int* idx) {
 
         const int pivot = *idx;
@@ -434,58 +398,86 @@ namespace Lex {
 
     }
 
-    inline int parseChar(const char* str, int* idx) {
+    int parseEscapeChar(const char* str, int* idx) {
+        const char ch = str[*idx];
+        *idx += 1;
 
+        switch(ch) {
+            case 'a':
+                return 0x07;
+            case 'b':
+                return 0x08;
+            case 'f':
+                return 0x0C;
+            case 'n':
+                return 0x0A;
+            case 'r':
+                return 0x0D;
+            case 't':
+                return 0x09;
+            case 'v':
+                return 0x0B;
+            case 'e':
+                return 0x1B;
+            case '\\':
+                return 0x5C;
+            case '\'':
+                return 0x27;
+            case '\"':
+                return 0x22;
+            case '?':
+                return 0x3F;
+            case '0': {
+                if (str[*idx] == '3' && str[*idx + 1] == '3') {
+                    *idx += 2;
+                    return 0x1B;
+                } else {
+                    return 0;
+                }
+            }
+            case 'x': {
+                int tmp = *idx;
+                const char ch = parseHexInt(str, idx);
+                if (*idx == tmp) return -1;
+                return ch;
+            }
+            default:
+                return -1;
+        }
+    };
+
+    inline int parseChar(const char* str, int* idx) {
         char ch = str[*idx];
 
         if (ch == ESCAPE_CHAR) {
-
-            if (str[*idx + 1] == 'x') {
-
-                *idx += 2;
-                int tmp = *idx;
-                ch = parseHexInt(str, idx);
-                if (*idx == tmp) {
-                    // Logger::log(Logger::ERROR, "At least one hex digit required!", span, 1);
-                    return Err::UNEXPECTED_SYMBOL;
-                }
-
-            } else {
-
-                *idx += 1;
-                ch = parseEscapeChar(str, idx);
-                if (ch == -1) {
-                    // parseHexInt(str, &idx);
-                    // Logger::log(Logger::ERROR, ERR_STR(Err::UNSUPPORTED_ESCAPE_SEQUENCE), span, 1);
-                    return Err::UNSUPPORTED_ESCAPE_SEQUENCE;
-                }
-
-            }
-
-        } else {
-
             *idx += 1;
-
+            ch = parseEscapeChar(str, idx);
+            if (ch == -1) {
+                // parseHexInt(str, &idx);
+                // Logger::log(Logger::ERROR, ERR_STR(Err::UNSUPPORTED_ESCAPE_SEQUENCE), span, 1);
+                return Err::UNSUPPORTED_ESCAPE_SEQUENCE;
+            }
+        } else if (ch == '\0') {
+            return Err::UNEXPECTED_SYMBOL;
+        } else {
+            *idx += 1;
         }
 
         return ch;
-
     }
 
     int parseCharLiteral(const char* const str, int* len, uint64_t* out) {
-
         uint64_t tmpOut = 0;
 
         int size = 0;
         while (1) {
+            if (str[*len] == CHAR_LITERAL) {
+                (*len)++;
+                break;
+            }
 
             char ch = parseChar(str, len);
-
-            if (ch == CHAR_LITERAL) break;
-            if (ch == EOS) {
-                // Logger::log(Logger::ERROR, ERR_STR(Err::UNEXPECTED_END_OF_FILE));
-                return Err::UNEXPECTED_END_OF_FILE;
-            }
+            if (ch < 0) return ch;
 
             uint64_t tmp = ch;
             tmp <<= 56;
@@ -494,13 +486,9 @@ namespace Lex {
             tmpOut |= tmp;
 
             size++;
-
-            // idx++;
-
         }
 
         if (size > 8) {
-            //Logger::log(Logger::ERROR, ERR_STR(Err::DATA_TYPE_SIZE_EXCEEDED), span, len);
             return Err::DATA_TYPE_SIZE_EXCEEDED;
         }
 
@@ -508,42 +496,39 @@ namespace Lex {
         *out = tmpOut;
 
         return size;
-
     }
 
     int findStringEnd(const char* const str) {
-
         int idx = 0;
 
         while (1) {
+            if (str[idx] == STRING_LITERAL) {
+                idx++;
+                break;
+            }
 
             const char ch = parseChar(str, &idx);
-            if (ch == STRING_LITERAL) break;
-            if (ch == EOS) return Err::UNEXPECTED_END_OF_FILE;
-
-            // idx++;
-
+            if (ch < 0) return ch;
         }
 
         idx += (str[idx] == RAW_POSTFIX);
-
         return idx;
-
     }
 
     int parseStringLiteral(const char* const str, int* len, StringInitialization** initOut) {
-
         Arena::clear(&stringStack);
 
         while (1) {
+            if (str[*len] == STRING_LITERAL) {
+                (*len)++;
+                break;
+            }
 
             const char ch = parseChar(str, len);
-            if (ch == STRING_LITERAL) break;
-            if (ch == EOS) return Err::UNEXPECTED_END_OF_FILE;
+            if (ch < 0 ) return ch;
 
             char* ptr = (char*) Arena::push(&stringStack, 1, 1);
             *ptr = ch;
-
         }
 
         const int rawStringRequired = (str[*len] == RAW_POSTFIX) ? 1 : 0;
@@ -552,39 +537,32 @@ namespace Lex {
         init->base.type = EXT_STRING_INITIALIZATION;
 
 
-        init->rawStr.len = stringStack.logicalPos;
-        init->rawStr.buff = (char*) alloc(alc, init->rawStr.len);
+        init->rawData.len = stringStack.logicalPos;
+        init->rawData.buff = (char*) alloc(alc, init->rawData.len);
 
-        init->wideStr.buff = NULL;
-        init->wideStr.len = 0;
-        init->wideType = Type::DT_U8;
+        init->charType = Type::basicTypes + Type::DT_U8;
 
         // TODO : maybe too slow to use generic arena
-        Arena::flatCopy(&stringStack, (uint8_t*) init->rawStr.buff);
+        Arena::flatCopy(&stringStack, (uint8_t*) init->rawData.buff);
 
         // meh but whatever
         if (rawStringRequired) {
-
             *len += 1;
-
         } else {
-
             int utf8Len;
             int utf8BytesPerChar;
-            char* utf8Str = Strings::encodeUtf8(init->rawStr.buff, &utf8Len, &utf8BytesPerChar, 0);
+            char* utf8Str = Strings::encodeUtf8(init->rawData.buff, &utf8Len, &utf8BytesPerChar, 0);
 
             if (utf8BytesPerChar != 1) {
-                init->wideStr.buff = utf8Str;
-                init->wideStr.len = utf8Len;
-                init->wideType = (Type::Kind) (Type::DT_U8 + utf8BytesPerChar - 1);
+                init->rawData.buff = utf8Str;
+                init->rawData.len = utf8Len;
+                init->charType = Type::basicTypes + (Type::DT_U8 + utf8BytesPerChar - 1);
             }
-
         }
 
         *initOut = init;
 
         return Err::OK;
-
     }
 
     // first char already consumed

@@ -19,6 +19,7 @@ namespace Arena {
             exit(1231);
         };
 
+        block->startLogicalPos = 0;
         block->padding = 0;
         block->pos = 0;
         block->prev = NULL;
@@ -28,8 +29,17 @@ namespace Arena {
 
     }
 
-    void releaseBlock(Block* block) {
-        free(block);
+    int releaseBlock(Block* block) {
+        int count = 0;
+
+        while (block) {
+            Block* nextBlock = block->next;
+            free(block);
+            block = nextBlock;
+            count++;
+        }
+
+        return count;
     }
 
     void init(Container* arena, uint64_t initialSize) {
@@ -63,7 +73,6 @@ namespace Arena {
     }
 
     void* push(Container* arena, size_t size, size_t align) {
-
         // make sure align is 2^n
         align = Utils::getPow2Ceil(align);
 
@@ -77,6 +86,7 @@ namespace Arena {
                 exit(12313);
             }
 
+            // Fetch or create next block
             Block* nextBlock = arena->tail->next;
             if (!nextBlock) {
                 nextBlock = initBlock(arena);
@@ -94,10 +104,12 @@ namespace Arena {
             const uint64_t baseAlign = alignof(std::max_align_t);
             const uint64_t syncAlign = max(align, baseAlign);
 
+            arena->tail->startLogicalPos = arena->logicalPos;
+
             arena->tail->padding = arena->logicalPos % syncAlign;
             arena->tail->pos = arena->tail->padding;
 
-            padding = Utils::getPadding((uintptr_t) arena->tail->data, align);
+            padding = Utils::getPadding((uintptr_t) arena->tail->data + arena->tail->pos, align);
 
         }
 
@@ -119,14 +131,11 @@ namespace Arena {
     void rollback(Container* arena, Marker marker, bool freeMemory) {
         arena->tail = marker.block;
         arena->tail->pos = marker.pos;
+        arena->logicalPos = marker.block->startLogicalPos + (marker.pos - arena->tail->padding);
 
         if (freeMemory) {
-            Block* block = arena->tail->next;
-            while (block) {
-                Block* next = block->next;
-                free(block);
-                block = next;
-            }
+            arena->blockCount -= releaseBlock(arena->tail->next);
+            arena->tail->next = NULL;
         }
     }
 
@@ -137,15 +146,20 @@ namespace Arena {
             uint8_t* end = start + arena->blockPayloadSize;
 
             if (ptr >= start && ptr < end) {
+                const uint64_t pos = (uint8_t*) ptr - start;
+
                 arena->tail = block;
-                arena->tail->pos = (uint8_t*) ptr - start;
+                arena->tail->pos = pos;
+                arena->logicalPos = block->startLogicalPos + pos - block->padding;
+
                 return;
             }
 
+            arena->tail->pos = 0;
             block = block->prev;
 
             if (freeMemory) {
-                releaseBlock(block->next);
+                arena->blockCount -= releaseBlock(block->next);
                 block->next = NULL;
             }
         }
@@ -154,8 +168,16 @@ namespace Arena {
     void rollback(Container* arena, uint64_t size, bool freeMemory) {
         Block* block = arena->tail;
         while (block) {
-            if (arena->tail->pos > size) {
-                arena->tail->pos -= size;
+            uint64_t start = block->startLogicalPos;
+            uint64_t end   = block->startLogicalPos + block->pos - block->padding;
+
+            if (size <= end - start) {
+                const uint64_t pos = block->padding + end - size;
+
+                arena->tail = block;
+                arena->tail->pos = pos;
+                arena->logicalPos = block->startLogicalPos + pos - block->padding;
+
                 return;
             }
 
@@ -167,6 +189,22 @@ namespace Arena {
                 block->next = NULL;
             }
         }
+    }
+
+    bool contain(Container* arena, void* ptr) {
+        Block* block = arena->tail;
+        while (block) {
+            uint8_t* start = block->data;
+            uint8_t* end = start + arena->blockPayloadSize;
+
+            if (ptr >= start && ptr < end) {
+                return true;
+            }
+
+            block = block->prev;
+        }
+
+       return false;
     }
 
     void clear(Container* arena) {
@@ -181,6 +219,23 @@ namespace Arena {
 
     }
 
+    uint8_t* getPointerToLogicalOffset(Container* arena, uint64_t logicalPos) {
+        Block* block= arena->tail;
+
+        while (block != NULL) {
+            if (logicalPos >= block->startLogicalPos) {
+                uint64_t localOffset = logicalPos - block->startLogicalPos;
+                size_t payloadSize = block->pos - block->padding;
+
+                return localOffset < payloadSize ?
+                    block->data + (block->padding + localOffset) : NULL;
+            }
+            block = block->prev;
+        }
+
+        return NULL;
+    }
+
     uint64_t getFlatSize(Arena::Container* arena) {
         return arena->logicalPos;
     }
@@ -192,15 +247,19 @@ namespace Arena {
     // dest should be aligned at least at result of getMaxAlign
     // dest should be able to fit at least result of getFlatSize
     void flatCopy(Container* arena, uint8_t* dest) {
-
         Block* block = arena->head;
 
-        while (block) {
-            memcpy(dest, block->data + block->padding, block->pos);
-            dest += block->pos;
+        while (block != NULL) {
+            if (block->pos > block->padding) {
+                size_t payloadSize = block->pos - block->padding;
+
+                // Copies payload + inter-allocation padding directly to its logical position
+                memcpy(dest + block->startLogicalPos,
+                        block->data + block->padding,
+                        payloadSize);
+            }
             block = block->next;
         }
-
     }
 
 }

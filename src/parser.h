@@ -116,7 +116,7 @@ namespace Parser {
     // Types
     Lex::Token parseDataType(ParseContext* ctx, Span* span, FullToken prev, Flags flags, VariableDefinition* def, Lex::TokenValue* outVal);
     Lex::Token parseKnownDataType(ParseContext* ctx, Span* span, Type::Kind kind, String name, VariableDefinition* def, Lex::TokenValue* outVal);
-    Lex::Token parseDataTypeDecorators(ParseContext* ctx, Span* span, Variable* var, Flags flags, Lex::TokenValue* outVal, Pointer** outPtr);
+    Lex::Token parseTypeDecorators(ParseContext* ctx, Span* const span, TypeSpecifier* spec, Lex::TokenValue* outLastValue);
     Lex::Token parseEnumDefinition(ParseContext* ctx, Span* span);
     Lex::Token parseTypeDefinition(ParseContext* ctx, Span* span);
     Lex::Token parseTypeInitialization(ParseContext* ctx, Span* span, TypeInitialization** out);
@@ -137,7 +137,7 @@ namespace Parser {
     Lex::Token parseExpression(ParseContext* ctx, Span* span, Variable* var, const Pos startPos, const End end, const Flags flags = NULL_FLAG);
     Lex::Token parseRValue(ParseContext* ctx, Span* span, Variable* outVar, const End end);
     Lex::Token parseCatch(ParseContext* ctx, Span* span, Variable* var);
-    Lex::Token parseRange(ParseContext* ctx, Span* span, Range** range, Variable** outLeftExp = NULL);
+    Lex::Token parseRangeExpression(ParseContext* ctx, Span* span, RangeExpression** range, Variable** outLeftExp = NULL);
 
     // Functions
     Lex::Token parseFunction(ParseContext* ctx, Span* span, Flags flags);

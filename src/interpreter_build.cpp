@@ -36,7 +36,7 @@ namespace Interpreter {
         state->localsInfoMap.flags |= OrderedDict::KEY_IS_INDEX;
         // state->localsInfoMap.flags |= OrderedDict::COPY_STRINGS;
 
-        DArray::init(&state->tmpStack, size, sizeof(void*));
+        // DArray::init(&state->tmpStack, size, sizeof(void*));
         DArray::init(&state->lines, size, sizeof(LineInfo));
 
         state->populateLocals = false;
@@ -54,10 +54,20 @@ namespace Interpreter {
 
 
 
-    bool isFixedArray(Array* arr) {
-        // in hpes that length will always be pre-unwrapped
-        return arr->length && arr->length->value.hasValue;
+    void patchList(CompilerState* state, uint64_t listHead, uint64_t offset) {
+        while (listHead != patchListHeadNull) {
+            uint8_t* ptr = Arena::getPointerToLogicalOffset(&state->bytecode, listHead);
+
+            const uint64_t nextListHead = *(uint64_t*) ptr;
+            const uint64_t relativeOffset = offset - (listHead - 1);
+
+            *(uint64_t*) ptr = relativeOffset;
+
+            listHead = nextListHead;
+        }
     }
+
+
 
     // LOOK_AT : seems unnecessary
     inline bool isLineInSpan(Span* span, uint64_t line) {
@@ -136,6 +146,7 @@ namespace Interpreter {
             case Type::DT_F32: return OFF_F32;
             case Type::DT_F64: return OFF_F64;
             case Type::DT_ARRAY:
+            case Type::DT_SLICE:
             case Type::DT_POINTER: return OFF_PTR;
             default: return OFF_GENERIC;
         }
@@ -155,6 +166,7 @@ namespace Interpreter {
             case Type::DT_F32: return OFF_F32 - 4;
             case Type::DT_F64: return OFF_F64 - 4;
             case Type::DT_ARRAY:
+            case Type::DT_SLICE:
             case Type::DT_POINTER: return OFF_PTR - 4;
             default: return OFF_GENERIC - 4;
         }
@@ -172,82 +184,27 @@ namespace Interpreter {
             case Type::DT_F32: return OFF_F32 - 4;
             case Type::DT_F64: return OFF_F64 - 4;
             case Type::DT_ARRAY:
+            case Type::DT_SLICE:
             case Type::DT_POINTER:
             case Type::DT_U64: return OFF_U64 - 4;
             default: return OFF_GENERIC - 4;
         }
     }
 
-    inline Type::TypeInfo* getDtype(void* data, Type::Kind dtype) {
-        if (dtype <= Type::DT_F64) {
-            return Type::basicTypes + dtype;
-        }
-
+    // TODO : name
+    int getDtypeOffsetSizeBased(Type::Kind dtype) {
         switch (dtype) {
-
-            case Type::DT_CUSTOM: {
-                TypeDefinition* def = (TypeDefinition*) data;
-                return (Type::TypeInfo*) def->typeInfo;
-            }
-
-            case Type::DT_UNION: {
-                break;
-            }
-
-            case Type::DT_ENUM: {
-                return Type::basicTypes + ((Enumerator*) data)->dtype;
-            }
-
-            case Type::DT_ERROR: {
-                break;
-            }
-
-            case Type::DT_FUNCTION: {
-                break;
-            }
-
-            case Type::DT_POINTER: {
-                return Type::basicTypes + dtype;
-            }
-
-            case Type::DT_ARRAY: {
-                return (Type::TypeInfo*) ((Array*) data)->type;
-            }
-
-            case Type::DT_STRING: {
-
-            }
-
-            default: {
-                // TODO
-            }
-
+            case Type::DT_I32: return 0;
+            case Type::DT_U32: return 0;
+            case Type::DT_I64: return 1;
+            case Type::DT_U64: return 1;
+            case Type::DT_F32: return 2;
+            case Type::DT_F64: return 3;
+            case Type::DT_ARRAY:
+            case Type::DT_SLICE:
+            case Type::DT_POINTER: return 1;
+            default: return 1;
         }
-
-        return {};
-    }
-
-    // TODO : to global? or pointer to use Value?
-    inline Value toValue(Pointer* ptr) {
-        Value val;
-        val.any = ptr->pointsTo;
-        val.typeKind = ptr->pointsToKind;
-        val.hasValue = 0;
-        return val;
-    }
-
-    inline Type::TypeInfo* getDtype(Value* val) {
-        return Type::getDtype(val->any, val->typeKind);
-    }
-
-    inline uint64_t getDtypeSize(Value* val) {
-        // TODO : for now this
-        Type::TypeInfo* info = getDtype(val);
-        return info->size;
-    }
-
-    inline uint64_t getDtypeAlign(Value* val) {
-        return 0;
     }
 
     int getAlign(Type::TypeInfo* dtype) {
@@ -264,8 +221,8 @@ namespace Interpreter {
     }
 
     inline Err::Err pushLocal(CompilerState* state, Variable* var, uint64_t* offset) {
-        Type::TypeInfo* info = getDtype(&var->value);
-        const uint64_t vmwordsCount = BYTES_TO_WORDS(info->size);
+        Type::TypeInfo* type = var->value.type;
+        const uint64_t vmwordsCount = BYTES_TO_WORDS(type->size);
 
         *offset = state->locals.logicalPos + state->fixedSize;
 
@@ -280,8 +237,8 @@ namespace Interpreter {
         // store debug info
         LocalVarInfo* header = (LocalVarInfo*) alloc(alc, sizeof(LocalVarInfo));
         header->var = var;
-        header->size = info->size;
-        header->align = info->align;
+        header->size = type->size;
+        header->align = type->align;
 
         // String key = String((char*) offset, sizeof(uint64_t));
         OrderedDict::set(&state->localsInfoMap, *offset, header);
@@ -315,22 +272,20 @@ namespace Interpreter {
     }
 
     void pushString(CompilerState* state, StringInitialization* init) {
-        const uint64_t offset = addToConstPool(state, init->rawStr.buff, init->rawStr.len);
+        const uint64_t offset = addToConstPool(state, init->rawData.buff, init->rawData.len);
 
         pushOpcode(state, OC_LEA_CONST);
         pushOperand(state, offset);
 
         pushOpcode(state, OC_PUSH_I64);
-        pushOperand(state, init->rawStr.len);
+        pushOperand(state, init->rawData.len);
     }
 
     void pushPushInstruction(CompilerState* state, Value* value) {
-
         Arena::Container* locals = &state->locals;
         Arena::Container* bytecode = &state->bytecode;
 
-        switch (value->typeKind) {
-
+        switch (value->type->kind) {
             case Type::DT_U8: {
                 pushOpcode(state, OC_PUSH_U32);
 
@@ -426,18 +381,15 @@ namespace Interpreter {
                 break;
             }
 
-            case Type::DT_STRING: {
-                // TODO: add StringInitialization to Value
-                pushString(state, (StringInitialization*) value->any);
-                break;
-            }
+            //case Type::DT_STRING: {
+            //    pushString(state, value->sex);
+            //    break;
+            //}
 
             default: {
                 // TODO
             }
-
         }
-
     }
 
 
@@ -566,7 +518,7 @@ namespace Interpreter {
             }
 
             case OP_UNARY_MINUS: {
-                int offset = getDtypeOffsetNoCast(uex->operand->value.typeKind);
+                int offset = getDtypeOffsetNoCast(uex->operand->value.type->kind);
                 return (Opcode) (OC_NEG_I32 + offset);
             }
 
@@ -575,7 +527,7 @@ namespace Interpreter {
             }
 
             case OP_GET_VALUE: {
-                return selectLoadOpcode(uex->operand->value.typeKind);
+                return selectLoadOpcode(uex->operand->value.type->kind);
             }
 
             case OP_NEGATION: {
@@ -595,9 +547,10 @@ namespace Interpreter {
     }
 
     Opcode selectOperatorOpcode(BinaryExpression* bex) {
+        const Type::Kind typeKind = bex->left->value.type->kind;
 
         OperatorEnum op = bex->base.opType;
-        int dtypeOffset = getDtypeOffsetNoCastArithmetic(bex->left->value.typeKind);
+        int dtypeOffset = getDtypeOffsetNoCastArithmetic(typeKind);
 
         switch (op) {
             case OP_ADDITION: {
@@ -636,8 +589,49 @@ namespace Interpreter {
                 return (Opcode) (OC_SHR_I32 + dtypeOffset);
             }
 
+            case OP_MODULO: {
+                return (Opcode) (OC_MOD_I32 + dtypeOffset);
+            }
+
             case OP_SUBSCRIPT: {
                 return OC_PTR_IDX;
+            }
+
+            case OP_CALL: {
+                // TODO
+            }
+
+            case OP_LESS_THAN: {
+                return (Opcode) (OC_LT_I32 + dtypeOffset);
+                break;
+            }
+
+            case OP_GREATER_THAN: {
+                return (Opcode) (OC_GT_I32 + dtypeOffset);
+            }
+
+            case OP_LESS_THAN_OR_EQUAL: {
+                return (Opcode) (OC_LE_I32 + dtypeOffset);
+            }
+
+            case OP_GREATER_THAN_OR_EQUAL: {
+                return (Opcode) (OC_GE_I32 + dtypeOffset);
+            }
+
+            case OP_EQUAL: {
+                return (Opcode) (OC_EQ_I32 + getDtypeOffsetSizeBased(typeKind));
+            }
+
+            case OP_NOT_EQUAL: {
+                return (Opcode) (OC_NE_I32 + getDtypeOffsetSizeBased(typeKind));
+            }
+
+            case OP_BOOL_AND: {
+                return (Opcode) (OC_AND_I32 + dtypeOffset);
+            }
+
+            case OP_BOOL_OR: {
+                return (Opcode) (OC_OR_I32 + dtypeOffset);
             }
 
             default: {
@@ -646,7 +640,6 @@ namespace Interpreter {
         }
 
         return OC_NOP;
-
     }
 
 
@@ -665,17 +658,10 @@ namespace Interpreter {
     Err::Err compile(CompilerState* state, Function* node);
     Err::Err compile(CompilerState* state, VariableAssignment* node);
 
-    // usually if function is defined with any it will
-    // be used anyway, so I kinda have to create this
-    // runtime type tree, and if i already have it,
-    // I can just reuse it in vm, so i can actualy use
-    // the same function
-    // TODO : grammar
     Err::Err compileAsAny(CompilerState* state, Variable* var) {
-
         Err::Err err = Err::OK;
 
-        Runtime::_TypeInfo* runtimeInfo = Runtime::getType(var);
+        Runtime::_TypeInfo* runtimeInfo = Runtime::toRuntimeType(var->value.type);
         if (!runtimeInfo) {
             return Err::NOT_YET_IMPLEMENTED;
         }
@@ -683,10 +669,9 @@ namespace Interpreter {
         pushOpcode(state, OC_PUSH_PTR);
         pushOperand(state, (uint64_t) runtimeInfo);
 
-        if (isStructLike(var->value.typeKind)) {
-
+        if (isStructLike(var->value.type->kind)) {
             // TODO : move to a function?
-            Type::TypeInfo* dtype = getDtype(&var->value);
+            Type::TypeInfo* dtype = var->value.type;
 
             uint64_t offset = state->locals.logicalPos;
             push(&state->locals, dtype->size, dtype->align);
@@ -700,35 +685,17 @@ namespace Interpreter {
 
             pushOpcode(state, OC_LEA);
             pushOperand(state, offset);
-
-        } else if (var->value.typeKind == Type::DT_STRING) {
-
-            StringInitialization* init = (StringInitialization*) var->expression;
-
-            // we reserve space for slice in locals
-            uint64_t offset = state->locals.logicalPos;
-            uint64_t* sliceTemplate = (uint64_t*) Arena::push(&state->locals, 16, 8);
-
-            sliceTemplate[0] = (uint64_t) init->rawStr.buff;
-            sliceTemplate[1] = (uint64_t) init->rawStr.len;
-
-            pushOpcode(state, OC_LEA);
-            pushOperand(state, offset);
-
-        } else if (var->value.typeKind == Type::DT_ARRAY) {
-
+        } else if (var->value.type->kind == Type::DT_ARRAY) {
+            // TODO : adjust to any
             err = compile(state, var, NULL, FORCE_ARRAY_LENGTH | FORCE_VEC_OPCODES);
             if (err != Err::OK) return err;
 
-            if (var->value.typeKind == Type::DT_ARRAY) {
+            if (var->value.type->kind == Type::DT_ARRAY) {
                 pushOpcode(state, OC_VEC_TO_REF);
             }
-
         } else {
-
             err = compile(state, var);
             if (err != Err::OK) return err;
-
         }
 
         return err;
@@ -846,8 +813,13 @@ namespace Interpreter {
         Variable* lvar = (node->lvar->def) ? node->lvar : unwrap(node->lvar);
         Variable* rvar = node->rvar;//unwrap(node->rvar);
 
-        if (lvar->value.typeKind == Type::DT_ARRAY) {
+        if (lvar->value.type->kind == Type::DT_ARRAY) {
             // we want to assign by value -> use of vec ops
+            if (!lvar->def) {
+                err = compile(state, lvar, NULL, IS_LVALUE | FORCE_ARRAY_LENGTH);
+                if (err != Err::OK) return err;
+            }
+
             err = compile(state, rvar, lvar, FORCE_ARRAY_LENGTH | FORCE_VEC_OPCODES | IS_ROOT);
             if (err != Err::OK) return err;
 
@@ -860,7 +832,7 @@ namespace Interpreter {
             err = compile(state, node->rvar);
             if (err != Err::OK) return err;
 
-            pushSetOpcode(state, getDtype(&lvar->value), lvar->def, 0);
+            pushSetOpcode(state, lvar->value.type, lvar->def, 0);
             return Err::OK;
         }
 
@@ -873,7 +845,7 @@ namespace Interpreter {
         err = compile(state, node->rvar, lvar);
         if (err != Err::OK) return err;
 
-        Opcode op = selectStoreOpcode(lvar->value.typeKind);
+        Opcode op = selectStoreOpcode(lvar->value.type->kind);
         pushOpcode(state, op);
 
         return Err::OK;
@@ -884,7 +856,7 @@ namespace Interpreter {
         //  force each line-like statement to be parsed as Statement
         updateSourceLocation(state, node->base.span);
 
-        if (Type::isPrimitive(node->value.typeKind) && node->value.hasValue) {
+        if (Type::isPrimitive(node->value.type->kind) && node->value.hasValue) {
             pushPushInstruction(state, &node->value);
             return Err::OK;
         }
@@ -900,9 +872,9 @@ namespace Interpreter {
             uint64_t offset = node->def->vmOffset;
             uint64_t dtypeSize = 0;
 
-            const Type::Kind dtypeEnum = val->typeKind;
-            if (dtypeEnum == Type::DT_ARRAY && isFixedArray(val->arr)) {
-                Type::TypeInfoEx* info = val->arr->type;
+            const Type::Kind dtypeEnum = val->type->kind;
+            if (dtypeEnum == Type::DT_ARRAY) {
+                Type::TypeInfoEx* info = (Type::TypeInfoEx*) val->type;
 
                 // TODO: to a function
                 if (state->exe == node->def->vmOwnerExe) {
@@ -910,18 +882,19 @@ namespace Interpreter {
                     pushOperand(state, offset);
                 } else {
                     pushOpcode(state, OC_LEA_GLOBAL);
-                    pushOperand(state, (uint64_t) node->def->vmOwnerExe);
-                    pushOperand(state, offset);
+                    pushOperand(state, (uint64_t) node->def);
+                    pushOperand(state, 0);
                 }
 
                 if (flags & FORCE_ARRAY_LENGTH) {
-                    compile(state, val->arr->length);
+                    pushOpcode(state, OC_PUSH_U64);
+                    pushOperand(state, info->arr.elementCount);
                 }
 
                 return Err::OK;
             }
 
-            pushGetOpcode(state, getDtype(val), node->def, 0);
+            pushGetOpcode(state, val->type, node->def, 0);
 
             return Err::OK;
         }
@@ -960,7 +933,7 @@ namespace Interpreter {
         // 5: ...                   5: ...
 
         compile(state, bex->left);
-        pushBoolCast(state, bex->left->value.typeKind);
+        pushBoolCast(state, bex->left->value.type->kind);
 
         pushOpcode(state, OC_DUP);
 
@@ -976,7 +949,7 @@ namespace Interpreter {
         pushOpcode(state, OC_POP);
 
         compile(state, bex->right);
-        pushBoolCast(state, bex->left->value.typeKind);
+        pushBoolCast(state, bex->left->value.type->kind);
 
         const uint64_t jumpTargetOffset = state->bytecode.logicalPos;
         const uint64_t jumpRelativeOffset = jumpTargetOffset - jumpStartOffset;
@@ -986,23 +959,24 @@ namespace Interpreter {
 
     }
 
-    Err::Err compileMemberSelection(CompilerState* state, BinaryExpression* bex) {
+    Err::Err compileMemberSelection(CompilerState* state, BinaryExpression* bex, uint64_t flags) {
         Variable* parent = unwrap(bex->left);
 
         Variable* member = bex->right;
-        Type::StructMemberInfo* mInfo = (Type::StructMemberInfo*) member->value.any;
+        Type::StructMemberInfo* mInfo = (Type::StructMemberInfo*) member->value.type;
 
         if (bex->base.opType == OP_DEREFERENCE_MEMBER_SELECTION) {
             // Calculate the absolute address on the stack
-            const Err::Err err = compile(state, parent);
+            const Err::Err err = compile(state, parent, NULL, flags);
             if (err != Err::OK) return err;
 
+            // TODO : edit for lvalue
             pushOpcode(state, OC_PUSH_U64);
             pushOperand(state, mInfo->offset);
             pushOpcode(state, OC_ADD_U64);
 
             pushOpcode(state, selectLoadOpcode(mInfo->type->kind));
-            if (mInfo->type->kind == Type::DT_CUSTOM) {
+            if (mInfo->type->kind == Type::DT_STRUCT) {
                 pushOperand(state, mInfo->type->size);
             }
 
@@ -1010,16 +984,23 @@ namespace Interpreter {
         }
 
         if (parent->def) {
+            // TODO : edit for lvalue
             pushGetOpcode(state, mInfo->type, parent->def, mInfo->offset);
         } else {
             // Arbitrary expression on stack
-            const Err::Err err = compile(state, parent);
+            const Err::Err err = compile(state, parent, NULL, flags);
             if (err != Err::OK) return err;
 
-            pushOpcode(state, OC_CROP);
-            pushOperand(state, BYTES_TO_WORDS(getDtypeSize(&parent->value)));
-            pushOperand(state, mInfo->offset);
-            pushOperand(state, getDtypeSize(&member->value));
+            if (flags & IS_LVALUE) {
+                pushOpcode(state, OC_PUSH_U64);
+                pushOperand(state, mInfo->offset);
+                pushOpcode(state, OC_ADD_U64);
+            } else {
+                pushOpcode(state, OC_CROP);
+                pushOperand(state, BYTES_TO_WORDS(parent->value.type->size));
+                pushOperand(state, mInfo->offset);
+                pushOperand(state, mInfo->type->size);
+            }
         }
 
         return Err::OK;
@@ -1028,18 +1009,17 @@ namespace Interpreter {
     Err::Err compileArraySize(CompilerState* state, Variable* var) {
         var = unwrap(var);
 
-        Array* arr = var->value.arr;
-        arr->length = unwrap(arr->length);
+        Type::ArrayInfo* aInfo = (Type::ArrayInfo*) var->value.type;
 
-        if (!arr->length) {
+        if (!(var->value.type->kind == Type::DT_ARRAY)) {
             Logger::log(logErr, "Array length expected!'.", var->base.span);
             return Err::UNEXPECTED_ERROR;
         }
 
-        Err::Err err = compile(state, arr->length);
-        if (err != Err::OK) return err;
+        pushOpcode(state, OC_PUSH_U64);
+        pushOperand(state, aInfo->elementCount);
 
-        Type::TypeInfo* elemType = getDtype(&arr->length->value);
+        Type::TypeInfo* elemType = aInfo->element;
         if (elemType->size > 1) {
             pushOpcode(state, OC_PUSH_U64);
             pushOperand(state, elemType->size);
@@ -1050,7 +1030,7 @@ namespace Interpreter {
     }
 
     Err::Err compileInPlace(CompilerState* state, ArrayInitialization* init, Variable* target) {
-        Type::TypeInfoEx* info = target->value.arr->type;
+        Type::TypeInfoEx* info = (Type::TypeInfoEx*) target->value.type;
         const uint64_t offset = target->def->vmOffset;
 
         for (int i = 0; i < init->attributeCount; i++) {
@@ -1077,11 +1057,11 @@ namespace Interpreter {
     // TODO : doesnt work for <val> +/- ptr, add OC_SWAP?
     inline bool tryAsPointerArithmetic(CompilerState* state, BinaryExpression* bex) {
         Variable* var = NULL;
-        if (bex->left->value.typeKind == Type::DT_POINTER ||
-            bex->left->value.typeKind == Type::DT_ARRAY) {
+        if (bex->left->value.type->kind == Type::DT_POINTER ||
+            bex->left->value.type->kind == Type::DT_ARRAY) {
             var = bex->left;
-        } else if (bex->right->value.typeKind == Type::DT_POINTER ||
-            bex->right->value.typeKind == Type::DT_ARRAY) {
+        } else if (bex->right->value.type->kind == Type::DT_POINTER ||
+            bex->right->value.type->kind == Type::DT_ARRAY) {
             var = bex->right;
         }
 
@@ -1092,8 +1072,7 @@ namespace Interpreter {
             return false;
         }
 
-        Value val = toValue(var->value.ptr);
-        Type::TypeInfo* info = getDtype(&val);
+        Type::TypeInfo* info = var->value.type;
 
         pushOpcode(state, OC_PUSH_I64);
         pushOperand(state, info->size);
@@ -1110,74 +1089,81 @@ namespace Interpreter {
         pushOperand(state, encodeVecDescriptor(desc));
     }
 
-    inline bool tryVectorization(CompilerState* state, BinaryExpression* bex, VecResult lRes, VecResult rRes, Variable* target, const bool isRoot) {
-        if (bex->left->value.typeKind != Type::DT_ARRAY &&
-            bex->right->value.typeKind != Type::DT_ARRAY
-        ) {
-            return false;
-        }
-
-        uint64_t dest = 0;
+    void pushVecOperands(CompilerState* state, Variable* target, VecDescriptor desc, const bool isRoot) {
+        uint64_t dest;
         if (isRoot) {
-            dest = target->def->vmOffset;
+            if (target->def) {
+                dest = target->def->vmOffset;
+            } else {
+                dest = 0;
+                desc.flags |= DE_F_IS_DEST_STACK;
+            }
             state->vecResult.isTmp = false;
         } else {
+            dest = 0; // TODO
+            desc.flags |= DE_F_DEST;
             state->vecResult.isTmp = true;
+        }
+
+        pushDescriptor(state, desc);
+        pushOperand(state, dest);
+    }
+
+    inline bool tryVectorization(CompilerState* state, BinaryExpression* bex, VecResult lRes, VecResult rRes, Variable* target, const bool isRoot) {
+        if (!Type::isArrayLike(bex->left->value.type->kind) &&
+            !Type::isArrayLike(bex->right->value.type->kind)) {
+            return false;
         }
 
         VecDescriptor desc = {
             .oper = bex->base.opType,
             .flags =
-                (((uint32_t) state->vecResult.isTmp) << DE_F_DEST_SHIFT) |
                 (((uint32_t) lRes.isTmp) << DE_F_LEFT_SHIFT) |
                 (((uint32_t) rRes.isTmp) << DE_F_RIGHT_SHIFT)
         };
 
-        if (bex->left->value.typeKind == Type::DT_ARRAY && bex->right->value.typeKind == Type::DT_ARRAY) {
-            desc.dtype = bex->left->value.arr->base.pointsToKind;
+        Type::TypeInfoEx* leftInfo  = (Type::TypeInfoEx*) bex->left->value.type;
+        Type::TypeInfoEx* rightInfo = (Type::TypeInfoEx*) bex->right->value.type;
+
+        if (Type::isArrayLike(bex->left->value.type->kind)) {
+            desc.dtype = leftInfo->arr.element->kind;
             if (bex->base.opType == OP_CONCATENATION) {
                 pushOpcode(state, OC_VEC_CAT);
             } else {
                 pushOpcode(state, OC_VEC_VV);
             }
-        } else if (bex->left->value.typeKind == Type::DT_ARRAY) {
-            desc.dtype = bex->left->value.arr->base.pointsToKind;
+        } else if (bex->left->value.type->kind == Type::DT_ARRAY) {
+            desc.dtype = leftInfo->arr.element->kind;
             pushOpcode(state, OC_VEC_VS);
         } else {
-            desc.dtype = bex->right->value.arr->base.pointsToKind;
+            desc.dtype = rightInfo->arr.element->kind;
             pushOpcode(state, OC_VEC_SV);
         }
 
-        pushDescriptor(state, desc);
-        pushOperand(state, dest);
+        pushVecOperands(state, target, desc, isRoot);
 
         return true;
     }
 
     // Unary Version
     bool tryVectorization(CompilerState* state, UnaryExpression* uex, Variable* target, const bool isRoot) {
-        if (uex->operand->value.typeKind != Type::DT_ARRAY) return false;
-
-        uint64_t dest = 0;
-        if (isRoot) {
-            dest = target->def->vmOffset;
-            state->vecResult.isTmp = false;
-        } else {
-            state->vecResult.isTmp = true;
-        }
+        if (!Type::isArrayLike(uex->operand->value.type->kind)) return false;
 
         pushOpcode(state, OC_VEC_UNARY);
 
         VecDescriptor desc = {
-            .dtype = uex->operand->value.arr->base.pointsToKind,
+            .dtype = ((Type::ArrayInfo*) uex->operand->value.type)->element->kind,
             .oper = uex->base.opType,
             .flags = ((uint32_t) state->vecResult.isTmp) << DE_F_DEST_SHIFT
         };
 
-        pushDescriptor(state, desc);
-        pushOperand(state, dest);
+        pushVecOperands(state, target, desc, isRoot);
 
         return true;
+    }
+
+    void pushSliceLength(CompilerState* state, Variable* var) {
+        pushGetOpcode(state, var->value.type, var->def, 8);
     }
 
     Err::Err compile(CompilerState* state, Expression* node, Variable* target, Flags flags) {
@@ -1214,7 +1200,7 @@ namespace Interpreter {
                 if (oc == OC_NOP) break;
 
                 if (oc == OC_NOT_BOOL) {
-                    pushBoolCast(state, uex->operand->value.typeKind);
+                    pushBoolCast(state, uex->operand->value.type->kind);
                 }
 
                 pushOpcode(state, oc);
@@ -1237,12 +1223,25 @@ namespace Interpreter {
                 }
 
                 if (isMemberSelection(bex->base.opType)) {
-                    return compileMemberSelection(state, bex);
+                    return compileMemberSelection(state, bex, flags);
                 }
 
                 err = compile(state, bex->left, target, flags);
                 if (err != Err::OK) return err;
                 VecResult lResult = state->vecResult;
+
+                // TODO :
+                // If left side is an array, it may have length
+                // we just remove it here...
+                // Later we may want to catch this upfront and never
+                // emit it in the first place... but not for now not sure
+                // if it will work for all cases... here we shall be fine, as
+                // we are already dealing with the result...
+                if (flags & FORCE_ARRAY_LENGTH &&
+                    bex->base.opType == OP_SUBSCRIPT &&
+                    bex->left->value.type->kind == Type::DT_ARRAY) {
+                    pushOpcode(state, OC_POP);
+                }
 
                 err = compile(state, bex->right, target, flags);
                 if (err != Err::OK) return err;
@@ -1265,13 +1264,18 @@ namespace Interpreter {
                 pushOpcode(state, oc);
 
                 if (oc == OC_PTR_IDX) {
-                    Pointer* ptr = bex->left->value.ptr;
-                    Type::TypeInfo* dtype = Type::getDtype(ptr->pointsTo, ptr->pointsToKind);
-                    pushOperand(state, dtype->size);
+                    Type::PointerInfo* pInfo = (Type::PointerInfo*) bex->left->value.type;
+                    Type::TypeInfo* eInfo = pInfo->element;
+
+                    pushOperand(state, eInfo->size);
 
                     if (!(flags & IS_LVALUE)) {
-                        oc = selectLoadOpcode(ptr->pointsToKind);
+                        // TODO : to a function
+                        oc = selectLoadOpcode(eInfo->kind);
                         pushOpcode(state, oc);
+                        if (oc == OC_LOAD_BLOB) {
+                            pushOperand(state, eInfo->size);
+                        }
                     }
                 }
 
@@ -1291,9 +1295,9 @@ namespace Interpreter {
                     // TODO : handle somehow error.
                 }
 
-                // create empty slots for callee fp and ip
+                // create empty slots for callee exe, fp and ip
                 pushOpcode(state, OC_GROW);
-                pushOperand(state, 2 * sizeof(vmword));
+                pushOperand(state, 3 * sizeof(vmword));
 
                 // predetermine if the last arg is vardic, so we
                 // dont have to lookup in main loop prototype definition
@@ -1303,15 +1307,21 @@ namespace Interpreter {
 
                 if (fixedCount > 0) {
                     VariableDefinition* lastArgPrototype = fcn->prototype.inArgs[fixedCount - 1];
-                    if (lastArgPrototype->var->value.typeKind == Type::DT_MULTIPLE_TYPES) {
+                    if (lastArgPrototype->var->value.type->kind == Type::DT_MULTIPLE_TYPES) {
                         isVariadic = true;
                         fixedCount--;
                     }
                 }
 
+                VariableDefinition** fcnInArgs = fcn->prototype.inArgs;
+
                 for (int i = 0; i < fixedCount; i++) {
                     Variable* arg = call->inArgs[i];
-                    err = compile(state, arg, NULL, FORCE_ARRAY_LENGTH);
+                    if (fcnInArgs[i]->var->value.type->kind == Type::DT_ARRAY) {
+                        err = compile(state, arg, NULL, FORCE_ARRAY_LENGTH);
+                    } else {
+                        err = compile(state, arg, NULL);
+                    }
                     if (err != Err::OK) return err;
                 }
 
@@ -1320,7 +1330,7 @@ namespace Interpreter {
                     for (int i = fixedCount; i < call->inArgCount; i++) {
                         Variable* arg = call->inArgs[i];
                         compileAsAny(state, arg);
-                        anyVarargIsArray = arg->value.typeKind == Type::DT_ARRAY;
+                        anyVarargIsArray = arg->value.type->kind == Type::DT_ARRAY;
                         varArgsCount++;
                     }
 
@@ -1347,62 +1357,45 @@ namespace Interpreter {
             }
 
             case EXT_CAST: {
-
                 Cast* cast = (Cast*) node;
 
                 if (flags & FORCE_VEC_OPCODES) {
-
                     compile(state, cast->operand, target, flags);
 
                     pushOpcode(state, OC_VEC_CAST);
 
-                    VecDescriptor desc = {
-                        .dtype = cast->target
-                    };
+                    VecDescriptor desc;
+                    desc.dtype = cast->target->kind;
+                    desc.flags = isRoot ? 0 : DE_F_DEST | DE_F_LEFT;
 
                     // Source can be element type
-                    // TODO : to cast node
-                    if (target->value.arr->flags & IS_CASTED_FROM_LOWER_LEVEL) {
-                        desc.srcDtype = cast->operand->value.typeKind;
+                    if (cast->kind == Cast::Kind::FROM_LOWER_LEVEL) {
+                        desc.srcDtype = cast->operand->value.type->kind;
                         desc.flags = IS_CASTED_FROM_LOWER_LEVEL;
                     } else {
-                        desc.srcDtype = cast->operand->value.arr->base.pointsToKind;
+                        desc.srcDtype = ((Type::TypeInfoEx*) (cast->operand->value.type))->ptr.element->kind;
                         desc.flags = 0;
                     }
 
                     // even in root target can be general expression,
                     // ex. assignment x.y[i] = arr ...;
-                    if (isRoot && target->def) {
-                        pushDescriptor(state, desc);
-                        pushOperand(state, target->def->vmOffset);
-                        state->vecResult.isTmp = false;
-                    } else {
-                        desc.flags = DE_F_DEST | DE_F_LEFT;
-                        pushDescriptor(state, desc);
-                        pushOperand(state, 0); // TODO
-                        state->vecResult.isTmp = true;
-                    }
-
+                    pushVecOperands(state, target, desc, isRoot);
                 } else {
-
                     compile(state, cast->operand, target, flags);
 
-                    Opcode op = selectCastOpcode(cast->operand->value.typeKind, cast->target);
+                    Opcode op = selectCastOpcode(cast->operand->value.type->kind, cast->target->kind);
                     if (op == OC_NOP) break;
 
                     pushOpcode(state, op);
-
                 }
 
                 break;
-
             }
 
             case EXT_ALLOC: {
-
                 Alloc* alc = (Alloc*) node;
 
-                Type::TypeInfo* dtype = getDtype(&alc->def->var->value);
+                Type::TypeInfo* dtype = alc->def->var->value.type;
 
                 if (dtype->kind == Type::DT_ARRAY) {
                     err = compileArraySize(state, alc->def->var);
@@ -1429,7 +1422,6 @@ namespace Interpreter {
                 }
 
                 break;
-
             }
 
             case EXT_FREE: {
@@ -1438,30 +1430,34 @@ namespace Interpreter {
             }
 
             case EXT_GET_LENGTH: {
-
                 GetLength* ex = (GetLength*) node;
-                if (ex->arr->value.arr->length) {
-                    compile(state, ex->arr->value.arr->length);
+
+                if (ex->arr->value.type->kind == Type::DT_ARRAY) {
+                    Type::ArrayInfo* aType = (Type::ArrayInfo*) ex->arr->value.type;
+                    pushOpcode(state, OC_PUSH_U64);
+                    pushOperand(state, aType->elementCount);
                 } else {
-                    pushOpcode(state, OC_GET_U64);
-                    pushOperand(state, ex->arr->def->vmOffset + 8);
+                    pushSliceLength(state, ex->arr);
                 }
 
                 break;
-
             }
 
             case EXT_GET_SIZE: {
-
                 GetSize* ex = (GetSize*) node;
-                compile(state, ex->arr->value.arr->length);
-                /*
-                DataType* dtype = getDtype(ex->arr->base.pointsTo, ex->arr->base.pointsToEnum);
-                pushOperand(state, dtype->size);
-                pushOpcode(state, OC_MUL_I64);
-                */
-                break;
 
+                if (ex->arr->value.type->kind == Type::DT_ARRAY) {
+                    Type::ArrayInfo* type = (Type::ArrayInfo*) ex->arr->value.type;
+                    pushOpcode(state, OC_PUSH_U64);
+                    pushOperand(state, type->elementCount * type->element->size);
+                } else {
+                    Type::ArrayInfo* type = (Type::ArrayInfo*) ex->arr->value.type;
+                    pushSliceLength(state, ex->arr);
+                    pushOperand(state, type->element->size);
+                    pushOpcode(state, OC_MUL_I64);
+                }
+
+                break;
             }
 
             case EXT_STRING_INITIALIZATION: {
@@ -1480,14 +1476,14 @@ namespace Interpreter {
 
                 Type::TypeInfo* elementInfo = NULL;
                 if (elementCount > 0) {
-                    elementInfo = getDtype(&init->attributes[0]->value);
+                    elementInfo = init->attributes[0]->value.type;
                 }
 
                 if (init->flags & IS_CMP_TIME) {
                     Variable* first = init->attributes[0];
 
                     uint64_t offset = state->rawData.logicalPos;
-                    uint64_t elementSize = getDtypeSize(&first->value);
+                    uint64_t elementSize = first->value.type->size;
 
                     uint8_t* rawDataPtr = (uint8_t*) Arena::push(&state->rawData, elementCount * elementSize, 1);
                     for (int i = 0; i < elementCount; i++) {
@@ -1506,20 +1502,18 @@ namespace Interpreter {
 
                     pushOpcode(state, OC_VEC_COPY);
                     VecDescriptor desc = {
-                        .dtype = first->value.typeKind,
+                        .dtype = first->value.type->kind,
                     };
-                    if (isRoot) {
-                        pushDescriptor(state, desc);
-                        pushOperand(state, target->def->vmOffset);
-                    } else {
-                        desc.flags = DE_F_DEST;
-                        pushDescriptor(state, desc);
-                        pushOperand(state, 0); // TODO
-                    }
+
+                    pushVecOperands(state, target, desc, isRoot);
                 } else {
                     if (isRoot) {
-                        pushOpcode(state, OC_LEA);
-                        pushOperand(state, target->def->vmOffset);
+                        if (target->def) {
+                            pushOpcode(state, OC_LEA);
+                            pushOperand(state, target->def->vmOffset);
+                        } else {
+                            // TODO : pointer should already be on stack, right? ... right?
+                        }
                     } else {
                         pushOpcode(state, OC_PUSH_U64);
                         pushOperand(state, elementCount);
@@ -1553,7 +1547,6 @@ namespace Interpreter {
             }
 
             case EXT_TYPE_INITIALIZATION: {
-
                 TypeInitialization* init = (TypeInitialization*) node;
 
                 for (int i = 0; i < init->attributeCount; i++) {
@@ -1563,7 +1556,6 @@ namespace Interpreter {
                 // TODO : fill var
 
                 break;
-
             }
 
             default: {
@@ -1588,7 +1580,7 @@ namespace Interpreter {
     Err::Err compile(CompilerState* state, Branch* node) {
         Err::Err err;
 
-        const uint32_t stackStart = state->tmpStack.size;
+        uint64_t patchListHead = patchListHeadNull;
 
         uint32_t i = 0;
         for (; i < node->expressionCount; i++) {
@@ -1602,9 +1594,11 @@ namespace Interpreter {
             err = compile(state, node->scopes[i]);
             if (err != Err::OK) return err;
 
-            pushOpcode(state, OC_JUMP);
-            uint8_t* jumpVeryEndPtr = pushOperand(state, state->bytecode.logicalPos - 1);
-            DArray::push(&state->tmpStack, &jumpVeryEndPtr);
+            if (i < node->scopeCount - 1) {
+                pushOpcode(state, OC_JUMP);
+                pushOperand(state, patchListHead);
+                patchListHead = state->bytecode.logicalPos - 8;
+            }
 
             const uint64_t jumpBlockOffset = state->bytecode.logicalPos - jumpBlockStartOffset;
             memcpy(jumpBlockEndPtr, &jumpBlockOffset, sizeof(uint64_t));
@@ -1616,16 +1610,7 @@ namespace Interpreter {
         }
 
         const uint64_t jumpVeryEndOffset = state->bytecode.logicalPos;
-        const uint32_t jumpsToPatch = state->tmpStack.size - stackStart;
-
-        for (int i = 0; i < jumpsToPatch; i++) {
-            uint8_t* jumpPtr = *(uint8_t**) DArray::getLast(&state->tmpStack);
-
-            const uint64_t jumpRelativeOffset = jumpVeryEndOffset - (*(uint64_t*) jumpPtr);
-            memcpy(jumpPtr, &jumpRelativeOffset, sizeof(uint64_t));
-
-            DArray::pop(&state->tmpStack);
-        }
+        patchList(state, patchListHead, jumpVeryEndOffset);
 
         return Err::OK;
     }
@@ -1648,6 +1633,9 @@ namespace Interpreter {
         const uint64_t prevCurrentLoopAddress = state->currentLoopAddress;
         state->currentLoopAddress = startOffset;
 
+        SyntaxNode* prevLoop = state->currentLoop;
+        state->currentLoop = (SyntaxNode*) node;
+
         err = compile(state, node->expression);
         if (err != Err::OK) return err;
 
@@ -1664,7 +1652,9 @@ namespace Interpreter {
         const uint64_t jumpOperandRelativeOffset = state->bytecode.logicalPos - jumpOperandStartOffset;
         memcpy(jumpOperandPtr, &jumpOperandRelativeOffset, sizeof(uint64_t));
 
+        state->currentLoop = prevLoop;
         state->currentLoopAddress = prevCurrentLoopAddress;
+
         return Err::OK;
     }
 
@@ -1681,6 +1671,14 @@ namespace Interpreter {
         const uint64_t startOffset = state->bytecode.logicalPos;
         const uint64_t prevCurrentLoopAddress = state->currentLoopAddress;
         state->currentLoopAddress = startOffset;
+
+        SyntaxNode* prevLoop = state->currentLoop;
+        state->currentLoop = (SyntaxNode*) node;
+
+        uint64_t oldListHeadBreak = state->listHeadBreak;
+        uint64_t oldListHeadContinue = state->listHeadContinue;
+        state->listHeadBreak = patchListHeadNull;
+        state->listHeadContinue = patchListHeadNull;
 
         int64_t stride = 1;
         if (node->stride) {
@@ -1713,7 +1711,8 @@ namespace Interpreter {
         err = compile(state, node->bodyScope);
         if (err != Err::OK) return err;
 
-        if (indexOffset > 0) {
+        const uint64_t incOffset = state->bytecode.logicalPos;
+        if (indexOffset >= 0) {
             pushOpcode(state, OC_GET_I64);
             pushOperand(state, indexOffset);
 
@@ -1732,7 +1731,14 @@ namespace Interpreter {
         const uint64_t jumpOperandRelativeOffset = state->bytecode.logicalPos - jumpOperandStartOffset;
         memcpy(jumpOperandPtr, &jumpOperandRelativeOffset, sizeof(uint64_t));
 
+        patchList(state, state->listHeadBreak, state->bytecode.logicalPos);
+        patchList(state, state->listHeadContinue, incOffset);
+
+        state->currentLoop = prevLoop;
+        state->listHeadBreak = oldListHeadBreak;
+        state->listHeadContinue = oldListHeadContinue;
         state->currentLoopAddress = prevCurrentLoopAddress;
+
         return Err::OK;
     }
 
@@ -1748,7 +1754,7 @@ namespace Interpreter {
 
         // TODO : not the best
         if (node->var) {
-            Type::TypeInfo* dtype = getDtype(&node->var->value); // TODO
+            Type::TypeInfo* dtype = node->var->value.type; // TODO
             pushOperand(state, dtype->size);
         } else {
             pushOperand(state, 0);
@@ -1761,18 +1767,22 @@ namespace Interpreter {
         updateSourceLocation(state, node->base.span);
 
         pushOpcode(state, OC_JUMP);
-        pushOperand(state, state->currentLoopAddress - state->bytecode.logicalPos + 1);
+        if (state->currentLoop->type == NT_WHILE_LOOP) {
+            pushOperand(state, state->currentLoopAddress - state->bytecode.logicalPos + 1);
+        } else {
+            pushOperand(state, state->listHeadContinue);
+            state->listHeadContinue = state->bytecode.logicalPos - 8;
+        }
+
         return Err::OK;
     }
 
     Err::Err compile(CompilerState* state, BreakStatement* node) {
         updateSourceLocation(state, node->base.span);
 
-        pushOpcode(state, OC_PUSH_U64);
-        pushOperand(state, false);
-
         pushOpcode(state, OC_JUMP);
-        pushOperand(state, state->currentLoopAddress + 1 - state->bytecode.logicalPos + 1);
+        pushOperand(state, state->listHeadBreak);
+        state->listHeadBreak = state->bytecode.logicalPos - 8;
 
         return Err::OK;
     }
@@ -1855,7 +1865,7 @@ namespace Interpreter {
                 state->locals.logicalPos = 0;
             }
 
-            if (def->var->value.typeKind == Type::DT_MULTIPLE_TYPES) {
+            if (def->var->value.type->kind == Type::DT_MULTIPLE_TYPES) {
                 fcn->exe->isVariadic = true;
             }
 

@@ -58,6 +58,7 @@ struct OperatorExpression;
 struct UnaryExpression;
 struct BinaryExpression;
 struct TernaryExpression;
+struct RangeExpression;
 struct Statement;
 struct FunctionCall;
 struct ImportStatement;
@@ -68,7 +69,6 @@ struct Catch;
 struct Alloc;
 struct Free;
 struct Using;
-struct Range;
 
 struct ScopeName;
 
@@ -78,9 +78,6 @@ struct ForeignFunction;
 struct LangDef;
 
 struct TypeDefinition;
-struct Pointer;
-struct Array;
-struct Slice;
 
 namespace Interpreter {
     struct ExeBlock;
@@ -139,10 +136,10 @@ enum AllocExType : AllocType {
     AT_EXT_UNARY,
     AT_EXT_BINARY,
     AT_EXT_TERNARY,
+    AT_EXT_RANGE,
     AT_EXT_TYPE_INITIALIZATION,
     AT_EXT_STRING_INITIALIZATION,
     AT_EXT_ARRAY_INITIALIZATION,
-    AT_EXT_SLICE,
     AT_EXT_CATCH,
     AT_EXT_CAST,
     AT_EXT_ALLOC,
@@ -150,11 +147,10 @@ enum AllocExType : AllocType {
     AT_EXT_GET_LENGTH,
     AT_EXT_GET_SIZE,
     AT_INAMED,
-    AT_POINTER,
-    AT_ARRAY,
     AT_QUALIFIED_NAME,
     AT_FUNCTION_PROTOTYPE,
     AT_FOREIGN_FUNCTION,
+    AT_TYPE_SPECIFIER,
     AT_ERROR_STRING,
     AT_COUNT
 };
@@ -170,10 +166,10 @@ enum ExpressionType {
     EXT_UNARY,
     EXT_BINARY,
     EXT_TERNARY,
+    EXT_RANGE,
     EXT_TYPE_INITIALIZATION,
     EXT_STRING_INITIALIZATION,
     EXT_ARRAY_INITIALIZATION,
-    EXT_SLICE,
     EXT_CATCH,
     EXT_CAST,
     EXT_ALLOC,
@@ -293,9 +289,11 @@ struct Enumerator {
     SyntaxNode base;
     INamedEx   name;
 
-    Type::Kind dtype;
     Variable** vars;
     uint32_t   varCount;
+
+    Type::TypeInfo* memberType;
+    Type::TypeInfo* type;
 };
 
 struct Statement {
@@ -304,29 +302,33 @@ struct Statement {
 };
 
 struct Value {
-    Type::Kind typeKind;
-    bool hasValue = false;
     union {
         int8_t      i8;
         int16_t     i16;
         int32_t     i32;
         int64_t     i64;
+
         uint8_t     u8;
         uint16_t    u16;
         uint32_t    u32;
         uint64_t    u64;
+
         float_t     f32;
         double_t    f64;
-        Pointer*    ptr;
-        Array*      arr;
-        Slice*      slc;
-        ErrorSet*   err;
-        Enumerator* enm;
-        void*       str;
-        void*       any;
-        TypeDefinition*    def;
-        FunctionPrototype* fcn;
+
+        char*       str;
+
+        Expression* exp;
+        ArrayInitialization*  aex;
+        TypeInitialization*   tex;
+        StringInitialization* sex;
     };
+
+    // TODO : later we can try to use the last bit of
+    //        type to store hasValue, so this struct
+    //        can fit into one reg
+    Type::TypeInfo* type;
+    bool hasValue = false;
 };
 
 struct Expression {
@@ -356,6 +358,14 @@ struct TernaryExpression {
     Variable* falseExp;
 };
 
+struct RangeExpression {
+    Expression base;
+
+    Variable* bidx;
+    Variable* eidx;
+    Variable* step;
+};
+
 struct TypeInitialization {
     Expression base;
 
@@ -372,10 +382,8 @@ struct TypeInitialization {
 struct StringInitialization {
     Expression base;
 
-    String rawStr;
-
-    String wideStr;
-    Type::Kind wideType; // TODO: make just dtype
+    String rawData;
+    Type::TypeInfo* charType;
 };
 
 struct ArrayInitialization {
@@ -397,8 +405,14 @@ struct Catch {
 
 struct Cast {
     Expression base;
-    Type::Kind target;
-    Variable*  operand;
+
+    Type::TypeInfo* target;
+    Variable*       operand;
+
+    enum Kind {
+        DEFAULT = 0,
+        FROM_LOWER_LEVEL
+    } kind;
 };
 
 struct Alloc {
@@ -425,17 +439,42 @@ struct GetSize {
 static_assert(sizeof(GetSize) <= sizeof(BinaryExpression),
               "GetLength exceeded size of BinaryExpression");
 
+// Represents a single decorator applied to a type (*, [10], [const], ...)
+struct TypeDecorator {
+    enum Kind {
+        DEC_POINTER,
+        DEC_ARRAY,
+    } kind;
+
+    Span* span;
+    uint64_t flags;
+
+    // only for DEC_ARRAY
+    Variable* len;
+};
+
+struct TypeSpecifier {
+    Type::Kind baseType;
+
+    // DT_UNDEFINED if baseName
+    // DT_FUNCTION if baseFcn
+    union {
+        QualifiedName* baseName;    // The base complex type name (struct name, enum etc.)
+        FunctionPrototype* baseFcn; // The base function pointer type
+    };
+
+    Span* span;
+
+    // In the order they were written
+    TypeDecorator** decorators;
+    uint32_t        decoratorCount;
+};
+
 struct VariableDefinition {
     SyntaxNode base;
 
-    Variable* var; // it may be enough
-
-    // only for custom data types as they will be linked at the end
-    QualifiedName* dtype;
-
-    // if we have Pointer like definition as for example Foo****
-    // then lastPtr points to the Foo*
-    Pointer* lastPtr;
+    Variable*     var; // it may be enough
+    TypeSpecifier type;
 
     // local offset in vm
     uint64_t vmOffset;
@@ -453,7 +492,13 @@ struct Variable {
 
     VariableDefinition* def;
 
+    // Resolved semantic type and optional compile-time value
     Value value;
+
+    // AST representation of an expression.
+    // If NULL, this node represents a direct literal or primitive value.
+    // Should be preserved even when resolved at compile-time to maintain
+    // source-level AST metadata.
     Expression* expression;
 
     // In case of member .id is members index
@@ -543,8 +588,8 @@ struct Loop {
     // Argument
     struct Arg {
         union {
-            Variable* array;
-            Range*    range;
+            Variable*        array;
+            RangeExpression* range;
         };
 
         enum Kind {
@@ -608,9 +653,7 @@ struct TypeDefinition {
 
     TaskStatus state;
 
-    Type::TypeInfoEx*      typeInfo;
-    // For now only one ABI against which we may compile
-    Extern::Abi::TypeInfo* typeInfoAbi;
+    Type::TypeInfoEx* type;
 
     Variable** vars;
     uint32_t   varCount;
@@ -628,40 +671,6 @@ struct ErrorSet {
     uint64_t   value;
     Variable** vars;
     uint32_t   varCount;
-};
-
-struct Pointer {
-    Pointer* parentPointer; // so we can walk back
-    void* pointsTo;
-    Type::Kind pointsToKind;
-};
-
-struct Array {
-    Pointer base;
-
-    Variable* length;
-    int flags;
-
-    Type::TypeInfoEx* type;
-};
-
-struct Range {
-    Variable* bidx;
-    Variable* eidx;
-};
-
-// TODO : later reuse range here,
-// but couple it with a rewrite of adding
-// range as expression, like a way array initialization
-// for now its simpler to not mess around with.
-struct Slice {
-    Expression base;
-
-    Variable* arr;
-    Variable* bidx;
-    Variable* eidx;
-
-    Variable* len = NULL;
 };
 
 struct LangDef {
@@ -742,7 +751,6 @@ struct AstRegistry {
             DArray::Container variableDefinitions;
             DArray::Container customErrors;
             DArray::Container unions;
-            DArray::Container slices;
             DArray::Container arraysAllocations;
             DArray::Container imports;
             DArray::Container customDataTypes;
@@ -833,19 +841,18 @@ namespace Ast {
         void init(UnaryExpression* node);
         void init(BinaryExpression* node);
         void init(TernaryExpression* node);
+        void init(RangeExpression* node);
         void init(Catch* node);
         void init(Cast* node);
-        void init(Slice* node);
         void init(Alloc* node);
         void init(Free* node);
 
-        void init(Pointer* node);
-        void init(Array* node);
         void init(FunctionPrototype* node);
         void init(ArrayInitialization* node);
         void init(StringInitialization* node);
         void init(TypeInitialization* node);
         void init(QualifiedName* node);
+        void init(TypeSpecifier* node);
 
         Scope*              makeScope();
         Namespace*          makeNamespace();
@@ -877,19 +884,18 @@ namespace Ast {
         UnaryExpression*     makeUnaryExpression();
         BinaryExpression*    makeBinaryExpression();
         TernaryExpression*   makeTernaryExpression();
+        RangeExpression*     makeRangeExpression();
         Catch*               makeCatch();
         Cast*                makeCast();
-        Slice*               makeSlice();
         Alloc*               makeAlloc();
         Free*                makeFree();
 
-        Pointer*              makePointer();
-        Array*                makeArray();
         FunctionPrototype*    makeFunctionPrototype();
         ArrayInitialization*  makeArrayInitialization();
         StringInitialization* makeStringInitialization();
         TypeInitialization*   makeTypeInitialization();
         QualifiedName*        makeQualifiedName();
+        TypeSpecifier*        makeTypeSpecifier();
 
         Scope*              copy(Scope* node);
         Namespace*          copy(Namespace* node);
@@ -1055,10 +1061,10 @@ constexpr int nodeTypeSize[AT_COUNT] = {
     sizeof(UnaryExpression),
     sizeof(BinaryExpression),
     sizeof(TernaryExpression),
+    sizeof(RangeExpression),
     sizeof(TypeInitialization),
     sizeof(StringInitialization),
     sizeof(ArrayInitialization),
-    sizeof(Slice),
     sizeof(Catch),
     sizeof(Cast),
     sizeof(Alloc),
@@ -1067,11 +1073,10 @@ constexpr int nodeTypeSize[AT_COUNT] = {
     sizeof(GetSize),
 
     sizeof(INamed),
-    sizeof(Pointer),
-    sizeof(Array),
     sizeof(QualifiedName),
     sizeof(FunctionPrototype),
     sizeof(ForeignFunction),
+    sizeof(TypeSpecifier),
 
     sizeof(char)
 };
@@ -1121,7 +1126,6 @@ constexpr int nodeTypeSize[AT_COUNT] = {
 
 Variable* unwrap(Variable* var);
 
-Type::TypeInfo* getTypeInfo(Variable* var);
 
 
 AcquireNodeReturn acquireNode(uint8_t* statusField, uint8_t* nodeWorkerId, uint8_t workerId, bool wait);

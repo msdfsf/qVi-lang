@@ -4,8 +4,10 @@
 
 namespace Extern::Abi {
 
-    void win64Classify(Arg* arg, Value* val) {
-        switch (val->typeKind) {
+    void win64Classify(Arg* arg, Abi::TypeInfo* abi) {
+        Type::TypeInfoEx* type = abi->type;
+
+        switch (type->base.kind) {
             case Type::DT_F32:
             case Type::DT_F64: {
                 arg->kind = AK_FLOAT;
@@ -27,7 +29,7 @@ namespace Extern::Abi {
                 break;
             }
 
-            case Type::DT_CUSTOM:
+            case Type::DT_STRUCT:
             case Type::DT_UNION: {
                 // Structs and unions of size 8, 16, 32, or 64 bits,
                 // and __m64 types, are passed as if they were integers
@@ -35,9 +37,7 @@ namespace Extern::Abi {
                 // Structs or unions of other sizes are passed as a pointer
                 // to 16-byte aligned memory allocated by the caller.
 
-                Type::StructInfo* sInfo = &val->def->typeInfoAbi->info->str;
-
-                const uint32_t size = sInfo->base.size;
+                const uint32_t size = type->base.size;
                 if ((size & 1) == 0 && size <= 8) {
                     arg->kind = Abi::AK_INT;
                     arg->pass = Abi::PK_REG_STRUCT;

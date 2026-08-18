@@ -11,6 +11,10 @@ namespace Arena {
         Block* prev;
         Block* next;
 
+        // accumulated logical pos for this chunk
+        // note, we start from padding
+        uint64_t startLogicalPos;
+
         // the offset we need to take at the start of the block
         // to simulate alignments of elements if they were
         // pushed to 'one big block'
@@ -48,11 +52,18 @@ namespace Arena {
     void* push(Container* arena, size_t size, size_t align);
 
     Marker getMarker(Container* arena);
+    // rollbacks to a previously obtained marker
     void rollback(Container* arena, Marker marker, bool freeMemory = false);
+    // rollbacks to any previously allocated pointer
     void rollback(Container* arena, void* ptr, bool freeMemory = false);
+    // rollbacks back 'size' in logical pos
     void rollback(Container* arena, uint64_t size, bool freeMemory = false);
 
+    bool contain(Container* arena, void* ptr);
+
     void clear(Container* arena);
+
+    uint8_t* getPointerToLogicalOffset(Container* arena, uint64_t logicalPos);
 
     uint64_t getFlatSize(Container* arena);
     uint64_t getMaxAlign(Container* arena);

@@ -217,37 +217,37 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 * **Stack:** `..., data: Word(s) -> ...`  
 * **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and writes them to the Locals Block at `FP + offset`.
 
-**`get_global_{type}`**  `u64: var_def_ref`
+**`get_global_{type}`**  `u64: var_def_ref, u64: offset`
 * **Stack:** `... -> ..., value: Word`  
 * **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
-* **Description:** Cross-block counterpart of `get_{type}`. The single operand is a reference to the variable's definition (see §4.5). At runtime the VM reads from that definition whichever of two things holds:
+* **Description:** Cross-block counterpart of `get_{type}`. The `var_def_ref` operand is a reference to the variable's definition (see §4.5), and `offset` represents an internal byte offset from that variable's base address (used to directly access struct members or array elements). At runtime, the VM reads from the definition whichever of two things holds:
 
-  * If the definition's owning block is live on the operand stack, read the value from that block's Locals Block at `block_FP + local_offset` (where `block_FP` is the owning block's frame-base address — see §4.3 — and `local_offset` is recorded on the definition itself). Push the value as a normalized Word. Reads observe the variable's current state in the surrounding execution flow, including prior mutations within the same CTE run.
-  * Otherwise, if the definition carries a resolved value (e.g. via `embed`), load that value directly from the definition and push it as a normalized Word.
-  * Otherwise it is a runtime error.
+  * If the definition's owning block is live on the operand stack, read the value from that block's Locals Block at `block_FP + local_offset + offset` (where `block_FP` is the owning block's frame-base address, and `local_offset` is the variable's base offset recorded on the definition itself). Push the value as a normalized Word. Reads observe the variable's current state in the surrounding execution flow, including prior mutations within the same CTE run.
+  * Otherwise, if the definition carries a resolved value (e.g. via `embed`), apply the `offset` to the embedded data's base address, load the targeted value directly from the definition, and push it as a normalized Word.
+  * Otherwise, it is a runtime error.
 
-  The compiler emitting this instruction does no resolution work — it bakes only the definition reference.
+  The compiler emitting this instruction does no resolution work — it bakes only the definition reference and the structural offset.
 
-**`get_global_blob`**  `u64: var_def_ref, u64: size`
+**`get_global_blob`**  `u64: var_def_ref, u64: offset, u64: size`
 * **Stack:** `... -> ..., data: Word(s)`  
-* **Description:** Cross-block counterpart of `get_blob`. Same resolution paths as `get_global_{type}`: if the owning block is live, reads `size` bytes from `block_FP + local_offset` (the offset recorded on the definition); otherwise loads a blob-typed resolved value from the definition. Grows the stack by `ceil(size / 8)` Words to hold the result. Liveness and encoding rules per §4.5. (`size` is a separate operand because the definition does not need to know how many bytes of itself a particular caller wants to materialize.)
+* **Description:** Cross-block counterpart of `get_blob`. Follows the same resolution paths as `get_global_{type}`: if the owning block is live, reads `size` bytes from `block_FP + local_offset + offset`; otherwise, loads a blob-typed resolved value at the specified `offset` from the definition. Grows the stack by `ceil(size / 8)` Words to hold the result. Liveness and encoding rules per §4.5. (`size` and `offset` are distinct operands because the definition does not need to know which internal member or how many bytes of itself a particular caller wants to materialize.)
 
-**`set_global_{type}`**  `u64: var_def_ref`
+**`set_global_{type}`**  `u64: var_def_ref, u64: offset`
 * **Stack:** `..., value: Word -> ...`  
 * **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
-* **Description:** Pops a Word and writes the low `sizeof(type)` bytes of it to the non-local slot at `block_FP + local_offset` of the definition's owning block (the offset is read from the definition at execution time). Symmetric to `get_global_{type}`; the owning block must be live at the moment of access (writing a non-local outside a live execution frame is a runtime error, never an `embed`-fallback — `embed` fixes the value once during validation, runtime mutation is meaningless). See §4.5 for liveness and access semantics.
+* **Description:** Pops a Word and writes the low `sizeof(type)` bytes of it to the non-local slot at `block_FP + local_offset + offset` of the definition's owning block (the base offset is read from the definition at execution time, and `offset` targets a specific member). Symmetric to `get_global_{type}`; the owning block must be live at the moment of access. Writing a non-local outside a live execution frame is a runtime error. There is never an `embed`-fallback, as `embed` fixes the value once during validation; runtime mutation of an embedded constant is meaningless. See §4.5 for liveness and access semantics.
 
-**`set_global_blob`**  `u64: var_def_ref, u64: size`
+**`set_global_blob`**  `u64: var_def_ref, u64: offset, u64: size`
 * **Stack:** `..., data: Word(s) -> ...`  
-* **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and writes them to the non-local slot at `block_FP + local_offset` of the definition's owning block. Owning block must be live. Symmetric to `get_global_blob`.
+* **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and writes them to the non-local slot at `block_FP + local_offset + offset` of the definition's owning block. The owning block must be live. Symmetric to `get_global_blob`.
 
 **`lea`**  `u64: fp_offset`
 * **Stack:** `... -> ..., address: ptr`  
 * **Description:** Calculates the absolute host address of a local variable (`FP + fp_offset`) and pushes it.
 
-**`lea_global`**  `u64: var_def_ref`
+**`lea_global`**  `u64: var_def_ref, u64: offset`
 * **Stack:** `... -> ..., address: ptr`  
-* **Description:** Calculates the absolute host address `block_FP + local_offset` of a non-local slot (where `local_offset` is read from the definition at execution time) and pushes it. The definition's owning block must be live at the moment of access (no `embed`-fallback — taking the address of a value that has no frame to live in is meaningless). Used when the address of a non-local is needed — e.g. to form a slice `(ptr, length)` referencing a global vector, to pass a non-local by-reference to a foreign (C-ABI) function, or as the base for a subsequent `load_{type}`/`store_{type}` sequence. See §4.5.
+* **Description:** Calculates the absolute host address `block_FP + local_offset + offset` of a targeted non-local slot (where `local_offset` is read from the definition at execution time, shifted by the provided member `offset`) and pushes it. The definition's owning block must be live at the moment of access. There is no `embed`-fallback — taking the address of a value that has no frame to live in is meaningless. Used when the memory address of a non-local field is needed — e.g. to form a slice `(ptr, length)` referencing a global vector, to pass a non-local member by-reference to a foreign (C-ABI) function, or as the base for a subsequent `load_{type}`/`store_{type}` sequence. See §4.5.
 
 **`lea_const`** `u64: pool_offset`
 *   **Stack:** `... -> ..., address: ptr`
@@ -255,13 +255,21 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 
 **`load_{type}`**
 * **Stack:** `..., address: ptr -> ..., value: Word`  
-* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr, blob`  
-* **Description:** Dereferences `address`, reads `sizeof(type)` bytes (for `blob`, the entire Word range up to the next aligned slot), and pushes the value as a normalized Word.
+* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
+* **Description:** Dereferences `address`, reads `sizeof(type)` bytes, and pushes the value as a normalized Word.
+
+**`load_blob`**  `u64: size`
+* **Stack:** `..., address: ptr -> ..., data: Word(s)`  
+* **Description:** Dereferences `address`, reads `size` bytes from memory, and pushes them onto the operand stack. Grows the stack by `ceil(size / 8)` Words to hold the resulting struct/array.
 
 **`store_{type}`**
 * **Stack:** `..., address: ptr, value: Word -> ...`  
-* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr, blob`  
-* **Description:** Writes `value` (low `sizeof(type)` bytes for primitives; `ceil(size/8)` Words for `blob`) to the memory address specified by `address`.
+* **Types:** `i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, ptr`  
+* **Description:** Pops `value` and writes the low `sizeof(type)` bytes of it to the memory address specified by `address`.
+
+**`store_blob`**  `u64: size`
+* **Stack:** `..., address: ptr, data: Word(s) -> ...`  
+* **Description:** Pops `size` bytes (rounded up to a whole number of Words) off the stack and copies them into the memory address specified by `address`.
 
 ---
 
