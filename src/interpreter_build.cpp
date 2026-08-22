@@ -1681,8 +1681,8 @@ namespace Interpreter {
         state->listHeadContinue = patchListHeadNull;
 
         int64_t stride = 1;
-        if (node->stride) {
-            Variable* tmp = unwrap(node->stride);
+        if (node->arg.range->step) {
+            Variable* tmp = unwrap(node->arg.range->step);
             stride = *(int64_t*) &(tmp->value.u64);
         }
 
@@ -1694,8 +1694,8 @@ namespace Interpreter {
                 node->index.var->def->vmOffset : node->index.def->vmOffset;
         }
 
-        if (node->arg.kind == Loop::Arg::ARRAY) {
-            compile(state, node->arg.array);
+        if (node->arg.kind == Loop::Arg::EXPRESSION) {
+            compile(state, node->arg.exp);
             pushOpcode(state, OC_SWAP);
             pushOpcode(state, OC_POP);
         } else {

@@ -433,7 +433,7 @@ namespace Extern {
                     } else if (init->fillVar) {
                         mVar = init->fillVar;
                     } else {
-                        mVar = td->vars[i];
+                        mVar = td->vars[i]->var;
                     }
 
                     uint8_t* mBuff = buff + mInfo->offset;
@@ -683,7 +683,7 @@ namespace Extern::Abi {
                         mVar = init->fillVar;
                     } else {
                         TypeDefinition* td = (TypeDefinition*) ((Type::TypeInfoEx*) sInfo)->astNode;
-                        mVar = td->vars[i];
+                        mVar = td->vars[i]->var;
                     }
 
                     marshal(ast, mInfo->type, mVar, dest + mInfo->offset, TYPE_DEFAULT);

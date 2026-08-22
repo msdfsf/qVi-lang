@@ -606,7 +606,7 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
 
             ctx->indentLevel++;
             for (uint32_t i = 0; i < td->varCount; i++) {
-                Variable* var = td->vars[i];
+                Variable* var = td->vars[i]->var;
                 if (!var) continue;
                 indent(ctx, out);
 

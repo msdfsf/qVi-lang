@@ -150,12 +150,15 @@ if /i "%TARGET_COMPILER%"=="clang-cl" (
     set "FLAGS=/std:c++20 /W0 /wd4530 /D_AMD64_ /DWIN64 /nologo /clang:-fproc-stat-report"
     set "LIBS="
 
+    if /i "%TARGET_PROJECT%"=="test" (
+        set "FLAGS=!FLAGS! /DCONFIG_DISABLE_LOGGING /DCONFIG_ERROR_RECOVERY"
+    )
+
     if /i "%TARGET_MODE%"=="debug" (
         set "FLAGS=!FLAGS! /Zi /Od /Fe"%OUT_BIN%""
     ) else (
         set "FLAGS=!FLAGS! /O2 /Fe"%OUT_BIN%""
     )
-
 ) else (
 
     set "FLAGS=-std=c++20 -w -I"..\%LIB_DIR%""

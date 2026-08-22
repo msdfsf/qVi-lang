@@ -111,7 +111,7 @@ void DArray::get(Container* arr, size_t idx, void* out) {
 
 void* DArray::get(Container* arr, size_t idx) {
 
-    if (idx >= arr->size) errHandler(EM_INDEX);
+    if (idx >= arr->size && idx < 0) return NULL; //errHandler(EM_INDEX);
     return ((char*) arr->buffer) + idx * arr->elementSize;
 
 }

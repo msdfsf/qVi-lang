@@ -853,7 +853,10 @@ _defineMake(VariableAssignment, NT_VARIABLE_ASSIGNMENT);
 void Ast::Node::init(Variable* node) {
     ::init(&node->base);
     node->base.type = NT_VARIABLE;
-    // TODO
+    node->expression = NULL;
+    node->def = NULL;
+    node->value = { 0 };
+    node->name = { 0 };
 }
 _defineMake(Variable, NT_VARIABLE);
 
@@ -912,11 +915,9 @@ void Ast::Node::init(WhileLoop* node) {
 _defineMake(WhileLoop, NT_WHILE_LOOP);
 
 void Ast::Node::init(Loop* node) {
-    node->arg.array = NULL;
-    node->array = NULL;
+    node->arg.exp = NULL;
     node->index.var = NULL;
-    node->stride = NULL;
-    node->condition = NULL;
+    node->item = NULL;
     node->bodyScope = NULL;
     ::init(&node->base);
     node->base.type = NT_LOOP;

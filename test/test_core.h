@@ -1,14 +1,18 @@
 #pragma once
+#define CONFIG_DISABLE_LOGGING
+#define CONFIG_ERROR_RECOVERY
+
+
 #include <cstdint>
 #include <cstring>
 #include <stdio.h>
 #include <stdlib.h>
+#include <setjmp.h>
 #include "../src/ansi_colors.h"
 
 
 
-static int g_totalTests  = 0;
-static int g_failedTests = 0;
+inline jmp_buf gJumpBuffer;
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
@@ -26,10 +30,11 @@ namespace Test {
         uint32_t testsPassed  = 0;
         uint32_t testsFailed  = 0;
 
-        uint32_t currentAssertFailed = 0;
-        uint32_t currentAssertPassed = 0;
-        uint32_t currentAssertMask   = 0;
-        bool     currentTestFailed   = false;
+        uint32_t currentAssertFailed   = 0;
+        uint32_t currentAssertPassed   = 0;
+        uint32_t currentAssertMask     = 0;
+        bool     currentTestFailed     = false;
+        bool     currentTestFailedHard = false;
     };
 
     using Fcn = void (*)(Test::Result* res);
@@ -73,13 +78,15 @@ namespace Test {
 
         for (int i = 0; i < count; i++, mask >>= 1) {
             if (mask & 1) {
-                printf(AC_BOLD_RED "%c " AC_RESET, '0' + i + 1);
+                printf(AC_BOLD_RED "%i " AC_RESET, i + 1);
             } else {
-                printf(AC_BOLD_GREEN "%c " AC_RESET, '0' + i + 1);
+                printf(AC_BOLD_GREEN "%i " AC_RESET, i + 1);
             }
         }
 
-        if (count < assertCount) {
+        if (result->currentTestFailedHard) {
+            printf(AC_BRIGHT_BLACK "?" AC_RESET);
+        } else if (count < assertCount) {
             printf(AC_BRIGHT_BLACK "..." AC_RESET);
         }
 
@@ -101,10 +108,12 @@ namespace Test {
 
 
 
-    inline void assertTrue(Test::Result* result, bool condition) {
+    inline bool assertTrue(Test::Result* result, bool condition) {
         if (condition) {
             result->assertPassed++;
             result->currentAssertPassed++;
+
+            return false;
         } else {
             const int idx = result->currentAssertPassed + result->currentAssertFailed;
             if (idx < maxAssertToDisplay) {
@@ -114,21 +123,38 @@ namespace Test {
             result->assertFailed++;
             result->currentAssertFailed++;
             result->currentTestFailed = true;
+
+            return true;
         }
     }
 
-    inline void assert(bool condition) {
+    inline bool assert(bool condition) {
         return assertTrue(&gResult, condition);
     }
 
-    template<typename T1, typename T2>
-    inline void assertEqual(Test::Result* result, T1 actual, T2 expected) {
-        assertTrue(result, actual == expected);
+    inline void assertOrDie(bool condition) {
+        if (assertTrue(&gResult, condition)) {
+            gResult.currentTestFailedHard = true;
+            longjmp(gJumpBuffer, 1);
+        }
     }
 
     template<typename T1, typename T2>
-    inline void assert(T1 actual, T2 expected) {
+    inline bool assertEqual(Test::Result* result, T1 actual, T2 expected) {
+        return assertTrue(result, actual == expected);
+    }
+
+    template<typename T1, typename T2>
+    inline bool assert(T1 actual, T2 expected) {
         return assertEqual(&gResult, actual, expected);
+    }
+
+    template<typename T1, typename T2>
+    inline void assertOrDie(T1 actual, T2 expected) {
+        if (assertEqual(&gResult, actual, expected)) {
+            gResult.currentTestFailedHard = true;
+            longjmp(gJumpBuffer, 1);
+        }
     }
 
 
@@ -138,12 +164,15 @@ namespace Test {
         result->currentTestFailed   = 0;
         result->currentAssertFailed = 0;
         result->currentAssertPassed = 0;
+        gResult.currentTestFailedHard = false;
     }
 
     inline void runTestCase(const Test::Case* testCase, Test::Result* result) {
         _clearCurrentResult(result);
 
-        testCase->fcn(result);
+        if (setjmp(gJumpBuffer) == 0) {
+            testCase->fcn(result);
+        }
 
         if (result->currentTestFailed) {
             _writeStatusLine(":FAIL", testCase->name, AC_BOLD_RED);

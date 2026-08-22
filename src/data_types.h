@@ -67,6 +67,14 @@ namespace Type {
         DT_BOOL = DT_U64,
     };
 
+    enum Qualifier : uint8_t {
+        Q_NONE,
+        Q_EMBED = 1 << 1,
+        Q_CONST = 1 << 2,
+        Q_FLUID = 1 << 3,
+        Q_ALLOC = 1 << 4
+    };
+
     // Expected to be used during resolving to signal status
     enum ResolutionStatus : int64_t {
         RS_CONCRETE  = 0,

@@ -32,6 +32,9 @@ enum OperatorEnum : uint8_t {
     OP_MEMBER_SELECTION,
     OP_DEREFERENCE_MEMBER_SELECTION, // META operator
 
+    OP_CAST_BIT,
+    OP_CAST_STATIC,
+
     OP_MULTIPLICATION,
     OP_DIVISION,
     OP_MODULO,
@@ -82,6 +85,9 @@ constexpr Operator operators[] {
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_CALL
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_MEMBER_SELECTION
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_DEREF_MEMBER_SELECTION
+
+    { .rank = 1, .flag = IS_BINARY | IS_TWO_CHAR }, // OP_BIT_CAST
+    { .rank = 1, .flag = IS_BINARY | IS_TWO_CHAR }, // OP_STATIC_CAST
 
     { .rank = 2, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_MULTIPLICATION
     { .rank = 2, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_DIVISION

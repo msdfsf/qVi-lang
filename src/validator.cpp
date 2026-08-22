@@ -107,6 +107,22 @@ namespace Validator {
         return true;
     }
 
+    bool checkUniqueNames(SyntaxNode** arr, uint32_t len) {
+        // TODO : later use set for counts >= 20 or something
+        for (int i = 0; i < len; i++) {
+            SyntaxNode* node = arr[i];
+            String src = Ast::Node::getName(node);
+
+            for (int j = i; j < len; j++) {
+                SyntaxNode* node = arr[i];
+                String dest = Ast::Node::getName(node);
+                if (cstrcmp(src, dest)) return false;
+            }
+        }
+
+        return true;
+    }
+
     bool checkUniqueNames(DArray::Container* arr) {
         return checkUniqueNames((Variable**) arr->buffer, arr->size);
     }
@@ -902,13 +918,13 @@ namespace Validator {
 
         const int isUnion = td->base.type == NT_UNION;
 
-        if (checkUniqueNames(td->vars, td->varCount) != Err::OK) {
+        if (checkUniqueNames((SyntaxNode**) td->vars, td->varCount) != Err::OK) {
             Diag::report(ctx->unit->ast, td->base.span, Err::INVALID_ATTRIBUTE_NAME);
             return Err::INVALID_ATTRIBUTE_NAME;
         }
 
         for (int i = 0; i < td->varCount; i++) {
-            Variable* const var = td->vars[i];
+            Variable* const var = td->vars[i]->var;
 
             if (isUnion && (var->expression || var->value.hasValue)) {
                 Diag::report(ctx->unit->ast, var->base.span, Err::INVALID_RVALUE, "Default values are not allowed within union initialization!", var->base.span, var->name.len);
@@ -917,7 +933,7 @@ namespace Validator {
         }
 
         for (uint32_t i = 0; i < td->varCount; i++) {
-            err = validate(ctx, td->vars[i]->def);
+            err = validate(ctx, td->vars[i]);
             if (err != Err::OK) return err;
         }
 
@@ -1212,7 +1228,7 @@ namespace Validator {
                         mInfo = sInfo->members + i;
                     }
 
-                    applyVariableLinkage(ctx, var, (SyntaxNode*) td->vars[i]->def);
+                    applyVariableLinkage(ctx, var, (SyntaxNode*) td->vars[i]);
 
                     err = validate(ctx, var, mInfo->type);
                     if (err != Err::OK) return err;
@@ -1225,7 +1241,7 @@ namespace Validator {
                     for (; i < sInfo->memberCount; i++) {
                         Type::StructMemberInfo* mInfo = sInfo->members + i;
 
-                        applyVariableLinkage(ctx, init->fillVar, (SyntaxNode*) td->vars[i]->def);
+                        applyVariableLinkage(ctx, init->fillVar, (SyntaxNode*) td->vars[i]);
 
                         err = validate(ctx, init->fillVar, mInfo->type);
                         if (err != Err::OK) return err;
@@ -1456,11 +1472,11 @@ namespace Validator {
         if (!node) return Err::OK;
 
         // Arg
-        if (node->arg.kind == Loop::Arg::ARRAY) {
-            err = validate(ctx, node->arg.array);
+        if (node->arg.kind == Loop::Arg::EXPRESSION) {
+            err = validate(ctx, node->arg.exp);
             if (err != Err::OK) return err;
 
-            Type::Kind kind = node->arg.array->value.type->kind;
+            Type::Kind kind = node->arg.exp->value.type->kind;
             if (Type::isArrayLike(kind)) {
                 if (kind != Type::DT_ERROR) {
                     Diag::report(ctx->unit->ast, node->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
@@ -1474,11 +1490,11 @@ namespace Validator {
         }
 
         // As
-        if (node->array) {
-            if (node->arg.kind != Loop::Arg::ARRAY) {
+        if (node->item) {
+            if (node->arg.kind != Loop::Arg::EXPRESSION) {
                 // TODO : error
             }
-            aliasVariable(node->array, node->arg.array);
+            // aliasVariable(node->item, node->arg.exp);
         }
 
         if (node->index.var) {
@@ -1494,6 +1510,7 @@ namespace Validator {
         }
 
         // By
+        /*
         if (node->stride) {
             err = validate(ctx, node->stride);
             if (!Type::isInt(node->stride->value.type)) {
@@ -1515,6 +1532,7 @@ namespace Validator {
                 return Err::INVALID_DATA_TYPE;
             }
         }
+        */
 
         // Body
         if (node->bodyScope) {
@@ -2226,7 +2244,7 @@ namespace Validator {
         uint64_t align  = 0;
 
         for (int i = 0; i < td->varCount; i++) {
-            Variable* var = td->vars[i];
+            Variable* var = td->vars[i]->var;
 
             Type::TypeInfo* mInfo = var->value.type;
             sInfo->members[i].type = mInfo;

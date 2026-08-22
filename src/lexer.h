@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "globals.h"
 #include "operators.h"
 #include "keywords.h"
 #include "data_types.h"
@@ -66,64 +67,46 @@ namespace Lex {
     static const char* KWS_ARRAY_LENGTH = "length";
     static const char* KWS_ARRAY_SIZE = "size";
 
-    static const char* KWS_VOID = "void";
-    static const char* KWS_INT = "int";
-    static const char* KWS_I8 = "i8";
-    static const char* KWS_I16 = "i16";
-    static const char* KWS_I32 = "i32";
-    static const char* KWS_I64 = "i64";
-    static const char* KWS_U8 = "u8";
-    static const char* KWS_U16 = "u16";
-    static const char* KWS_U32 = "u32";
-    static const char* KWS_U64 = "u64";
-    static const char* KWS_F32 = "f32";
-    static const char* KWS_F64 = "f64";
-    static const char* KWS_CONST = "const";
-    static const char* KWS_EMBED = "embed";
-    static const char* KWS_MUTON = "muton";
-    static const char* KWS_AUTON = "auton";
-    static const char* KWS_FCN = "fcn";
-    static const char* KWS_DEF = "def";
-    static const char* KWS_STRUCT = "struct";
-    static const char* KWS_UNION = "union";
-    static const char* KWS_IF = "if";
-    static const char* KWS_ELSE = "else";
-    static const char* KWS_WHILE = "while";
-    static const char* KWS_LOOP = "loop";
-    static const char* KWS_WHEN = "when";
-    static const char* KWS_CASE = "case";
-    static const char* KWS_GOTO = "goto";
-    static const char* KWS_ENUM = "enum";
-    static const char* KWS_RETURN = "return";
-    static const char* KWS_CONTINUE = "continue";
-    static const char* KWS_BREAK = "break";
-    static const char* KWS_USING = "using";
-    static const char* KWS_SCOPE = "scope";
-    static const char* KWS_NAMESPACE = "namespace";
-    static const char* KWS_ALLOC = "alloc";
-    static const char* KWS_FREE = "free";
-    static const char* KWS_ERROR = "error";
-    static const char* KWS_CATCH = "catch";
-    static const char* KWS_IMPORT = "import";
-    static const char* KWS_FROM = "from";
-    static const char* KWS_TRUE = "true";
-    static const char* KWS_FALSE = "false";
-    static const char* KWS_AS = "as";
-    static const char* KWS_BY = "by";
-    static const char* KWS_NULL = "null";
+    inline const char* KWS_VOID = "void";
+    inline const char* KWS_I8 = "i8";
+    inline const char* KWS_I16 = "i16";
+    inline const char* KWS_I32 = "i32";
+    inline const char* KWS_I64 = "i64";
+    inline const char* KWS_U8 = "u8";
+    inline const char* KWS_U16 = "u16";
+    inline const char* KWS_U32 = "u32";
+    inline const char* KWS_U64 = "u64";
+    inline const char* KWS_F32 = "f32";
+    inline const char* KWS_F64 = "f64";
+    inline const char* KWS_CONST = "const";
+    inline const char* KWS_EMBED = "embed";
+    inline const char* KWS_FLUID = "fluid";
+    inline const char* KWS_STRUCT = "struct";
+    inline const char* KWS_UNION = "union";
+    inline const char* KWS_IF = "if";
+    inline const char* KWS_ELSE = "else";
+    inline const char* KWS_LOOP = "loop";
+    inline const char* KWS_WHEN = "when";
+    inline const char* KWS_CASE = "case";
+    inline const char* KWS_ENUM = "enum";
+    inline const char* KWS_RETURN = "return";
+    inline const char* KWS_CONTINUE = "continue";
+    inline const char* KWS_BREAK = "break";
+    inline const char* KWS_USING = "using";
+    inline const char* KWS_ALLOC = "alloc";
+    inline const char* KWS_FREE = "free";
+    inline const char* KWS_ERROR = "error";
+    inline const char* KWS_CATCH = "catch";
+    inline const char* KWS_IMPORT = "import";
+    inline const char* KWS_FROM = "from";
+    inline const char* KWS_AS = "as";
+    inline const char* KWS_AT = "at";
+    inline const char* KWS_TRUE = "true";
+    inline const char* KWS_FALSE = "false";
+    inline const char* KWS_NULL = "null";
 
-    static const char* CDS_NONE = "none";
-    static const char* CDS_TEST = "test";
-
-    enum Directive {
-        CD_NONE,
-        CD_TEST,
-        CD_COUNT
-    };
-
-    static const char* keywordStringTable[KW_COUNT] = {
+    inline const char* keywordStringTable[KW_COUNT] = {
         KWS_VOID,
-        KWS_INT,
         KWS_I8,
         KWS_I16,
         KWS_I32,
@@ -136,98 +119,92 @@ namespace Lex {
         KWS_F64,
         KWS_CONST,
         KWS_EMBED,
-        KWS_MUTON,
-        KWS_AUTON,
-        KWS_FCN,
-        KWS_DEF,
+        KWS_FLUID,
         KWS_STRUCT,
         KWS_UNION,
         KWS_IF,
         KWS_ELSE,
-        KWS_WHILE,
         KWS_LOOP,
         KWS_WHEN,
         KWS_CASE,
-        KWS_GOTO,
         KWS_ENUM,
         KWS_RETURN,
         KWS_CONTINUE,
         KWS_BREAK,
         KWS_USING,
-        KWS_SCOPE,
-        KWS_NAMESPACE,
         KWS_ALLOC,
         KWS_FREE,
         KWS_ERROR,
         KWS_CATCH,
         KWS_IMPORT,
         KWS_FROM,
+        KWS_AS,
+        KWS_AT,
         KWS_TRUE,
         KWS_FALSE,
-        KWS_AS,
-        KWS_BY,
         KWS_NULL,
+    };
+
+    constexpr int KW_TABLE_SIZE = 51;
+    constexpr std::array<int, KW_TABLE_SIZE> makeKeywordTable() {
+        std::array<int, KW_TABLE_SIZE> table = {};
+
+        table[0] = KW_AT;
+        table[1] = KW_NULL;
+        table[2] = KW_F64;
+        table[3] = KW_U8;
+        table[4] = KW_I8;
+        table[6] = KW_U64;
+        table[7] = KW_FROM;
+        table[8] = KW_I64;
+        table[9] = KW_TRUE;
+        table[10] = KW_BREAK;
+        table[11] = KW_ERROR;
+        table[12] = KW_AS;
+        table[13] = KW_ELSE;
+        table[14] = KW_ALLOC;
+        table[16] = KW_IMPORT;
+        table[17] = KW_U16;
+        table[20] = KW_FREE;
+        table[23] = KW_LOOP;
+        table[24] = KW_UNION;
+        table[28] = KW_WHEN;
+        table[29] = KW_EMBED;
+        table[30] = KW_RETURN;
+        table[31] = KW_FALSE;
+        table[33] = KW_CATCH;
+        table[34] = KW_ENUM;
+        table[36] = KW_IF;
+        table[38] = KW_I16;
+        table[39] = KW_F32;
+        table[40] = KW_U32;
+        table[42] = KW_CONST;
+        table[43] = KW_CONTINUE;
+        table[44] = KW_I32;
+        table[46] = KW_FLUID;
+        table[47] = KW_STRUCT;
+        table[48] = KW_VOID;
+        table[49] = KW_USING;
+        table[50] = KW_CASE;
+
+        return table;
+    }
+
+    constexpr auto keywordTable = makeKeywordTable();
+
+    static const char* CDS_NONE = "none";
+    static const char* CDS_TEST = "test";
+
+    enum Directive {
+        CD_NONE,
+        CD_TEST,
+        CD_COUNT
     };
 
     static const char* directivesStringTable[CD_COUNT] = {
         CDS_NONE,
         CDS_TEST,
     };
-
-    constexpr int KW_TABLE_SIZE = 83;
-    constexpr std::array<int, KW_TABLE_SIZE> makeKeywordTable() {
-        std::array<int, KW_TABLE_SIZE> table = {};
-
-        table[0] = KW_CATCH;
-        table[1] = KW_AUTON;
-        table[7] = KW_FALSE;
-        table[8] = KW_CASE;
-        table[11] = KW_CONTINUE;
-        table[13] = KW_FROM;
-        table[14] = KW_ALLOC;
-        table[15] = KW_U16;
-        table[16] = KW_ELSE;
-        table[17] = KW_UNION;
-        table[18] = KW_ENUM;
-        table[19] = KW_I8;
-        table[21] = KW_CONST;
-        table[22] = KW_MUTON;
-        table[23] = KW_FREE;
-        table[26] = KW_WHILE;
-        table[27] = KW_SCOPE;
-        table[28] = KW_GOTO;
-        table[31] = KW_I16;
-        table[34] = KW_WHEN;
-        table[36] = KW_EMBED;
-        table[37] = KW_DEF;
-        table[38] = KW_INT;
-        table[40] = KW_BY;
-        table[47] = KW_BREAK;
-        table[48] = KW_NULL;
-        table[50] = KW_LOOP;
-        table[51] = KW_ERROR;
-        table[52] = KW_I32;
-        table[53] = KW_U64;
-        table[54] = KW_I64;
-        table[56] = KW_U8;
-        table[57] = KW_NAMESPACE;
-        table[59] = KW_USING;
-        table[60] = KW_STRUCT;
-        table[61] = KW_AS;
-        table[62] = KW_FCN;
-        table[63] = KW_F32;
-        table[69] = KW_VOID;
-        table[72] = KW_U32;
-        table[73] = KW_IF;
-        table[77] = KW_TRUE;
-        table[78] = KW_IMPORT;
-        table[81] = KW_RETURN;
-        table[82] = KW_F64;
-
-        return table;
-    }
-
-    constexpr auto keywordTable = makeKeywordTable();
 
     constexpr int CD_TABLE_SIZE = 1;
     static const int directivesTable[CD_TABLE_SIZE] = {
@@ -253,7 +230,6 @@ namespace Lex {
         TK_RAW,
         TK_PARENTHESIS_BEGIN,
         TK_PARENTHESIS_END,
-        TK_ARROW,
         TK_SKIP,
         TK_FILE,
 
@@ -292,6 +268,8 @@ namespace Lex {
         TK_OP_CONCATENATION,
         TK_OP_MEMBER_SELECTION,
         TK_OP_SUBSCRIPT,
+        TK_OP_ARROW,
+        TK_OP_ARROW_FAT,
 
         TK_OP_END,
 
@@ -311,53 +289,9 @@ namespace Lex {
     enum TokenDetail : int32_t {
         TD_NONE = -1,
 
-        TD_KW_VOID,
-        TD_KW_INT,
-        TD_KW_I8,
-        TD_KW_I16,
-        TD_KW_I32,
-        TD_KW_I64,
-        TD_KW_U8,
-        TD_KW_U16,
-        TD_KW_U32,
-        TD_KW_U64,
-        TD_KW_F32,
-        TD_KW_F64, // TODO : add last data type identifier
-        TD_KW_CONST,
-        TD_KW_EMBED,
-        TD_KW_MUTON,
-        TD_KW_AUTON,
-        TD_KW_FCN,
-        TD_KW_DEF,
-        TD_KW_STRUCT,
-        TD_KW_UNION,
-        TD_KW_IF,
-        TD_KW_ELSE,
-        TD_KW_WHILE,
-        TD_KW_LOOP,
-        TD_KW_WHEN,
-        TD_KW_CASE,
-        TD_KW_GOTO,
-        TD_KW_ENUM,
-        TD_KW_RETURN,
-        TD_KW_CONTINUE,
-        TD_KW_BREAK,
-        TD_KW_USING,
-        TD_KW_SCOPE,
-        TD_KW_NAMESPACE,
-        TD_KW_ALLOC,
-        TD_KW_FREE,
-        TD_KW_ERROR,
-        TD_KW_CATCH,
-        TD_KW_IMPORT,
-        TD_KW_FROM,
-        TD_KW_TRUE,
-        TD_KW_FALSE,
-        TD_KW_AS,
-        TD_KW_BY,
-        TD_KW_NULL,
-
-        TD_CD_BEGIN,
+        TD_KW_BEGIN = KW_VOID,
+        // Keyword enum values
+        TD_CD_BEGIN = KW_COUNT,
         TD_CD_TEST,
         TD_CD_END,
 
@@ -422,9 +356,7 @@ namespace Lex {
     }
 
     static inline Type::Kind toDtype(Keyword val) {
-        if (val == KW_FCN) return Type::DT_FUNCTION;
-        if (val == KW_INT) return Type::DT_I64;
-        return (Type::Kind) (val - KW_INT);
+        return (Type::Kind) (val - KW_VOID);
     }
 
     // TODO : make keyword work, and move this to separate
@@ -439,12 +371,12 @@ namespace Lex {
             case TD_DT_F64: return Type::DT_F64;
             case TD_DT_I64: return Type::DT_I64;
             case TD_DT_U64: return Type::DT_U64;
-            case TD_KW_FCN: return Type::DT_FUNCTION;
             default: return Type::DT_VOID;
         }
 
     }
 
+    // TODO: clear this operator madness
     static inline OperatorEnum toOperator(TokenValue val) {
         return (OperatorEnum) val.ival;
     }
@@ -514,6 +446,8 @@ namespace Lex {
             case TK_OP_SHIFT_RIGHT              : return OP_SHIFT_RIGHT;
             case TK_OP_SHIFT_LEFT               : return OP_SHIFT_LEFT;
             case TK_ARRAY_BEGIN                 : return OP_SUBSCRIPT;
+            case TK_OP_ARROW                    : return OP_CAST_STATIC;
+            case TK_OP_ARROW_FAT                : return OP_CAST_BIT;
             default                             : return OP_NONE;
 
         }
@@ -525,17 +459,33 @@ namespace Lex {
     }
 
     static inline int isDtype(TokenDetail val) {
-        return ((val >= TD_KW_VOID && val <= TD_KW_F64) || val == Lex::TD_KW_FCN);
+        return (val >= KW_VOID && val <= KW_F64);
     }
 
     static inline int isDtype(Token val) {
         return ((val.kind == Lex::TK_KEYWORD) && isDtype((TokenDetail) val.detail));
     }
 
-    static inline int isInt(Keyword val) {
-        return (val >= KW_INT && val <= KW_U64);
+    inline bool isQualifier(Token val) {
+        return val.detail == KW_EMBED ||
+               val.detail == KW_CONST ||
+               val.detail == KW_FLUID ||
+               val.detail == KW_ALLOC;
     }
 
+    inline Type::Qualifier toQualifier(Keyword val) {
+        switch (val) {
+            case KW_EMBED: return Type::Qualifier::Q_EMBED;
+            case KW_CONST: return Type::Qualifier::Q_CONST;
+            case KW_FLUID: return Type::Qualifier::Q_FLUID;
+            case KW_ALLOC: return Type::Qualifier::Q_ALLOC;
+            default: return Type::Qualifier::Q_NONE;
+        }
+    }
+
+    static inline int isInt(Keyword val) {
+        return (val >= KW_I8 && val <= KW_U64);
+    }
     static inline int isOperator(Token val) {
         return (val.kind > TK_OP_BEGIN && val.kind < TK_OP_END);
     }

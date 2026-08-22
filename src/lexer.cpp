@@ -39,6 +39,7 @@ namespace Lex {
         Arena::release(&stringStack);
     }
 
+    // TODO: make general str(Token token), also unite these functions to 'str'
     const char* toStr(TokenKind token) {
 
         switch (token) {
@@ -53,7 +54,8 @@ namespace Lex {
             case TK_OP_INCREMENT: return "++";
             case TK_OP_PLUS: return "+";
             case TK_OP_DECREMENT: return "--";
-            case TK_ARROW: return "->";
+            case TK_OP_ARROW: return "->";
+            case TK_OP_ARROW_FAT: return "=>";
             case TK_OP_MINUS: return "-";
             case TK_OP_MULTIPLICATION: return "*";
             case TK_OP_DIVISION: return "/";
@@ -108,11 +110,11 @@ namespace Lex {
     }
 
     uint32_t hash(const char* str, int len) {
-        uint32_t hash = 0x811C9DC5 ^ 0x4CF6218A;
+        uint32_t hash = 0x811C9DC5 ^ 0x558355AF;
         int idx = 0;
         while (idx < len) {
-            hash = hash ^ (uint8_t) str[idx++];
-            hash = hash * 0x01000193;
+            hash ^= (uint8_t) str[idx++];
+            hash *= 0x01000193;
         }
         return hash;
     }
@@ -551,7 +553,7 @@ namespace Lex {
         } else {
             int utf8Len;
             int utf8BytesPerChar;
-            char* utf8Str = Strings::encodeUtf8(init->rawData.buff, &utf8Len, &utf8BytesPerChar, 0);
+            char* utf8Str = Strings::encodeUtf8(init->rawData, &utf8Len, &utf8BytesPerChar, 0);
 
             if (utf8BytesPerChar != 1) {
                 init->rawData.buff = utf8Str;
@@ -798,7 +800,7 @@ namespace Lex {
                     token = { .kind = TK_OP_DECREMENT };
                 } else if (str[startPos.idx + 1] == '>') {
                     len = 2;
-                    token = { .kind = TK_ARROW };
+                    token = { .kind = TK_OP_ARROW };
                 } else {
                     token = { .kind = TK_OP_MINUS };
                 }
@@ -878,6 +880,9 @@ namespace Lex {
                 if (str[startPos.idx + 1] == '=') {
                     len = 2;
                     token = { .kind = TK_OP_BOOL_EQUAL };
+                } else if (str[startPos.idx + 1] == '>') {
+                    len = 2;
+                    token = { .kind = TK_OP_ARROW_FAT };
                 } else {
                     token = { .kind = TK_EQUAL };
                 }

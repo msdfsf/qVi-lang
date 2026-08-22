@@ -403,6 +403,7 @@ struct Catch {
     Scope* scope;
 };
 
+// Meta expression, cast is a binary operator
 struct Cast {
     Expression base;
 
@@ -454,7 +455,8 @@ struct TypeDecorator {
 };
 
 struct TypeSpecifier {
-    Type::Kind baseType;
+    Type::Kind      baseType;
+    Type::Qualifier qualifier;
 
     // DT_UNDEFINED if baseName
     // DT_FUNCTION if baseFcn
@@ -588,29 +590,23 @@ struct Loop {
     // Argument
     struct Arg {
         union {
-            Variable*        array;
+            Variable*        exp;
             RangeExpression* range;
         };
 
         enum Kind {
-            ARRAY,
+            EXPRESSION,
             RANGE,
         } kind;
     } arg;
 
-    // As Clause
-    VariableDefinition* array;
-    // TODO : change this, as its awkward to access
+    // We are expression array[i] or array + i
+    Variable* item;
+    // We can be either reference to existing index or new one.
     union {
         Variable*           var;
         VariableDefinition* def;
     } index;
-
-    // By Clause
-    Variable* stride;
-
-    // While Clause
-    Variable* condition;
 };
 
 struct ReturnStatement {
@@ -655,8 +651,9 @@ struct TypeDefinition {
 
     Type::TypeInfoEx* type;
 
-    Variable** vars;
-    uint32_t   varCount;
+    // TODO: rename
+    VariableDefinition** vars;
+    uint32_t             varCount;
 };
 
 // TODO : unite under TypeDefinition?
