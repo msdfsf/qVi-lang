@@ -82,10 +82,8 @@ namespace Compiler {
         // --- INITIALIZATION
         //
 
-        Arena::Container arena;
-        alc = &arena;
-        initAlloc(&arena);
-        initNAlloc(&arena);
+        allocInit();
+        nallocInit();
 
         Type::init();
         Ast::init();

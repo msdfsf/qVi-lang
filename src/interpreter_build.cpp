@@ -235,7 +235,7 @@ namespace Interpreter {
         }
 
         // store debug info
-        LocalVarInfo* header = (LocalVarInfo*) alloc(alc, sizeof(LocalVarInfo));
+        LocalVarInfo* header = alloc<LocalVarInfo>();
         header->var = var;
         header->size = type->size;
         header->align = type->align;
@@ -1818,23 +1818,23 @@ namespace Interpreter {
 
     void commitCompileState(CompilerState* state, ExeBlock* exe, SyntaxNode* target) {
         exe->bytecodeSize = state->bytecode.logicalPos;
-        exe->bytecode = (uint8_t*) alloc(alc, Arena::getFlatSize(&state->bytecode), 1);
+        exe->bytecode = (uint8_t*) alloc(Arena::getFlatSize(&state->bytecode), 1);
         Arena::flatCopy(&state->bytecode, exe->bytecode);
 
         exe->localsSize = state->locals.logicalPos;
-        exe->locals = (uint8_t*) alloc(alc, Arena::getFlatSize(&state->locals), state->maxAlign);
+        exe->locals = (uint8_t*) alloc(Arena::getFlatSize(&state->locals), state->maxAlign);
         memset(exe->locals, 0, exe->localsSize);
         Arena::flatCopy(&state->locals, (uint8_t*) exe->locals);
 
         exe->rawDataSize = state->rawData.logicalPos;
-        exe->rawData = (uint8_t*) alloc(alc, Arena::getFlatSize(&state->rawData), 1);
+        exe->rawData = (uint8_t*) alloc(Arena::getFlatSize(&state->rawData), 1);
         Arena::flatCopy(&state->rawData, exe->rawData);
 
         exe->node = target;
         exe->localsInfoMap = OrderedDict::tightCopy(&state->localsInfoMap);
 
         exe->linesSize = state->lines.size;
-        exe->lines = (LineInfo*) alloc(alc, exe->linesSize * sizeof(LineInfo));
+        exe->lines = alloc<LineInfo>(exe->linesSize);
         memcpy(exe->lines, state->lines.buffer, exe->linesSize * sizeof(LineInfo));
 
         exe->liveFp = NULL;

@@ -15,7 +15,7 @@ static thread_local Span  span;
 inline void gLexerPreSuite() {
     //initAlloc(&a);
     //alc = &arena;
-    initNAlloc(alc);
+    nallocInit();
 }
 
 inline void gLexerPostSuite() {

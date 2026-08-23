@@ -1,6 +1,6 @@
+#include "allocator.h"
 #include "data_types.h"
 #include "diagnostic.h"
-#include "dynamic_arena.h"
 #include "file_system.h"
 #include "globals.h"
 #include "interpreter.h"
@@ -23,9 +23,7 @@
 // TODO : linux version
 namespace Extern {
 
-    // TODO : be able to use allocator here instead of arena
-    //        for now not universal...
-    String utf8ToWChar(Arena::Container* arena, String str) {
+    String utf8ToWChar(String str) {
         int wcharCount = MultiByteToWideChar(
             CP_UTF8,
             0,
@@ -39,11 +37,8 @@ namespace Extern {
             return String { NULL, 0 };
         }
 
-        wchar_t* result = (wchar_t*) Arena::push(
-            arena,
-            wcharCount * sizeof(wchar_t),
-            sizeof(wchar_t)
-        );
+        // TODO:
+        wchar_t* result = (wchar_t*) alloc<wchar_t*>(wcharCount);
 
         int converted = MultiByteToWideChar(
             CP_UTF8,
@@ -59,7 +54,7 @@ namespace Extern {
             String { (char*) result, wcharCount * sizeof(wchar_t) };
     }
 
-    String wcharToUtf8(Arena::Container* arena, String str) {
+    String wcharToUtf8(String str) {
         int utf8Size = WideCharToMultiByte(
             CP_UTF8,
             0,
@@ -75,11 +70,8 @@ namespace Extern {
             return String { NULL, 0 };
         }
 
-        char* result = (char*) Arena::push(
-            arena,
-            utf8Size,
-            1
-        );
+        // TODO
+        char* result = (char*) alloc<char>(utf8Size);
 
         int converted = WideCharToMultiByte(
             CP_UTF8,
@@ -97,8 +89,8 @@ namespace Extern {
             String { result, (uint64_t) utf8Size };
     }
 
-    char* toCString(Arena::Container* arena, String str) {
-        char* cstr = (char*) Arena::push(arena, str.len + 1);
+    char* toCString(String str) {
+        char* cstr = alloc<char>(str.len + 1);
 
         memcpy(cstr, str.buff, str.len);
         cstr[str.len] = '\0';
@@ -172,11 +164,9 @@ namespace Extern {
 
     Err::Err loadLibrary(AstContext* ast, String name, LibraryLoadLevel level, LibraryHandle* out) {
         HMODULE hnd = NULL;
+        AllocatorMarker aMarker = allocMark();
 
-        // TODO
-        Arena::Container* stringArena = alc;
-
-        String wname = utf8ToWChar(stringArena, name);
+        String wname = utf8ToWChar(name);
 
         if (level == LL_INSPECT) {
             hnd = LoadLibraryExW((wchar_t*) wname.buff, NULL,
@@ -205,7 +195,7 @@ namespace Extern {
             return Err::LIBRARY_LOAD_FAILED;
         }
 
-        wchar_t* fullPath = (wchar_t*) Arena::push(stringArena, FileSystem::MAX_FILE_PATH);
+        wchar_t* fullPath = (wchar_t*) alloc<wchar_t>(FileSystem::MAX_FILE_PATH);
         DWORD resultSize = GetModuleFileNameW(hnd, fullPath, FileSystem::MAX_FILE_PATH);
         DWORD errCode = GetLastError();
         if (resultSize == 0 || errCode == ERROR_INSUFFICIENT_BUFFER) {
@@ -222,8 +212,7 @@ namespace Extern {
                 name.len, name.buff, osErrBuff
             );
 
-            Arena::rollback(stringArena, fullPath);
-
+            allocRollback(aMarker);
             return Err::UNEXPECTED_ERROR;
         }
 
@@ -251,8 +240,7 @@ namespace Extern {
                 fullPath, osErrBuff
             );
 
-            Arena::rollback(stringArena, fullPath);
-
+            allocRollback(aMarker);
             return Err::UNEXPECTED_ERROR;
         }
 
@@ -275,8 +263,7 @@ namespace Extern {
                 fullPath, osErrBuff
             );
 
-            Arena::rollback(stringArena, fullPath);
-
+            allocRollback(aMarker);
             return Err::UNEXPECTED_ERROR;
         }
 
@@ -292,9 +279,10 @@ namespace Extern {
         LibrarySlot* libSlot = (LibrarySlot*) Set::find(&gLibSet, (uint64_t) &libId);
 
         if (!libSlot) {
-            libSlot = (LibrarySlot*) alloc(alc, sizeof(LibrarySlot));
+            // TODO
+            libSlot = alloc<LibrarySlot>();
             libSlot->id = libId;
-            libSlot->lib.dllPath = wcharToUtf8(alc, String { (char*) fullPath, resultSize });
+            libSlot->lib.dllPath = wcharToUtf8(String { (char*) fullPath, resultSize });
             libSlot->lib.osHandle = (void*) hnd;
             libSlot->lib.loadLevel = level;
 
@@ -311,8 +299,6 @@ namespace Extern {
                     unlockLibSet();
                     formatOsError(GetLastError(), osErrBuff, sizeof(osErrBuff));
 
-                    Arena::rollback(stringArena, wname.len * sizeof(wchar_t));
-
                     Diag::report(ast, NULL, Err::LIBRARY_LOAD_FAILED,
                         Diag::Format{
                             "Failed to initialize native library for compile-time execution.\n"
@@ -323,6 +309,7 @@ namespace Extern {
                         libSlot->lib.dllPath.len, libSlot->lib.dllPath.buff, osErrBuff
                     );
 
+                    allocRollback(aMarker);
                     return Err::LIBRARY_LOAD_FAILED;
                 }
             }
@@ -335,19 +322,16 @@ namespace Extern {
 
         unlockLibSet();
 
-        // TODO
-        // Arena::rollback(stringArena, fullPath);
-
+        allocRollback(aMarker);
         return Err::OK;
     }
 
     Err::Err resolveFunction(AstContext* ast, Function* fcn) {
+        Err::Err err = Err::OK;
         Library* lib = fcn->lib;
+        AllocatorMarker aMarker = allocMark();
 
-        // TODO
-        Arena::Container* stringArena = alc;
-
-        char* cstr = toCString(stringArena, String { fcn->name.buff, fcn->name.len });
+        char* cstr = toCString(String { fcn->name.buff, fcn->name.len });
         FARPROC addr = GetProcAddress((HMODULE) lib->osHandle, cstr);
         if (!addr) {
             formatOsError(GetLastError(), osErrBuff, sizeof(osErrBuff));
@@ -365,17 +349,15 @@ namespace Extern {
                 osErrBuff
             );
 
-            return Err::SYMBOL_NOT_FOUND;
+            err = Err::SYMBOL_NOT_FOUND;
+        } else {
+            if (lib->loadLevel == LL_EXECUTE) {
+                fcn->externAddress = (void*) addr;
+            }
         }
 
-        if (lib->loadLevel == LL_EXECUTE) {
-            fcn->externAddress = (void*) addr;
-        }
-
-        // TODO
-        // Arena::rollback(stringArena, cstr);
-
-        return Err::OK;
+        allocRollback(aMarker);
+        return err;
     }
 
     Err::Err VariableToStack(AstContext* ast, uint8_t* buff, int64_t buffSize, Variable* var) {
@@ -499,7 +481,7 @@ namespace Extern {
         uint32_t iRegUsed = 0;
         uint32_t fRegUsed = 0;
 
-        Abi::Arg* abiArgs = (Abi::Arg*) alloc(alc, sizeof(Abi::Arg) * argCount);
+        Abi::Arg* abiArgs = alloc<Abi::Arg>(argCount);
         for (uint32_t i = 0; i < argCount; i++) {
             Value* src = &args[i]->var->value;
             Abi::Arg* dest = abiArgs + i;
@@ -532,7 +514,7 @@ namespace Extern {
         }
 
         // prepare and cache ctx
-        Abi::CallContext* abiCtx = (Abi::CallContext*) alloc(alc, sizeof(Abi::CallContext));
+        Abi::CallContext* abiCtx = alloc<Abi::CallContext>();
         abiCtx->args = abiArgs;
         abiCtx->argCount = argCount;
         abiCtx->target = fcn->externAddress;
@@ -823,7 +805,7 @@ namespace Extern::Abi {
 
                 TypeInitialization* init = Ast::Node::makeTypeInitialization();
                 init->attributeCount = sInfo->memberCount;
-                init->attributes = (Variable**) alloc(alc, sizeof(Variable*) * sInfo->memberCount);
+                init->attributes = alloc<Variable*>(sInfo->memberCount);
 
                 for (uint32_t i = 0; i < sInfo->memberCount; i++) {
                     Type::StructMemberInfo* mType = sInfo->members + i;
@@ -858,7 +840,7 @@ namespace Extern::Abi {
                 TypeInitialization* init = Ast::Node::makeTypeInitialization();
                 init->attributeCount = 1;
                 init->attributes = (Variable**) alloc(alc, sizeof(Variable*));
-                init->idxs = (int*) alloc(alc, sizeof(int));
+                init->idxs = alloc<int>();
                 init->idxs[0] = 0;
 
                 Type::StructMemberInfo* mType = uType->members;
@@ -886,7 +868,7 @@ namespace Extern::Abi {
 
                 ArrayInitialization* init = Ast::Node::makeArrayInitialization();
                 init->attributeCount = aType->elementCount;
-                init->attributes = (Variable**) alloc(alc, sizeof(Variable*) * aType->elementCount);
+                init->attributes = alloc<Variable*>(aType->elementCount);
 
                 for (uint64_t i = 0; i < aType->elementCount; i++) {
                     Variable* var = Ast::Node::makeVariable();
@@ -1147,7 +1129,7 @@ namespace Extern::Abi {
             return tempType;
         }
 
-        Type::TypeInfoEx* ansType = (Type::TypeInfoEx*) alloc(alc, sizeof(Type::TypeInfoEx));
+        Type::TypeInfoEx* ansType = alloc<Type::TypeInfoEx>();
         ansType->base.kind = tempType->kind;
         ansType->base.rank = tempType->rank;
 
@@ -1157,8 +1139,7 @@ namespace Extern::Abi {
 
                 ansType->str.name        = tempSType->name;
                 ansType->str.memberCount = tempSType->memberCount;
-                ansType->str.members     = (Type::StructMemberInfo*) alloc(
-                    alc, sizeof(Type::StructMemberInfo) * tempSType->memberCount
+                ansType->str.members     = alloc<Type::StructMemberInfo>(tempSType->memberCount
                 );
 
                 uint64_t currentOffset = 0;
@@ -1195,8 +1176,7 @@ namespace Extern::Abi {
 
                 ansType->str.name        = tempSType->name;
                 ansType->str.memberCount = tempSType->memberCount;
-                ansType->str.members     = (Type::StructMemberInfo*) alloc(
-                    alc, sizeof(Type::StructMemberInfo) * tempSType->memberCount
+                ansType->str.members     = alloc<Type::StructMemberInfo>(tempSType->memberCount
                 );
 
                 uint32_t maxSizeFound  = 0;
@@ -1270,9 +1250,7 @@ namespace Extern::Abi {
                 ansType->fcn.flags    = tempFType->flags;
 
                 if (tempFType->argCount > 0) {
-                    ansType->fcn.argTypes = (Type::TypeInfo**) alloc(
-                        alc, sizeof(Type::TypeInfo*) * tempFType->argCount
-                    );
+                    ansType->fcn.argTypes = alloc<Type::TypeInfo*>(tempFType->argCount);
 
                     for (uint64_t i = 0; i < tempFType->argCount; i++) {
                         ansType->fcn.argTypes[i] = computeTypeInfo(cfg, tempFType->argTypes[i]);
@@ -1307,7 +1285,7 @@ namespace Extern::Abi {
     void ensureTypeInfoReady(Abi::LayoutConfig* cfg, Type::TypeInfo*  tempType) {
         if (tempType->abi) return;
 
-        tempType->abi = (Abi::TypeInfo*) alloc(alc, sizeof(Abi::TypeInfo));
+        tempType->abi = alloc<Abi::TypeInfo>();
         tempType->abi->type = (Type::TypeInfoEx*) computeTypeInfo(cfg, tempType);
         tempType->abi->ogType = tempType;
     }

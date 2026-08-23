@@ -163,7 +163,7 @@ static inline int isValidPos(Pos pos) {
 
 static inline Span* getSpanStamp(Span* span) {
 
-    Span* stamp = (Span*) alloc(alc, sizeof(Span));
+    Span* stamp = alloc<Span>();
     if (!stamp) return NULL;
 
     memcpy(stamp, span, sizeof(Span));
@@ -197,7 +197,7 @@ static inline void syncEnd(Span* const dest, Span* const src) {
 }
 
 static inline void freeSpanStamp(Span* loc) {
-    dealloc(alc, loc);
+    dealloc(loc);
 }
 
 template <typename T>

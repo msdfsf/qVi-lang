@@ -14,6 +14,8 @@
 // processing its own queue until the backlog is cleared.
 
 #include "task_system_core.h"
+#include "allocator.h"
+#include "syntax.h"
 #include <atomic>
 
 
@@ -24,7 +26,6 @@ namespace TaskSystem::Core {
     inline uint32_t gWorkerCount = 0;
 
     inline thread_local Worker* gCurrentWorker = nullptr;
-    inline thread_local Arena::Container gCurrentArena;
 
     // The 'check list' mechanism, each thread
     // will use its own bit to write to mark if
@@ -160,11 +161,8 @@ namespace TaskSystem::Core {
     void runWorker(Worker* worker) {
         gCurrentWorker = worker;
 
-        if (!alc) {
-            alc = &gCurrentArena;
-            initAlloc(alc);
-            initNAlloc(alc);
-        }
+        allocInit();
+        nallocInit();
 
         Parser::init(&worker->state.p);
         Validator::init(&worker->state.v);

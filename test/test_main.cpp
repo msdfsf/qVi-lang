@@ -28,10 +28,7 @@ int main() {
     printf(AC_BOLD_MAGENTA "Greetings" AC_RESET ", lets chill and wait for test results " AC_BOLD_MAGENTA ":3\n");
     printf(AC_BRIGHT_BLACK "==================================================\n\n" AC_RESET);
 
-    Arena::Container arena;
-    alc = &arena;
-    initAlloc(&arena);
-
+    allocInit();
     Test::gResult = { 0 };
 
     Test::runTestSuite(&gArenaSuite, &Test::gResult);

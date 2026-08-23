@@ -60,7 +60,7 @@ namespace Interpreter {
 
     void initExec(CompilerState* state) {
         stackSize = 1024 * 1024;
-        stack = (vmword*) alloc(alc, stackSize, 8);
+        stack = (vmword*) alloc(stackSize, 8);
         Arena::init(&heap, stackSize);
         Arena::init(&vecContext.arena, stackSize);
     }

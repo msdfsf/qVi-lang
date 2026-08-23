@@ -1082,36 +1082,38 @@ constexpr int nodeTypeSize[AT_COUNT] = {
 // of nodes defined here, so there is an abstraction how each node type
 // is handled.
 // Look at allocator.h to for the 'actual' allocator that this is based on
+// TODO: shall we deprecate?
 #if !defined(_CUSTOM_ALLOCATOR_)
 
-    inline thread_local AllocatorHandle nalc = NULL;
+    inline thread_local Allocator* nalc = NULL;
 
-    inline void initNAlloc(AllocatorHandle allocator) {
-        nalc = allocator;
+    inline void nallocInit() {
     }
 
-    inline void releaseNAlloc(AllocatorHandle allocator) {
+    inline void nallocRelease() {
     }
 
-    inline void* nalloc(AllocatorHandle allocator, AllocType type) {
-        return alloc(allocator, nodeTypeSize[type]);
+    inline void* nalloc(AllocType type) {
+        return alloc(nodeTypeSize[type], nodeTypeSize[type]);
     }
 
-    inline void* nalloc(AllocatorHandle allocator, AllocType type, size_t count) {
-        return alloc(allocator, nodeTypeSize[type] * count);
+    inline void* nalloc(AllocType type, size_t count) {
+        return alloc(nodeTypeSize[type] * count, nodeTypeSize[type]);
     }
 
-    inline void ndealloc(AllocatorHandle allocator, void* ptr) {
-
+    inline void ndealloc(void* ptr) {
     }
 
 #else
 
     extern thread_local AllocatorHandle nalc;
 
-    extern void* nalloc   (AllocatorHandle allocator, AllocType type);
-    extern void* nalloc   (AllocatorHandle allocator, AllocType type, size_t count);
-    extern void  ndealloc (AllocatorHandle allocator, void* ptr);
+    extern nallocInit();
+    extern nallocRelease();
+
+    extern void* nalloc   (AllocType type);
+    extern void* nalloc   (AllocType type, size_t count);
+    extern void  ndealloc (void* ptr);
 
 #endif
 

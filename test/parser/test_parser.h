@@ -17,13 +17,13 @@ inline thread_local Span span;
 inline thread_local QualifiedName name;
 
 inline void gParserPreSuite() {
-    initNAlloc(alc);
+    allocInit();
     Type::init();
     Ast::init();
 
-    Reg::Unit* unit = (Reg::Unit*) alloc(alc, sizeof(Reg::Unit));
-    unit->ast = (AstContext*) alloc(alc, sizeof(AstContext));
-    unit->reg = (AstRegistry*) alloc(alc, sizeof(AstRegistry));
+    Reg::Unit* unit = alloc<Reg::Unit>();
+    unit->ast = alloc<AstContext>();
+    unit->reg = alloc<AstRegistry>();
     Ast::init(unit->ast);
     Ast::init(unit->reg);
     unit->ast = unit->ast;
@@ -32,7 +32,7 @@ inline void gParserPreSuite() {
     Parser::init(&ctx);
     ctx.unit = unit;
     ctx.rootDir = STR(".");
-    ctx.fileSpan = (Span*) alloc(alc, sizeof(Span));
+    ctx.fileSpan = alloc<Span>();
 }
 
 inline void gParserPostSuite() {

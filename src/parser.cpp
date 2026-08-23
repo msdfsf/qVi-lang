@@ -140,7 +140,7 @@ namespace Parser {
         if (count == 0) return NULL;
 
         const uint32_t bytes = count * sizeof(SyntaxNode*);
-        SyntaxNode** arr = (SyntaxNode**) alloc(alc, bytes);
+        SyntaxNode** arr = (SyntaxNode**) alloc<char>(bytes);
         memcpy(arr, ((SyntaxNode**) stack->buffer) + mark, bytes);
 
         stack->size = mark;
@@ -211,7 +211,7 @@ namespace Parser {
     //
 
     ImportNode* initImportNode() {
-        ImportNode* import = (ImportNode*) alloc(alc, sizeof(ImportNode));
+        ImportNode* import = alloc<ImportNode>();
         import->file = FileSystem::null;
         import->import = NULL;
         import->parent = NULL;
@@ -254,7 +254,7 @@ namespace Parser {
         DArray::release(&ctx->defStack);
         freeSpanStamp(ctx->fileSpan);
 
-        dealloc(alc, ctx);
+        dealloc(ctx);
     }
 
 
@@ -265,9 +265,9 @@ namespace Parser {
     ) {
         using namespace FileSystem;
 
-        Path* path = (Path*) alloc(alc, sizeof(Path));
+        Path* path = alloc<Path>();
         if (FileSystem::computeRelativePath(abs, root, path) < 0) {
-            dealloc(alc, path);
+            dealloc(path);
             return NULL;
         }
 
@@ -1067,7 +1067,7 @@ namespace Parser {
         }
         typeInit->attributes = (Variable**) commitStack(&ctx->nodeStack, smark, &typeInit->attributeCount);
 
-        typeInit->idxs = (int*) nalloc(nalc, AT_BYTE, typeInit->attributeCount * sizeof(int));
+        typeInit->idxs = (int*) nalloc(AT_BYTE, typeInit->attributeCount * sizeof(int));
         if (!typeInit->idxs) {
             Diag::report(ctx->unit->ast, NULL, Err::MALLOC);
         }
@@ -1155,7 +1155,7 @@ namespace Parser {
             token = Lex::nextToken(span, &tokenVal);
 
             if (token.kind == Lex::TK_POINTER) {
-                TypeDecorator* dec = (TypeDecorator*) alloc(alc, sizeof(TypeDecorator));
+                TypeDecorator* dec = alloc<TypeDecorator>();
                 dec->kind = TypeDecorator::DEC_POINTER;
                 dec->span = getSpanStamp(span);
 
@@ -1163,7 +1163,7 @@ namespace Parser {
             } else if (token.kind == Lex::TK_ARRAY_BEGIN) {
                 Pos arrStart = span->end;
 
-                TypeDecorator* dec = (TypeDecorator*) alloc(alc, sizeof(TypeDecorator));
+                TypeDecorator* dec = alloc<TypeDecorator>();
                 dec->span = getSpanStamp(span);
 
                 token = Lex::nextToken(span, &tokenVal);
@@ -1483,8 +1483,8 @@ namespace Parser {
         const int count = (ctx->nodeStack.size - smark) / 2;
         SyntaxNode** buffer = ((SyntaxNode**) ctx->nodeStack.buffer) + smark;
 
-        branch->scopes = (Scope**) alloc(alc, sizeof(SyntaxNode**) * (count + hasElse));
-        branch->expressions = (Variable**) alloc(alc, sizeof(SyntaxNode**) * count);
+        branch->scopes = alloc<Scope*>(count + hasElse);
+        branch->expressions = alloc<Variable*>(count);
         branch->scopeCount = count + hasElse;
         branch->expressionCount = count;
         for (int i = 0; i < count; i++) {
@@ -1576,8 +1576,8 @@ namespace Parser {
         const int count = (ctx->nodeStack.size - smark) / 2;
         SyntaxNode** buffer = ((SyntaxNode**) ctx->nodeStack.buffer) + smark;
 
-        switchCase->cases = (Scope**) alloc(alc, sizeof(SyntaxNode**) * count);
-        switchCase->casesExp = (Variable**) alloc(alc, sizeof(SyntaxNode**) * count);
+        switchCase->cases = alloc<Scope*>(count);
+        switchCase->casesExp = alloc<Variable*>(count);
         switchCase->caseCount = count;
         switchCase->caseExpCount = count;
         for (int i = 0; i < count; i++) {
@@ -1675,7 +1675,7 @@ namespace Parser {
              rightExp = secondExp;
          }
 
-         *range = (RangeExpression*) alloc(alc, sizeof(RangeExpression));
+         *range = alloc<RangeExpression>();
          (*range)->bidx = leftExp;
          (*range)->step = stepExp;
          (*range)->eidx = rightExp;
@@ -2456,7 +2456,7 @@ namespace Parser {
             ret->fcn = ctx->currentFunction;
 
             DArray::push(&ctx->unit->reg->returnStatements, &ret);
-            newScope->children = (SyntaxNode**) alloc(alc, sizeof(SyntaxNode*));
+            newScope->children = alloc<SyntaxNode*>();
             newScope->children[0] = (SyntaxNode*) ret;
 
             token = Lex::nextToken(span, &tokenVal);

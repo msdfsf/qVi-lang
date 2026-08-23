@@ -1,6 +1,7 @@
 #include "lexer.h"
 #include "data_types.h"
 #include "dynamic_arena.h"
+#include "globals.h"
 #include "strlib.h"
 #include "syntax.h"
 #include "logger.h"
@@ -535,12 +536,12 @@ namespace Lex {
 
         const int rawStringRequired = (str[*len] == RAW_POSTFIX) ? 1 : 0;
 
-        StringInitialization* init = (StringInitialization*) alloc(alc, sizeof(StringInitialization));
+        StringInitialization* init = alloc<StringInitialization>();
         init->base.type = EXT_STRING_INITIALIZATION;
 
 
         init->rawData.len = stringStack.logicalPos;
-        init->rawData.buff = (char*) alloc(alc, init->rawData.len);
+        init->rawData.buff = (char*) alloc<char>(init->rawData.len);
 
         init->charType = Type::basicTypes + Type::DT_U8;
 
@@ -616,7 +617,7 @@ namespace Lex {
         if (qnameStack.size - 2 > 0) {
 
             qname->pathSize = (qnameStack.size - 2) / 2;
-            qname->path = (INamed*) alloc(alc, qname->pathSize * sizeof(INamed));
+            qname->path = alloc<INamed>(qname->pathSize);
 
             for (int i = 0; i < qname->pathSize; i++) {
                 qname->path[i].buff = (char*) str + data[i];
@@ -1049,7 +1050,7 @@ namespace Lex {
                 if (isIdentifierStart(ch)) {
 
                     QualifiedName stackName;
-                    QualifiedName* name = val ? ((QualifiedName*) nalloc(nalc, AT_QUALIFIED_NAME)) : &stackName;
+                    QualifiedName* name = val ? ((QualifiedName*) nalloc(AT_QUALIFIED_NAME)) : &stackName;
                     token = parseQualifiedName(span, str + startPos.idx, name, &len);
 
                     if (val) val->any = (void*) name;
@@ -1107,7 +1108,7 @@ namespace Lex {
 
         }
 
-        val->str = (String*) nalloc(nalc, AT_INAMED);
+        val->str = (String*) nalloc(AT_INAMED);
         *(val->str) = String((char*) str + startPos.idx, idx - startPos.idx);
 
         span->start = startPos;

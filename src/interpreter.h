@@ -612,7 +612,7 @@ namespace Interpreter {
     }
 
     inline ExeBlock* makeExeBlock() {
-        ExeBlock* exe = (ExeBlock*) alloc(alc, sizeof(ExeBlock));
+        ExeBlock* exe = alloc<ExeBlock>();
         memset(exe, 0, sizeof(ExeBlock));
         return exe;
     }

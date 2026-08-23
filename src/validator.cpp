@@ -200,7 +200,7 @@ namespace Validator {
             return Err::OK;
         }
 
-        scope->index = (SymbolIndex*) alloc(alc, sizeof(SymbolIndex));
+        scope->index = alloc<SymbolIndex>();
 
         Set::init(&scope->index->set, scope->definitionCount);
         scope->index->set.hashMethod = Set::HM_STRING_STRUCT_FNV1A;
@@ -234,7 +234,7 @@ namespace Validator {
                     entry->overloads.count++;
                 }
             } else {
-                SymbolIndexEntry* entry = (SymbolIndexEntry*) alloc(alc, sizeof(SymbolIndexEntry));
+                SymbolIndexEntry* entry = alloc<SymbolIndexEntry>();
                 entry->name = name;
                 entry->kind = SymbolIndexEntry::SINGLE;
                 entry->node = node;
@@ -252,7 +252,7 @@ namespace Validator {
                 const uint32_t count = entry->overloads.count;
                 TmpOverloadEntry* curr = (TmpOverloadEntry*) entry->overloads.data;
 
-                SyntaxNode** data = (SyntaxNode**) alloc(alc, sizeof(SyntaxNode*) * count);
+                SyntaxNode** data = alloc<SyntaxNode*>(count);
 
                 for (uint32_t j = 0; j < count; j++) {
                     data[j] = curr->node;
@@ -1212,7 +1212,7 @@ namespace Validator {
                     init->attributes[0]->name.len > 0;
 
                 if (attributesAreNamed) {
-                    init->idxs = (int*) alloc(alc, sizeof(int) * init->attributeCount);
+                    init->idxs = alloc<int>(init->attributeCount);
                 }
 
                 int i = 0;
@@ -2191,7 +2191,7 @@ namespace Validator {
     Err::Err computeTypeInfo(ValidationContext* ctx, Enumerator* en) {
         Type::TypeInfo* mType = en->memberType;
 
-        Type::EnumInfo* eType = (Type::EnumInfo*) alloc(alc, sizeof(Type::TypeInfoEx));
+        Type::EnumInfo* eType = (Type::EnumInfo*) alloc<Type::TypeInfoEx>();
         eType->base.kind      = Type::DT_ENUM;
         eType->base.size      = mType->size;
         eType->base.align     = mType->align;
@@ -2200,8 +2200,7 @@ namespace Validator {
         eType->memberCount    = en->varCount;
 
         if (eType->memberCount > 0) {
-            eType->members = (Type::EnumMemberInfo*) alloc(
-                alc, sizeof(Type::EnumMemberInfo) * eType->memberCount
+            eType->members = alloc<Type::EnumMemberInfo>(eType->memberCount
             );
 
             for (uint64_t i = 0; i < en->varCount; i++) {
@@ -2234,10 +2233,10 @@ namespace Validator {
 
         Type::StructInfo* sInfo;
         // TODO : shall we allocate this at definition creation?
-        td->type = (Type::TypeInfoEx*) alloc(alc, sizeof(Type::TypeInfoEx));
+        td->type = alloc<Type::TypeInfoEx>();
         sInfo = (Type::StructInfo*) td->type;
 
-        sInfo->members = (Type::StructMemberInfo*) alloc(alc, sizeof(Type::StructMemberInfo) * td->varCount);
+        sInfo->members = alloc<Type::StructMemberInfo>(td->varCount);
         sInfo->memberCount = td->varCount;
 
         uint64_t offset = 0;

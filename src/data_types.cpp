@@ -166,7 +166,7 @@ namespace Type {
     }
 
     inline SetSlot* makeSetSlot(TypeInfo* type, uint64_t hash) {
-        SetSlot* set = (SetSlot*) alloc(alc, sizeof(SetSlot));
+        SetSlot* set = alloc<SetSlot>();
         set->type = type;
         set->hash = hash;
         return set;
@@ -220,7 +220,7 @@ namespace Type {
 
         SetSlot* slot = (SetSlot*) Set::find(&setPointer, hash);
         if (!slot) {
-            type = (PointerInfo*) alloc(alc, sizeof(PointerInfo));
+            type = (PointerInfo*) alloc<TypeInfoEx>();
             type->base.kind = DT_POINTER;
             type->base.size = 8;
             type->base.align = 8;
@@ -245,7 +245,7 @@ namespace Type {
 
         SetSlot* slot = (SetSlot*) Set::find(&setArray, hash);
         if (!slot) {
-            type = (ArrayInfo*) alloc(alc, sizeof(TypeInfoEx));
+            type = (ArrayInfo*) alloc<TypeInfoEx>();
             type->base.kind = DT_ARRAY;
             type->base.size = element->size * len;
             type->base.align = element->align;
@@ -271,7 +271,7 @@ namespace Type {
 
         SetSlot* slot = (SetSlot*) Set::find(&setSlice, hash);
         if (!slot) {
-            type = (SliceInfo*) alloc(alc, sizeof(TypeInfoEx));
+            type = (SliceInfo*) alloc<TypeInfoEx>();
             type->base.kind = DT_SLICE;
             type->base.size = 16;
             type->base.align = 8;

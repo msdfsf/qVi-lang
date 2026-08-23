@@ -221,7 +221,7 @@ namespace Diag {
                     int errStrLen;
                     char* errStr = Logger::getLastString(&errStrLen);
 
-                    err->msg.buff = (char*)nalloc(nalc, AT_ERROR_STRING, errStrLen + 1);
+                    err->msg.buff = (char*) nalloc(AT_ERROR_STRING, errStrLen + 1);
                     memcpy(err->msg.buff, errStr, errStrLen);
                     err->msg.buff[errStrLen] = '\0';
                     err->msg.len = errStrLen;

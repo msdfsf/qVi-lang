@@ -24,6 +24,7 @@
 // and their allocator would be wasteful.
 //
 
+// TODO: think of a namespace
 #if !defined(_CUSTOM_ALLOCATOR_)
 
     #include "dynamic_arena.h"
@@ -33,49 +34,77 @@
         #define ALLOC_INIT_BUFFER_SIZE (1024 * 1024 * 32)
     #endif
 
-    typedef Arena::Container* AllocatorHandle;
-    // TODO: not sure about name, but as in Cpp
-    // there has to be a cast, using something
-    // long makes call too messy
-    inline thread_local AllocatorHandle alc = NULL;
+    typedef Arena::Marker AllocatorMarker;
+
+    typedef Arena::Container Allocator;
+    inline thread_local Allocator allocator {};
+
+    inline thread_local bool gAllocIsInitialized = false;
 
 
 
-    inline void initAlloc(AllocatorHandle allocator) {
-        Arena::init(allocator, ALLOC_INIT_BUFFER_SIZE);
+    inline bool allocIsInitialized() {
+        return gAllocIsInitialized;
     }
 
-    inline void releaseAlloc(AllocatorHandle allocator) {
-        Arena::release(allocator);
+    inline void allocInit() {
+        if (!gAllocIsInitialized) {
+            Arena::init(&allocator, ALLOC_INIT_BUFFER_SIZE);
+            gAllocIsInitialized = true;
+        }
+    }
+
+    inline void allocRelease() {
+        if (gAllocIsInitialized) {
+            Arena::release(&allocator);
+            gAllocIsInitialized = false;
+        }
+    }
+
+    inline void allocClear() {
+        Arena::clear(&allocator);
     }
 
 
 
-    inline void* alloc(AllocatorHandle allocator, size_t size) {
-        return Arena::push(allocator, size);
+    inline void* alloc(size_t bytes, size_t align) {
+        return Arena::push(&allocator, bytes, align);
     }
 
-    inline void* alloc(AllocatorHandle allocator, size_t size, size_t align) {
-        return Arena::push(allocator, size, align);
+    inline void dealloc(void* ptr) {
+        Arena::rollback(&allocator, ptr);
     }
 
-    inline void dealloc(AllocatorHandle allocator, void* ptr) {
-        // ))
-        return Arena::rollback(allocator, ptr);
+
+
+    inline AllocatorMarker allocMark() {
+        return Arena::getMarker(&allocator);
     }
 
-    inline void  clear(AllocatorHandle allocator) {
-        Arena::clear(allocator);
+    inline void allocRollback(AllocatorMarker marker) {
+        Arena::rollback(&allocator, marker);
     }
 
 #else
 
+    typedef void* AllocatorMarker;
     typedef void* AllocatorHandle;
     extern thread_local AllocatorHandle alc;
 
-    extern void* alloc   (AllocatorHandle allocator, size_t size);
-    extern void* alloc   (AllocatorHandle allocator, size_t size, size_t align);
-    extern void  dealloc (AllocatorHandle allocator, void* ptr);
-    extern void  clear   (AllocatorHandle allocator);
+    extern bool allocIsInitialized();
+    extern void allocInit();
+    extern void allocRelease();
+    extern void allocClear();
+
+    extern void* alloc   (size_t size, size_t align);
+    extern void  dealloc (void* ptr);
+
+    extern AllocatorMarker allocMark();
+    extern void allocRollback(AllocatorMarker marker);
 
 #endif
+
+template <typename T>
+inline T* alloc(size_t count = 1) {
+    return (T*) alloc(sizeof(T) * count, alignof(T));
+}

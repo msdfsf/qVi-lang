@@ -81,7 +81,7 @@ namespace Strings {
         }
 
 
-        char* arr = (!copyWhenAscii && bytes == 1) ? NULL : (char*) alloc(alc, bytes * len);
+        char* arr = (!copyWhenAscii && bytes == 1) ? NULL : alloc<char>(bytes * len);
         switch (bytes) {
 
             case 1: {
@@ -180,8 +180,7 @@ namespace Strings {
             }
         }
 
-        wchar_t* out =
-            (wchar_t*) alloc(alc, (len + (nullTerminate ? 1 : 0)) * sizeof(wchar_t));
+        wchar_t* out = alloc<wchar_t>((len + (nullTerminate ? 1 : 0)));
 
         wchar_t* ptr = out;
 

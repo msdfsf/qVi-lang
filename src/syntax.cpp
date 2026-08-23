@@ -60,16 +60,16 @@ void Ast::init() {
     fPrintf->internalIdx = Internal::IF_PRINTF;
     fPrintf->base.semStatus = TaskStatus::TS_READY;
 
-    fPrintf->prototype.inArgs = (VariableDefinition**) alloc(alc, 2 * sizeof(VariableDefinition*));
+    fPrintf->prototype.inArgs = alloc<VariableDefinition*>(2);
 
-    VariableDefinition* fPrintArg1 = (VariableDefinition*) nalloc(alc, NT_VARIABLE_DEFINITION);
-    fPrintArg1->var = (Variable*) nalloc(alc, NT_VARIABLE);
+    VariableDefinition* fPrintArg1 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
+    fPrintArg1->var = (Variable*) nalloc(NT_VARIABLE);
     fPrintArg1->var->base.scope = SyntaxNode::root;
     fPrintArg1->var->value.type = Type::makeSlice(Type::basicTypes + Type::DT_U8, IS_CONST);
     fPrintArg1->var->value.hasValue = 0;
 
-    VariableDefinition* fPrintArg2 = (VariableDefinition*) nalloc(alc, NT_VARIABLE_DEFINITION);
-    fPrintArg2->var = (Variable*) nalloc(alc, NT_VARIABLE);
+    VariableDefinition* fPrintArg2 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
+    fPrintArg2->var = (Variable*) nalloc(NT_VARIABLE);
     fPrintArg2->var->base.scope = SyntaxNode::root;
     fPrintArg2->var->value.type = Type::basicTypes + Type::DT_MULTIPLE_TYPES;
     fPrintArg2->var->value.hasValue = 0;
@@ -89,10 +89,10 @@ void Ast::init() {
     fAlloc->internalIdx = Internal::IF_ALLOC;
     fAlloc->base.semStatus = TaskStatus::TS_READY;
 
-    fAlloc->prototype.inArgs = (VariableDefinition**) alloc(alc, sizeof(VariableDefinition*));
+    fAlloc->prototype.inArgs = alloc<VariableDefinition*>();
 
-    VariableDefinition* fAllocArg1 = (VariableDefinition*) nalloc(nalc, NT_VARIABLE_DEFINITION);
-    fAllocArg1->var = (Variable*) nalloc(nalc, NT_VARIABLE);
+    VariableDefinition* fAllocArg1 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
+    fAllocArg1->var = (Variable*) nalloc(NT_VARIABLE);
     fAllocArg1->var->base.scope = SyntaxNode::root;
     fAllocArg1->var->value.type = Type::basicTypes + Type::DT_U64;
 
@@ -110,10 +110,10 @@ void Ast::init() {
     fFree->internalIdx = Internal::IF_FREE;
     fFree->base.semStatus = TaskStatus::TS_READY;
 
-    fFree->prototype.inArgs = (VariableDefinition**) alloc(alc, 2 * sizeof(VariableDefinition*));
+    fFree->prototype.inArgs = alloc<VariableDefinition*>(2);
 
-    VariableDefinition* fFreeArg1 = (VariableDefinition*) nalloc(nalc, NT_VARIABLE_DEFINITION);
-    fFreeArg1->var = (Variable*) nalloc(nalc, NT_VARIABLE);
+    VariableDefinition* fFreeArg1 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
+    fFreeArg1->var = (Variable*) nalloc(NT_VARIABLE);
     fFreeArg1->var->base.scope = SyntaxNode::root;
     fFreeArg1->var->value.type = Type::basicTypes + Type::DT_POINTER;
 
@@ -133,7 +133,7 @@ void Ast::init() {
     vNull->name.len = sizeof(Internal::IVS_NULL) - 1;
     vNull->base.flags = IS_CMP_TIME;
 
-    VariableDefinition* vNullDef = (VariableDefinition*) nalloc(nalc, NT_VARIABLE_DEFINITION);
+    VariableDefinition* vNullDef = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
     vNullDef->var = vNull;
 
 
@@ -149,7 +149,7 @@ void Ast::init() {
     vTrue->name.len = sizeof(Internal::IVS_TRUE) - 1;
     vTrue->base.flags = IS_CMP_TIME;
 
-    VariableDefinition* vTrueDef = (VariableDefinition*) nalloc(nalc, NT_VARIABLE_DEFINITION);
+    VariableDefinition* vTrueDef = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
     vTrueDef->var = vTrue;
 
 
@@ -165,7 +165,7 @@ void Ast::init() {
     vFalse->name.len = sizeof(Internal::IVS_FALSE) - 1;
     vFalse->base.flags = IS_CMP_TIME;
 
-    VariableDefinition* vFalseDef = (VariableDefinition*) nalloc(nalc, NT_VARIABLE_DEFINITION);
+    VariableDefinition* vFalseDef = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
     vFalseDef->var = vFalse;
 
 }
@@ -759,7 +759,7 @@ _defineInScope(GotoStatement, NT_GOTO_STATEMENT);
 
 
 #define _defineMake(T, E) T* Ast::Node::make##T() { \
-    T* node = (T*) nalloc(nalc, E); \
+    T* node = (T*) nalloc(E); \
     init(node); \
     return node; \
 } \
@@ -1134,7 +1134,7 @@ _defineMake(Free, AT_EXT_FREE);
 
 #define _defineCopy(T, E) \
 T* Ast::Node::copy(T* node) { \
-    T* tmp = (T*) nalloc(nalc, E); \
+    T* tmp = (T*) nalloc(E); \
     *tmp = *(node); \
     return tmp; \
 }
@@ -1173,7 +1173,7 @@ Variable* Ast::Node::copy(Variable* dest, Variable* src) {
 
     if (!src) return NULL;
     if (!dest) {
-        dest = (Variable*) nalloc(nalc, NT_VARIABLE);
+        dest = (Variable*) nalloc(NT_VARIABLE);
     }
 
     dest->base = src->base;
@@ -1205,7 +1205,7 @@ Variable* Ast::Node::copyRef(Variable* dest, Variable* src) {
 
     if (!src) return NULL;
     if (!dest) {
-        dest = (Variable*) nalloc(nalc, NT_VARIABLE);
+        dest = (Variable*) nalloc(NT_VARIABLE);
     }
     if (src == dest) return dest;
 

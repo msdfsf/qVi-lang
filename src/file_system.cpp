@@ -53,7 +53,7 @@ namespace FileSystem {
 
     Path* makePath(Path* src) {
 
-        Path* path = (Path*) alloc(alc, sizeof(Path));
+        Path* path = alloc<Path>();
 
         path->bufferLen = src->bufferLen;
         memcpy(path->buffer, src->buffer, src->bufferLen);
@@ -268,7 +268,7 @@ namespace FileSystem {
 
         const int appendixLen = cstrlen(appendix);
         const int len = base->nameOff + appendixLen;
-        char* const str = (char*) alloc(alc, len + 1);
+        char* const str = alloc<char>(len + 1);
         str[len] = '\0';
 
         memcpy(str, base->buffer, base->nameOff);
@@ -281,7 +281,7 @@ namespace FileSystem {
     String catPaths(Path* base, Path* appendix) {
 
         const int len = base->nameOff + appendix->bufferLen;
-        char* const str = (char*) alloc(alc, len + 1);
+        char* const str = alloc<char>(len + 1);
         str[len] = '\0';
 
         memcpy(str, base->buffer, base->nameOff);
@@ -293,7 +293,7 @@ namespace FileSystem {
 
     Path* getExePath() {
 
-        Path* path = (Path*) alloc(alc, sizeof(Path));
+        Path* path = alloc<Path>();
         path->bufferLen = MAX_FILE_PATH;
 
         #ifdef _WIN32
@@ -395,7 +395,7 @@ namespace FileSystem {
             return null;
         }
 
-        Path* absPath = (Path*) alloc(alc, sizeof(Path));
+        Path* absPath = alloc<Path>();
         memcpy(absPath->buffer, fname.buff, fname.len);
         absPath->buffer[fname.len] = '\0';
         absPath->bufferLen = fname.len;
@@ -410,7 +410,7 @@ namespace FileSystem {
             return null;
         }
 
-        Path* absPath = (Path*) alloc(alc, sizeof(Path));
+        Path* absPath = alloc<Path>();
 
         memcpy(absPath->buffer, fpath.buff, fpath.len);
         absPath->buffer[fpath.len] = PATH_SEP;
@@ -468,7 +468,7 @@ namespace FileSystem {
 
         FileInfo* info = getFileInfo(fhnd);
         if (!info->relativePath) {
-            info->relativePath = (Path*) alloc(alc, sizeof(Path));
+            info->relativePath = alloc<Path>();
         }
         memcpy(info->relativePath, relative.c_str(), relativeSize);
         annotatePath(info->relativePath);

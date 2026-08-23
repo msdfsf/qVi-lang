@@ -1,16 +1,8 @@
 #pragma once
 
-#include "allocator.h"
-#include "array_list.h"
 #include "backend.h"
-#include "dynamic_arena.h"
-#include "file_system.h"
 #include "interpreter.h"
 #include "parser.h"
-#include "registry.h"
-#include "config.h"
-#include "syntax.h"
-#include "validator.h"
 #include "task_status.h"
 
 #include <atomic>

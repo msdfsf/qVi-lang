@@ -67,7 +67,7 @@ namespace OrderedDict {
         pair.data = dataPtr;
 
         if (dict->flags & COPY_STRINGS) {
-            pair.key.str.buff = (char*) alloc(alc, key.len + 1);
+            pair.key.str.buff = alloc<char>(key.len + 1);
             memcpy(pair.key.str.buff, key.buff, key.len);
             pair.key.str.buff[key.len] = '\0';
         } else {
@@ -113,7 +113,7 @@ namespace OrderedDict {
     }
 
     Container* tightCopy(Container* src) {
-        Container* dest = (Container*) alloc(alc, sizeof(Container));
+        Container* dest = alloc<Container>();
 
         DArray::init(&dest->pairs, src->pairs.size, src->pairs.elementSize);
         memcpy(dest->pairs.buffer, src->pairs.buffer, src->pairs.size * src->pairs.elementSize);

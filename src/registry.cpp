@@ -9,10 +9,10 @@ namespace Reg {
     Unit* get(FileSystem::Handle fhnd) {
         FileSystem::FileInfo* finfo = FileSystem::getFileInfo(fhnd);
         if (!finfo->userData) {
-            Unit* unit = (Unit*) alloc(alc, sizeof(Unit));
+            Unit* unit = alloc<Unit>();
 
-            unit->ast = (AstContext*) alloc(alc, sizeof(AstContext));
-            unit->reg = (AstRegistry*) alloc(alc, sizeof(AstRegistry));
+            unit->ast = alloc<AstContext>();
+            unit->reg = alloc<AstRegistry>();
 
             Ast::init(unit->ast);
             Ast::init(unit->reg);

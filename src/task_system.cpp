@@ -1,6 +1,6 @@
 #include "task_system.h"
 #include "task_system_core.h"
-
+#include "config.h"
 
 
 namespace TaskSystem {
@@ -14,7 +14,7 @@ namespace TaskSystem {
         }
         if (workerCount > 64) workerCount = 64;
 
-        Core::Worker* workers = (Core::Worker*) alloc(alc, workerCount * sizeof(Core::Worker));
+        Core::Worker* workers = alloc<Core::Worker>(workerCount);
         Core::initGlobalState(workers, workerCount);
 
         for (int i = 0 ; i < workerCount; i++) {
