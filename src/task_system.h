@@ -34,6 +34,7 @@ namespace TaskSystem {
 
     // Concrete dispatch functions, as we are a part
     // of concrete compiler.
+    // TODO: Are we sure about FileSystem::Handle being interface?
     void dispatchParse(FileSystem::Handle file);
     void dispatchPreValidation(FileSystem::Handle file);
     void dispatchValidation(FileSystem::Handle file);
