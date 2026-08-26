@@ -42,11 +42,11 @@ if /i "%TARGET_PROJECT%"=="compiler" (
     set "OUT_BIN=compiler.exe"
     set "SRC_DIRS=src"
 ) else if /i "%TARGET_PROJECT%"=="lsp" (
-    set "OUT_BIN=lsp.exe"
-    set "SRC_DIRS=src lsp/src"
+    set "OUT_BIN=qVi-lsp.exe"
+    set "SRC_DIRS=lsp/src src"
 ) else if /i "%TARGET_PROJECT%"=="test" (
     set "OUT_BIN=test.exe"
-    set "SRC_DIRS=src test"
+    set "SRC_DIRS=test src"
 ) else (
     call :print_error "Invalid target project: '%TARGET_PROJECT%'"
     echo         Available: 'compiler', 'lsp', 'test'
@@ -117,14 +117,26 @@ for %%d in (%SRC_DIRS%) do (
     PUSHD "%%d"
     if not errorlevel 1 (
 
-        for /r . %%f in (*.cpp *.s *.asm) do (
+        for /r . %%f in (*.cpp *.c *.s *.asm) do (
             set "SKIP=false"
 
-            :: Exclude compiler's main.cpp when building test or lsp targets
-            if /i "%TARGET_PROJECT%"=="test" if /i "%%~nxf"=="main.cpp" if /i "%%~dpf"=="%CD%\src\" set "SKIP=true"
-            if /i "%TARGET_PROJECT%"=="lsp"  if /i "%%~nxf"=="main.cpp" if /i "%%~dpf"=="%CD%\src\" set "SKIP=true"
+            :: Skip if a file with the same name was already included
+            if defined INCLUDED_FILE[%%~nxf] set "SKIP=true"
+
+            :: Exclude compiler's main files when building test or lsp targets
+            if /i "%%~dpf"=="%CD%\src\" (
+                if /i "%TARGET_PROJECT%"=="test" set "IS_TARGET=1"
+                if /i "%TARGET_PROJECT%"=="lsp"  set "IS_TARGET=1"
+
+                if defined IS_TARGET (
+                    if /i "%%~nxf"=="main.cpp"     set "SKIP=true"
+                    if /i "%%~nxf"=="compiler.cpp" set "SKIP=true"
+                    set "IS_TARGET="
+                )
+            )
 
             if "!SKIP!"=="false" (
+                set "INCLUDED_FILE[%%~nxf]=1"
                 set "SOURCES=!SOURCES! "%%f""
             )
         )
@@ -152,6 +164,8 @@ if /i "%TARGET_COMPILER%"=="clang-cl" (
 
     if /i "%TARGET_PROJECT%"=="test" (
         set "FLAGS=!FLAGS! /DCONFIG_DISABLE_LOGGING /DCONFIG_ERROR_RECOVERY"
+    ) else if /i "%TARGET_PROJECT%"=="lsp" (
+        set "FLAGS=!FLAGS! /D_CUSTOM_ALLOCATOR_ /DCONFIG_ERROR_RECOVERY"
     )
 
     if /i "%TARGET_MODE%"=="debug" (
@@ -163,6 +177,12 @@ if /i "%TARGET_COMPILER%"=="clang-cl" (
 
     set "FLAGS=-std=c++20 -w -I"..\%LIB_DIR%""
     set "LIBS="
+
+    if /i "%TARGET_PROJECT%"=="test" (
+        set "FLAGS=!FLAGS! -DCONFIG_DISABLE_LOGGING -DCONFIG_ERROR_RECOVERY"
+    ) else if /i "%TARGET_PROJECT%"=="lsp" (
+        set "FLAGS=!FLAGS! -D_CUSTOM_ALLOCATOR_ -DCONFIG_ERROR_RECOVERY"
+    )
 
     if /i "%TARGET_MODE%"=="debug" (
         set "FLAGS=!FLAGS! -DNOMINMAX -g -o "%OUT_BIN%""

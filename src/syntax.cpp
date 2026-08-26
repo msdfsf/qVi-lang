@@ -8,6 +8,7 @@
 #include "data_types.h"
 #include "globals.h"
 #include "keywords.h"
+#include "lexer.h"
 #include "logger.h"
 #include "operators.h"
 #include "string.h"
@@ -168,6 +169,10 @@ void Ast::init() {
     VariableDefinition* vFalseDef = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
     vFalseDef->var = vFalse;
 
+}
+
+void Ast::release() {
+    // TODO
 }
 
 Variable* unwrap(Variable* var) {
@@ -558,6 +563,50 @@ void Ast::Node::getName(SyntaxNode* node, String** str) {
     }
 }
 
+
+int Ast::Node::getTokenLen(SyntaxNode* node) {
+    if (!node || !node->span) return 0;
+
+    switch (node->type) {
+        case NT_BRANCH:
+            return (int) strlen(Lex::KWS_IF);
+
+        case NT_SWITCH_CASE:
+            return (int) strlen(Lex::KWS_CASE);
+
+        case NT_LOOP:
+            return (int) strlen(Lex::KWS_LOOP);
+
+        case NT_RETURN_STATEMENT:
+            return (int) strlen(Lex::KWS_RETURN);
+
+        case NT_BREAK_STATEMENT:
+            return (int) strlen(Lex::KWS_BREAK);
+
+        case NT_CONTINUE_STATEMENT:
+            return (int) strlen(Lex::KWS_CONTINUE);
+
+        case NT_ENUMERATOR:
+            return (int) strlen(Lex::KWS_ENUM);
+
+        case NT_TYPE_DEFINITION:
+            return (int) strlen(Lex::KWS_STRUCT);
+
+        case NT_UNION:
+            return (int) strlen(Lex::KWS_UNION);
+
+        case NT_USING:
+            return (int) strlen(Lex::KWS_USING);
+
+        case NT_IMPORT:
+            return (int) strlen(Lex::KWS_IMPORT);
+
+        default:
+            // TODO: think of a fallback to search for the word end...
+            return 0;
+    }
+}
+
 // TODO : it seems name spans are not tracked
 Span* Ast::Node::getNameSpan(SyntaxNode* node) {
     if (!node) return NULL;
@@ -906,14 +955,6 @@ void Ast::Node::init(SwitchCase* node) {
 }
 _defineMake(SwitchCase, NT_SWITCH_CASE);
 
-void Ast::Node::init(WhileLoop* node) {
-    node->bodyScope = NULL;
-    node->expression = NULL;
-    ::init(&node->base);
-    node->base.type = NT_WHILE_LOOP;
-}
-_defineMake(WhileLoop, NT_WHILE_LOOP);
-
 void Ast::Node::init(Loop* node) {
     node->arg.exp = NULL;
     node->index.var = NULL;
@@ -1152,7 +1193,6 @@ _defineCopy(Function,            NT_FUNCTION);
 _defineCopy(ForeignFunction,     AT_FOREIGN_FUNCTION);
 _defineCopy(Branch,              NT_BRANCH);
 _defineCopy(SwitchCase,          NT_SWITCH_CASE);
-_defineCopy(WhileLoop,           NT_WHILE_LOOP);
 _defineCopy(Loop,                NT_LOOP);
 _defineCopy(ReturnStatement,     NT_RETURN_STATEMENT);
 _defineCopy(ContinueStatement,   NT_CONTINUE_STATEMENT);
@@ -1253,8 +1293,6 @@ const char* Ast::Node::str(NodeType type) {
             return "NT_BRANCH";
         case NT_SWITCH_CASE:
             return "NT_SWITCH_CASE";
-        case NT_WHILE_LOOP:
-            return "NT_WHILE_LOOP";
         case NT_LOOP:
             return "NT_LOOP";
         case NT_RETURN_STATEMENT:

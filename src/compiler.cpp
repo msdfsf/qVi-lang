@@ -1,11 +1,8 @@
 #include "compiler.h"
 
 #include "allocator.h"
-#include "dynamic_arena.h"
 #include "file_system.h"
 #include "diagnostic.h"
-#include "io.h"
-#include "registry.h"
 #include "string.h"
 #include "syntax.h"
 #include "logger.h"

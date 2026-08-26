@@ -62,9 +62,9 @@ namespace FileSystem {
         DArray::init(&files->data, count, sizeof(File));
         Set::init(&files->set, 2 * count);
         files->set.keyOffset = offsetof(File, info) +
-                               offsetof(FileInfo, absPath) +
-                               offsetof(String, buff);
+                               offsetof(FileInfo, absPath);
         files->set.hashMethod = Set::HM_STRING_FNV1A;
+        files->set.keyStorage = Set::KS_POINTER;
     }
 
     void releaseFileStorage(FileStorage* files) {
@@ -94,6 +94,7 @@ namespace FileSystem {
 
     // For now we dont actually remove file, just mark is
     // as not opened
+    // TODO: it seems like we actually remove it... but not clear properly data
     void removeFile(FileStorage* files, File* file) {
         file->isOpened = false;
         Set::remove(&files->set, (uint64_t) file->info.name.buff);
@@ -218,11 +219,25 @@ namespace FileSystem {
 
         absPath.buff = path.buffer;
         absPath.len = path.bufferLen;
-        
+
         File * file = findFileLsp(absPath);
         if (!file) file = findFileDisc(absPath);
 
         return file;
+    }
+
+    bool isAnySlash(const char ch) {
+        return (ch == '\\' || ch == '/');
+    }
+    // TODO
+    void getFileDir(Path* filePath, Path* outDir) {
+        int idx = filePath->bufferLen - 1;
+        for (; idx >= 0; idx--) {
+            if (isAnySlash(filePath->buffer[idx])) {
+                break;
+            }
+        }
+        memcpy(outDir->buffer, filePath->buffer, idx + 1);
     }
 
     FileInfo* getFileInfo(Handle hnd) {

@@ -40,6 +40,7 @@
 
 #include "json.h"
 #include "comm_provider.h"
+#include "array.h"
 // #include "../../src/globals.h"
 #include "../../src/file_system.h"
 #include "../../src/array_list.h"
@@ -74,6 +75,9 @@ namespace Lsp::T {
     template<typename T>
     struct Schema;
 
+    template<typename T>
+	struct UnionSchema;
+
     template<typename Class, typename Member>
     struct Field {
         const char*    name;
@@ -84,6 +88,17 @@ namespace Lsp::T {
     static constexpr Field<Class, Member> make_field(const char* name, Member Class::*ptr) {
         return { name, ptr };
     }
+
+    template<typename Tag, typename MemberPtr>
+	struct VariantField {
+		Tag       kind;
+		MemberPtr ptr;
+	};
+
+	template<typename Tag, typename MemberPtr>
+	static constexpr VariantField<Tag, MemberPtr> make_variant(Tag kind, MemberPtr ptr) {
+		return { kind, ptr };
+	}
 
     template<> struct Schema<void> {
         static constexpr auto fields = std::make_tuple();
@@ -1858,28 +1873,56 @@ namespace Lsp::T {
      * @since 3.16.0
      */
     struct SemanticTokensOptions {
-        /**
-         * The legend used by the server
-         */
-        SemanticTokensLegend*  legend;
-        /**
-         * Server supports providing semantic tokens for a specific range
-         * of a document.
-         */
-        Bool                   range;
-        /**
-         * Server supports providing semantic tokens for a full document.
-         */
-        Bool                   full;
-    };
+		/**
+		 * The legend used by the server
+		 */
+		SemanticTokensLegend*  legend;
+		/**
+		 * Server supports providing semantic tokens for a specific range
+		 * of a document.
+		 */
+		Bool range;
+		/**
+		 * Server supports providing semantic tokens for a full document.
+		 */
+		struct Full {
+			enum Kind {
+				_EBoolean = 0,
+				_EStruct = 1,
+			} kind;
 
-    template<> struct Schema<SemanticTokensOptions> {
-        static constexpr auto fields = std::make_tuple(
-            make_field("legend", &SemanticTokensOptions::legend),
-            make_field("range",  &SemanticTokensOptions::range),
-            make_field("full",   &SemanticTokensOptions::full)
-        );
-    };
+			struct _Struct {
+				Bool delta;
+			};
+
+			union {
+				Bool _boolean;
+				_Struct _struct;
+			};
+		} full;
+	};
+
+	template<> struct Schema<SemanticTokensOptions> {
+		static constexpr auto fields = std::make_tuple(
+			make_field("legend", &SemanticTokensOptions::legend),
+			make_field("range",  &SemanticTokensOptions::range),
+			make_field("full",   &SemanticTokensOptions::full)
+		);
+	};
+
+	template<> struct Schema<SemanticTokensOptions::Full::_Struct> {
+		static constexpr auto fields = std::make_tuple(
+			make_field("delta", &SemanticTokensOptions::Full::_Struct::delta)
+		);
+	};
+
+	template<> struct UnionSchema<SemanticTokensOptions::Full> {
+		static constexpr auto tag = &SemanticTokensOptions::Full::kind;
+		static constexpr auto variants = std::make_tuple(
+			make_variant(SemanticTokensOptions::Full::_EBoolean, &SemanticTokensOptions::Full::_boolean),
+			make_variant(SemanticTokensOptions::Full::_EStruct, &SemanticTokensOptions::Full::_struct)
+		);
+	};
 
     /**
      * @since 3.16.0
@@ -10721,8 +10764,79 @@ namespace Lsp {
 
 namespace Lsp {
 
+    // TODO: allocations are awkward
+    struct Allocator {
+        void* (*alloc) (void* context, size_t size);
+        void* context;
+    };
+
+    // Hierarchical
+    enum Permission : uint8_t {
+        P_NONE     = 1 << 0,
+        P_PARSE    = 1 << 1,
+        P_VALIDATE = 1 << 2,
+        P_COMPILE_TIME_EXECUTION = 1 << 3,
+        P_FOREIGN_CODE_EXECUTION = 1 << 4
+    };
+
+    namespace State {
+        inline bool   initialized = false;
+        inline String rootUri;
+        inline void*  clientCapabilities;
+
+        // Allocator to build the request and following response.
+        inline Allocator allocator;
+
+        // Tracking the client
+        inline String clientName;
+        inline String clientVersion;
+
+        inline CommProvider::Info* comm;
+        inline uint32_t compilerThreadCount;
+
+        inline Permission permission;
+    }
+
+    struct AstSnapshot {
+        uint64_t version;
+        Reg::Unit* unit;
+    };
+
+    typedef uint32_t LineOffset;
+
+    struct SemanticToken {
+        uint32_t ln;
+        uint32_t ch;
+        uint32_t len;
+        uint16_t type;
+        uint16_t mod; // as bit flags
+    };
+
+    struct FileString : String {
+        size_t capacity;
+    };
+
+    struct FileData {
+        FileString    data;
+        uint32_t      version;
+
+        Array<LineOffset>    lineOffsets;
+        Array<SemanticToken> semanticTokens;
+        Array<SemanticToken> semanticTokensOld;
+
+        Reg::Unit        unit[2];
+        Arena::Container arenas[2];
+        std::atomic<int> committedIdx { 0 };
+        // Number of active queries reading each arena
+        std::atomic<int> readerCount[2] { 0, 0 };
+    };
+
+
+
     void init();
     void release();
+    void setAndClearCompilerAllocator(Arena::Container* arena);
+    void updateSemanticTokens(FileData* data);
 
 
 
@@ -10737,50 +10851,6 @@ namespace Lsp {
         return T::RM_NONE;
     }
 
-    struct Allocator {
-        void* (*alloc) (void* context, size_t size);
-        void* context; // Points to your Arena
-    };
-
-    namespace State {
-        inline bool   initialized = false;
-        inline String rootUri;
-        inline void*  clientCapabilities;
-
-        // Allocator to build the request and following response.
-        inline Allocator allocator;
-
-        // Tracking the client
-        inline String clientName;
-        inline String clientVersion;
-    }
-
-    struct AstSnapshot {
-        uint64_t version;
-        Reg::Unit* unit;
-    };
-
-    struct LineOffsets {
-        uint32_t* data;
-        uint32_t  size;
-        uint32_t  capacity;
-    };
-
-    struct FileString : String {
-        size_t capacity;
-    };
-
-    struct FileData {
-        FileString  data;
-        uint32_t    version;
-        LineOffsets lineOffsets;
-
-        Reg::Unit        unit[2];
-        Arena::Container arenas[2];
-        std::atomic<int> committedIdx { 0 };
-        // Number of active queries reading each arena
-        std::atomic<int> readerCount[2] { 0, 0 };
-    };
 
     template <typename T>
     static T* alloc(Allocator* alc, size_t count = 1) {
@@ -10807,8 +10877,13 @@ namespace Lsp {
     }
 
 
+
     template <typename U>
     using Slice = T::Slice<U>;
+
+    // Forward declaration
+    template<typename Method>
+    void str(JsonWriter* js, const Method* obj);
 
     // Helper trait to detect Slice<T>
     template<typename T> struct is_slice : std::false_type {};
@@ -10820,6 +10895,38 @@ namespace Lsp {
 
     template<typename T>
     struct has_to_string<T, std::void_t<decltype(toString(std::declval<T>()))>> : std::true_type {};
+
+    // Helper trait to detect Schema
+    template <typename T, typename = void>
+    struct is_schema : std::false_type {};
+
+    template <typename ST>
+    struct is_schema<ST, std::void_t<decltype(T::Schema<ST>::fields)>> : std::true_type {};
+
+    // Helper trait to detect UnionSchema
+    template <typename UT, typename = void>
+    struct is_union_schema : std::false_type {};
+
+    template <typename UT>
+    struct is_union_schema<UT, std::void_t<decltype(T::UnionSchema<UT>::variants)>> : std::true_type {};
+
+    template <typename FieldType>
+    constexpr bool matchesJsonToken(JsonType token) {
+        using Clean = std::decay_t<FieldType>;
+
+        if constexpr (std::is_same_v<Clean, T::Bool>) {
+            return token == JSON_BOOL;
+        } else if constexpr (std::is_same_v<Clean, T::Int> || std::is_same_v<Clean, T::UInt>) {
+            return token == JSON_NUMBER;
+        } else if constexpr (std::is_same_v<Clean, String>) {
+            return token == JSON_STRING;
+        } else if constexpr (is_schema<Clean>::value || std::is_pointer_v<Clean>) {
+            return token == JSON_OBJECT_OPEN;
+        } else if constexpr (is_slice<Clean>::value) {
+            return token == JSON_ARRAY_OPEN;
+        }
+        return false;
+    }
 
     template<typename VType>
     void parseElement(JsonLex* js, Allocator* alc, VType& val) {
@@ -10851,6 +10958,30 @@ namespace Lsp {
                 if (jsonNext(js) == JSON_OBJECT_OPEN) {
                     val = parse<Inner>(js, alc);
                 }
+            }
+        }
+        else if constexpr (is_union_schema<MType>::value) {
+            JsonType token = jsonPeek(js);
+            bool matched = false;
+
+            std::apply([&](auto&&... variants) {
+                (([&] {
+                    if (matched) return;
+                    using TargetType = std::decay_t<decltype(val.*(variants.ptr))>;
+
+                    if (matchesJsonToken<TargetType>(token)) {
+                        val.*(T::UnionSchema<MType>::tag) = variants.kind;
+                        parseElement(js, alc, val.*(variants.ptr));
+                        matched = true;
+                    }
+                })(), ...);
+            }, T::UnionSchema<MType>::variants);
+
+            if (!matched) jsonSkipValue(js, jsonNext(js));
+        }
+        else if constexpr (is_schema<MType>::value) {
+            if (jsonNext(js) == JSON_OBJECT_OPEN) {
+                val = *parse<MType>(js, alc);
             }
         }
         else if constexpr (is_slice<MType>::value) {
@@ -10955,6 +11086,25 @@ namespace Lsp {
                 jsonWriteObjectEnd(js);
             }
         }
+        else if constexpr (is_union_schema<MType>::value) {
+            auto currentKind = val.*(T::UnionSchema<MType>::tag);
+
+            std::apply([&](auto&&... variants) {
+                (([&] {
+                    if (variants.kind == currentKind) {\
+                        auto& memberVal = val.*(variants.ptr);
+                        using MemberType = std::decay_t<decltype(memberVal)>;
+
+                        strValue<MemberType>(js, memberVal);
+                    }
+                })(), ...);
+            }, T::UnionSchema<MType>::variants);
+        }
+        else if constexpr (is_schema<MType>::value) {
+            jsonWriteObjectStart(js);
+            str<MType>(js, &val);
+            jsonWriteObjectEnd(js);
+        }
         else if constexpr (is_slice<MType>::value) {
             if (val.data != nullptr) {
                 jsonWriteArrayStart(js);
@@ -10976,6 +11126,11 @@ namespace Lsp {
 
     template<typename Method>
     void str(JsonWriter* js, const Method* obj) {
+        #if defined(_MSC_VER)
+            // printf("DEBUG TYPE: %s\n", __FUNCSIG__);
+        #else
+            // printf("DEBUG TYPE: %s\n", __PRETTY_FUNCTION__);
+        #endif
         std::apply([&](auto&&... fields) {(([&] {
             // We need to skip empty/null fields
             auto& val = obj->*(fields.ptr);
@@ -11027,6 +11182,9 @@ namespace Lsp {
     Err::Kind handle(TextDocument::DidOpen*   method);
     Err::Kind handle(TextDocument::DidClose*  method);
     Err::Kind handle(TextDocument::DidChange* method);
+
+    T::SemanticTokens*      handle(TextDocument::SemanticTokensfull* method);
+    T::SemanticTokensDelta* handle(TextDocument::SemanticTokensfulldelta* method);
 
     T::Hover* handle(TextDocument::Hover* method);
 

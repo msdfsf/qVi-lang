@@ -1401,39 +1401,6 @@ namespace Validator {
         return Err::OK;
     }
 
-    Err::Err validate(ValidationContext* ctx, WhileLoop* node) {
-        Err::Err err;
-
-        if (!node) return Err::OK;
-
-        if (!node->expression) {
-            Diag::report(ctx->unit->ast, node->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
-                "While loop missing condition."
-            });
-            return Err::UNEXPECTED_ERROR;
-        }
-
-        err = validate(ctx, node->expression);
-        if (err != Err::OK) return err;
-
-        if (!Type::isTruthy(node->expression->value.type)) {
-            Diag::report(ctx->unit->ast, node->expression->base.span, Err::INVALID_DATA_TYPE);
-            return Err::INVALID_DATA_TYPE;
-        }
-
-        if (node->bodyScope) {
-            // Record current loop, so we can validate break/continue etc.
-            SyntaxNode* prevLoop = ctx->currentLoop;
-            ctx->currentLoop = (SyntaxNode*) node;
-
-            validate(ctx, node->bodyScope);
-
-            ctx->currentLoop = prevLoop;
-        }
-
-        return Err::OK;
-    }
-
     Err::Err validate(ValidationContext* ctx, RangeExpression* range) {
         Err::Err err;
 
@@ -1764,11 +1731,6 @@ namespace Validator {
 
             case NT_SWITCH_CASE: {
                 err = validate(ctx, (SwitchCase*) node);
-                break;
-            }
-
-            case NT_WHILE_LOOP: {
-                err = validate(ctx, (WhileLoop*) node);
                 break;
             }
 

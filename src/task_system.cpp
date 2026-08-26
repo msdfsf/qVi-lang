@@ -27,6 +27,10 @@ namespace TaskSystem {
             DArray::init(&worker->stack, Config::threadWorkQueueSize, sizeof(Core::Task));
             DArray::init(&worker->localStack, Config::threadWorkQueueSize, sizeof(Core::Task));
 
+            Parser::init(&worker->state.p);
+            Validator::init(&worker->state.v);
+            Interpreter::init(&worker->state.c);
+
             worker->thread.detach();
         }
     }

@@ -77,7 +77,6 @@
             border-right: 1px solid var(--border);
             padding: var(--space-3);
             box-sizing: border-box;
-
             min-height: 0;
         }
 
@@ -122,7 +121,6 @@
             border: none;
             padding: 0;
         }
-
 
         .config-header .arrow {
             font-size: 10px;
@@ -182,7 +180,7 @@
 
         .config-group input[type=checkbox] {
             width: auto;
-        };
+        }
 
         input[type="number"]::-webkit-outer-spin-button,
         input[type="number"]::-webkit-inner-spin-button {
@@ -197,7 +195,7 @@
         }
 
         input[type=number] {
-            -moz-appearance: textfield; /* Firefox support */
+            -moz-appearance: textfield;
         }
 
         .config-group input[type="number"] {
@@ -316,14 +314,11 @@
             align-items: center;
             height: 1.2rem;
             padding: 0 var(--space-2);
-
             font-size: var(--font-size-xs);
             border-radius: 999px;
-
             background: var(--status-bg);
             color: var(--status-text);
             border: 1px solid var(--border);
-
             white-space: nowrap;
         }
 
@@ -344,11 +339,11 @@
 
         #output {
             white-space: pre;
-            tab-size: 4;     /* This is the dynamic part */
+            tab-size: 4;
             -moz-tab-size: 4;
         }
 
-        /* Sidebar */
+        /* Scrollbars */
         * {
             scrollbar-width: thin;
             scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-bg);
@@ -370,6 +365,7 @@
 
         *::-webkit-scrollbar-thumb:hover {
             background: var(--scrollbar-thumb-hover);
+        }
     </style>
 </head>
 <body>
@@ -449,7 +445,7 @@
         </div>
         <div class="config-group" style="margin-top:10px">
             <label>Status:</label>
-            <span id="hash_status" class="status-tag">Ready</>
+            <span id="hash_status" class="status-tag">Ready</span>
         </div>
     </div>
 
@@ -480,7 +476,7 @@
         <span class="arrow"></span>
         <h3>Display</h3>
     </div>
-    <div class="config-section" style="">
+    <div class="config-section">
         <div class="config-group">
             <label>Tab Display Size</label>
             <input type="number" id="cfg_tab_size" value="4" onchange="updateTabDisplay(this.value)">
@@ -529,7 +525,6 @@
 
 <script>
     let model = null;
-    let methodCount = 0;
     let selectedNodes = new Set();
 
     function validateNumberInput() {
@@ -564,11 +559,9 @@
             if (item.kind === 'literal') {
                 props = item.value.properties;
             } else if (item.kind === 'reference') {
-                // Check existing structures
                 const ref = model.structures.find(s => s.name === item.name);
                 if (ref) props = ref.properties;
                 else {
-                    // Also check other aliases in case of nested aliasing
                     const otherAlias = model.typeAliases.find(a => a.name === item.name);
                     if (otherAlias) props = collectUnionProperties(otherAlias.type, model);
                 }
@@ -588,8 +581,6 @@
         return Array.from(propMap.values());
     }
 
-    // As we are rendering to Cpp, we have to order structures
-    // so that parents always appear before children.
     function sortStructuresTopologically(model) {
         const sorted = [];
         const visited = new Set();
@@ -620,8 +611,6 @@
         model.structures = sorted;
     }
 
-    // Converts 'or' type to a 'reference', so we dont have to
-    // bother rendering it uniquely
     function preprocessModel(model) {
         const promoted = [];
 
@@ -630,7 +619,6 @@
                 const props = collectUnionProperties(alias.type, model);
 
                 if (props.length > 0) {
-                    // Create a synthetic structure
                     promoted.push({
                         name: alias.name,
                         properties: props,
@@ -644,7 +632,6 @@
 
         model.structures = [...model.structures, ...promoted];
 
-        // Remove them from aliases so they aren't processed as strings/void*
         model.typeAliases = model.typeAliases.filter(a =>
             !promoted.some(p => p.name === a.name)
         );
@@ -659,7 +646,6 @@
             preprocessModel(model);
 
             const methods = [...model.requests, ...model.notifications].map(m => m.method);
-
             const count = methods.length;
             const minPow2 = Math.pow(2, Math.ceil(Math.log2(count)));
             const recommended = minPow2 * 2;
@@ -683,10 +669,7 @@
         const el = document.getElementById("hash_status");
         if (!el) return;
 
-        // Reset base class
         el.className = "status-tag";
-
-        // Determine text and class
         let text = "";
         let cls = "";
 
@@ -698,13 +681,9 @@
             cls = "warning";
         } else if (tag === StatusTag.COMPUTING) {
             text = "Computing...";
-            cls = "computing"; // optional neutral class
-        } else {
-            text = "Unknown";
-            cls = "";
+            cls = "computing";
         }
 
-        // Apply class and text
         if (cls) el.classList.add(cls);
         el.textContent = text;
     }
@@ -777,7 +756,7 @@
 
     function calculateHash(str, algoKey, seed, tableSize) {
         const base = calculateBaseHash(str, algoKey);
-        const mixed = finalMix(base ^ (seed >>> 0))
+        const mixed = finalMix(base ^ (seed >>> 0));
         return mixed % tableSize;
     }
 
@@ -787,7 +766,7 @@
             tableSize: parseInt(document.getElementById('h_size').value),
             methods:   [...model.requests, ...model.notifications].map(m => m.method),
             statusEl:  document.getElementById('hash_status'),
-        }
+        };
     }
 
     const PREDEFINED_SEEDS = [
@@ -836,7 +815,6 @@
             let foundSeed = null;
             let buckets = new Array(tableSize);
 
-
             let linear = (strategy === 'linear');
             for (let i = 0; i < iterCount; i++) {
                 seed = linear ? seed + i : Math.floor(Math.random() * 0xFFFFFFFF);
@@ -844,8 +822,6 @@
                 buckets.fill(false);
                 let collision = false;
                 for (let j = 0; j < baseHashes.length; j++) {
-                    //const mixed = Math.imul(baseHashes[j] ^ seed, 0x5bd1e995);
-                    //const idx = mixed % tableSize;
                     let x = baseHashes[j] ^ seed;
                     x = Math.imul(x ^ (x >>> 16), 0x85ebca6b);
                     x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35);
@@ -867,14 +843,13 @@
 
         let ctx = getHashContext();
         if (ctx.methods.length > ctx.tableSize) {
-            // TODO : add overflow status
-            setStatus(status.COLLISION);
+            setStatus(StatusTag.COLLISION);
             return;
         }
 
         setStatus(StatusTag.COMPUTING);
 
-        let buckets = new Array().fill(false);
+        let buckets = new Array(ctx.tableSize).fill(false);
         let seed = document.getElementById('h_seed').valueAsNumber;
         let collision = false;
         for (let m of ctx.methods) {
@@ -893,7 +868,7 @@
         } else {
             setStatus(StatusTag.COLLISION);
         }
-       generateCode();
+        generateCode();
     }
 
     function toSnakeCase(str) {
@@ -929,15 +904,14 @@
 
         const name = typeObj.name;
 
-        // Handle Type Aliases
         if (typeObj.kind === 'reference' && model && model.typeAliases) {
             const alias = model.typeAliases.find(a => a.name === name);
             if (alias) {
-                // Recursively resolve the alias to its base type
                 return mapType(alias.type, model);
             }
         }
 
+        let result = "LSPAny";
         switch (typeObj.kind) {
             case 'base':
                 if (['string', 'DocumentUri', 'URI', 'Pattern'].includes(name)) result = 'String';
@@ -964,9 +938,7 @@
                 break;
 
             case 'or':
-                const hasStr = typeObj.items.some(i => i.name === 'string' || i.name === 'DocumentUri');
-                result = hasStr ? 'String' : mapType(typeObj.items[0], model);
-                break;
+                return { __isUnion: true, items: typeObj.items };
 
             default:
                 result = "LSPAny";
@@ -979,7 +951,6 @@
         let code = "";
         const noneName = `${prefix}_NONE`;
 
-        // Prepare names and find max length for alignment
         let renderNone = true;
         let maxLen = noneName.length;
         const members = values.map((v, i) => {
@@ -988,17 +959,14 @@
             if (memberName.length > maxLen) maxLen = memberName.length;
             return {
                 full: memberName,
-                // Use provided value, or fallback to sequential ID
                 val: (v.value !== undefined && typeof v.value === 'number') ? v.value : (i + 1),
                 raw: v.name
             };
         });
 
         renderNone = renderNone || noneValue < 0;
-
         const pad = maxLen;
 
-        // Render Enum
         code += `\tenum ${name} {\n`;
         if (renderNone) {
             code += `\t\t${noneName.padEnd(pad)} = ${noneValue},\n`;
@@ -1008,7 +976,6 @@
         });
         code += `\t};\n\n`;
 
-        // Render Strings Array if provided
         if (originalStrings && originalStrings.length > 0) {
             if (useSwitch) {
                 code += `\tstatic const char* toString(${name} val) {\n`;
@@ -1045,45 +1012,6 @@
         return allProps.concat(properties || []);
     }
 
-    function getStructInfo(structName, properties, model, sExtends = null) {
-        const parents = (sExtends || []).map(e => e.name);
-        const allProperties = getRecursiveProperties(properties, model, sExtends);
-
-        let maxTypeLen = 0;
-        let maxNameLen = 0;
-
-        const mapProps = (props) => props.map(p => {
-            let typeStr;
-            const isLiteral = p.type.kind === 'literal';
-
-            if (isLiteral) {
-                // Predict the name of the nested struct
-                typeStr = "_" + toPascalCase(p.name) + "*";
-            } else {
-                typeStr = mapType(p.type, model);
-            }
-
-            if (typeStr.length > maxTypeLen) maxTypeLen = typeStr.length;
-            if (p.name.length > maxNameLen) maxNameLen = p.name.length;
-
-            return {
-                name: p.name,
-                type: typeStr,
-                isLiteral: isLiteral,
-                literalData: isLiteral ? p.type.value : null
-            };
-        });
-
-        return {
-            name: structName,
-            ownProps: mapProps(properties),
-            allProps: mapProps(allProperties),
-            parents: parents,
-            typePad: maxTypeLen + 1,
-            namePad: maxNameLen + 1
-        };
-    }
-
     function generateSchema(typeName, props, namePadding, context) {
         let out = `\ttemplate<> struct Schema<${typeName}> {\n`;
         out += `\t\tstatic constexpr auto fields = std::make_tuple(\n`;
@@ -1102,11 +1030,9 @@
         let out = `${indent}/**\n`;
 
         lines.forEach(line => {
-            // Clean up common JS/JSON artifacts if any
             out += `${indent} * ${line.trim()}\n`;
         });
 
-        // Add @since tag if present in the meta-model
         if (item.since) {
             out += `${indent} * @since ${item.since}\n`;
         }
@@ -1115,28 +1041,181 @@
         return out;
     }
 
-     // Recursively renders the body of a struct, including nested literals.
+    function generateUnionCode(propName, typeObj, model, indent, parentContext) {
+        const unionWrapperName = toPascalCase(propName);
+        const fullUnionContext = `${parentContext}::${unionWrapperName}`;
+
+        // Check if any variant is an empty literal struct - if so, treat as optional pointer
+        const hasEmptyStruct = typeObj.items.some(item =>
+            item.kind === 'literal' && (!item.value.properties || item.value.properties.length === 0)
+        );
+
+        if (hasEmptyStruct && typeObj.items.length === 2) {
+            const nonEmptyItem = typeObj.items.find(item =>
+                !(item.kind === 'literal' && (!item.value.properties || item.value.properties.length === 0))
+            );
+
+            if (nonEmptyItem) {
+                let code = "";
+                let typeStr = "";
+                let schemaCode = "";
+
+                if (nonEmptyItem.kind === 'reference') {
+                    typeStr = `${nonEmptyItem.name}*`;
+                    code += `${indent}${typeStr} ${propName};\n`;
+                } else if (nonEmptyItem.kind === 'base') {
+                    typeStr = mapType(nonEmptyItem, model);
+                    code += `${indent}${typeStr} ${propName};\n`;
+                } else if (nonEmptyItem.kind === 'literal') {
+                    const nestedTypeName = "_" + toPascalCase(propName);
+                    const fullNestedContext = `${parentContext}::${nestedTypeName}`;
+                    typeStr = `${nestedTypeName}*`;
+                    code += `${indent}struct ${nestedTypeName} {\n`;
+                    const nestedProps = (nonEmptyItem.value.properties || []).map(p => {
+                        const pType = mapType(p.type, model);
+                        return `${indent}\t${pType} ${p.name};\n`;
+                    });
+                    code += nestedProps.join('');
+                    code += `${indent}}* ${propName};\n`;
+
+                    if (document.getElementById('sw_schema').checked) {
+                        const mappedProps = (nonEmptyItem.value.properties || []).map(p => ({
+                            name: p.name,
+                            type: mapType(p.type, model)
+                        }));
+                        const maxLen = Math.max(...mappedProps.map(p => p.name.length), 0) + 1;
+                        schemaCode += generateSchema(fullNestedContext, mappedProps, maxLen, fullNestedContext);
+                    }
+                }
+                return { code, isOptional: true, fieldName: propName, fieldType: typeStr, schemas: schemaCode };
+            }
+        }
+
+        // Tagged Union Generation with Pure Schemas
+        let code = "";
+        let schemas = "";
+        const variants = [];
+
+        typeObj.items.forEach((item, i) => {
+            let enumMember = "";
+            let fieldName = "";
+            let fieldType = "";
+            let isLiteralStruct = false;
+            let literalProps = [];
+            let literalStructName = "";
+
+            if (item.kind === 'base') {
+                enumMember = "_E" + toPascalCase(item.name);
+                fieldName = "_" + item.name;
+                fieldType = mapType(item, model);
+            } else if (item.kind === 'reference') {
+                enumMember = "_E" + toPascalCase(item.name);
+                fieldName = "_" + item.name.charAt(0).toLowerCase() + item.name.slice(1);
+                fieldType = `${item.name}*`;
+            } else if (item.kind === 'literal') {
+                const structSuffix = typeObj.items.filter(x => x.kind === 'literal').length > 1 ? `_${i}` : "";
+                literalStructName = `_Struct${structSuffix}`;
+                enumMember = `_EStruct${structSuffix}`;
+                fieldName = `_struct${structSuffix}`;
+                fieldType = literalStructName;
+                isLiteralStruct = true;
+                literalProps = item.value.properties || [];
+            } else {
+                enumMember = `_EVariant${i}`;
+                fieldName = `_variant${i}`;
+                fieldType = "LSPAny";
+            }
+
+            variants.push({
+                enumMember,
+                fieldName,
+                fieldType,
+                isLiteralStruct,
+                literalProps,
+                literalStructName,
+                index: i
+            });
+        });
+
+        // 1. Tagged Union Wrapper Struct Definition
+        code += `${indent}struct ${unionWrapperName} {\n`;
+        code += `${indent}\tenum Kind {\n`;
+        variants.forEach(v => {
+            code += `${indent}\t\t${v.enumMember} = ${v.index},\n`;
+        });
+        code += `${indent}\t} kind;\n\n`;
+
+        // 2. Named Literal Structs inside Wrapper
+        variants.filter(v => v.isLiteralStruct).forEach(v => {
+            code += `${indent}\tstruct ${v.literalStructName} {\n`;
+            v.literalProps.forEach(p => {
+                const pType = mapType(p.type, model);
+                code += `${indent}\t\t${pType} ${p.name};\n`;
+            });
+            code += `${indent}\t};\n\n`;
+
+            // Emit Schema<Parent::UnionName::_Struct>
+            if (document.getElementById('sw_schema').checked) {
+                const fullLiteralContext = `${fullUnionContext}::${v.literalStructName}`;
+                const mappedProps = v.literalProps.map(p => ({
+                    name: p.name,
+                    type: mapType(p.type, model)
+                }));
+                const maxLen = Math.max(...mappedProps.map(p => p.name.length), 0) + 1;
+                schemas += generateSchema(fullLiteralContext, mappedProps, maxLen, fullLiteralContext);
+            }
+        });
+
+        // 3. Union Payload
+        code += `${indent}\tunion {\n`;
+        variants.forEach(v => {
+            code += `${indent}\t\t${v.fieldType} ${v.fieldName};\n`;
+        });
+        code += `${indent}\t};\n`;
+        code += `${indent}} ${propName};\n`;
+
+        // 4. Emit UnionSchema<Parent::UnionName>
+        if (document.getElementById('sw_schema').checked) {
+            let uSchema = `\ttemplate<> struct UnionSchema<${fullUnionContext}> {\n`;
+            uSchema += `\t\tstatic constexpr auto tag = &${fullUnionContext}::kind;\n`;
+            uSchema += `\t\tstatic constexpr auto variants = std::make_tuple(\n`;
+            const vLines = variants.map(v => {
+                return `\t\t\tmake_variant(${fullUnionContext}::${v.enumMember}, &${fullUnionContext}::${v.fieldName})`;
+            });
+            uSchema += vLines.join(',\n') + `\n\t\t);\n\t};\n\n`;
+            schemas += uSchema;
+        }
+
+        return {
+            code,
+            isOptional: false,
+            fieldName: propName,
+            fieldType: unionWrapperName,
+            schemas
+        };
+    }
+
     function generateStructRecursive(properties, model, sw, indent, parentContext) {
         let bodyCode = "";
         let nestedSchemas = "";
 
-        // Local alignment calculation
         let maxTypeLen = 0;
         let maxNameLen = 0;
         const processedProps = (properties || []).map(p => {
             const isLiteral = p.type.kind === 'literal';
-            const typeStr = isLiteral ? ("_" + toPascalCase(p.name) + "*") : mapType(p.type, model);
+            const mappedType = mapType(p.type, model);
+            const isUnion = mappedType && mappedType.__isUnion;
+            const typeStr = isLiteral ? ("_" + toPascalCase(p.name) + "*") : (isUnion ? "/*union*/" : mappedType);
 
             if (typeStr.length > maxTypeLen) maxTypeLen = typeStr.length;
             if (p.name.length > maxNameLen) maxNameLen = p.name.length;
 
-            return { name: p.name, type: typeStr, isLiteral, raw: p };
+            return { name: p.name, type: typeStr, isLiteral, isUnion, unionData: isUnion ? mappedType : null, raw: p };
         });
 
         const typePad = maxTypeLen + 1;
         const namePad = maxNameLen + 1;
 
-        // Rendering
         processedProps.forEach(p => {
             bodyCode += generateDoc(p.raw, indent);
 
@@ -1155,6 +1234,10 @@
                 if (sw.schema) {
                     nestedSchemas += generateSchema(fullNestedContext, result.localProps, result.localNamePad, fullNestedContext);
                 }
+            } else if (p.isUnion) {
+                const unionResult = generateUnionCode(p.name, p.unionData, model, indent, parentContext);
+                bodyCode += unionResult.code;
+                nestedSchemas += unionResult.schemas;
             } else {
                 bodyCode += `${indent}${p.type.padEnd(typePad)} ${p.name};\n`;
             }
@@ -1189,7 +1272,6 @@
             paths:  document.getElementById('sw_paths').checked,
         };
 
-        // Header Comment
         let code = `// AUTO-GENERATED LSP PROTOCOL DATA STRUCTURES\n`;
         code += `// ===\n\n`;
 
@@ -1205,10 +1287,13 @@
         code += `\ttypedef void* LSPObject;\n\n`;
         code += '\ttemplate<typename T>\t\n\tstruct Slice {\n\t\tT*     data;\n\t\tsize_t size;\n\t};\n\n';
 
-        // Schema Definition
+        // Reflection Schema Preamble
         if (sw.schema) {
             code += `\ttemplate<typename T>\n`;
             code += `\tstruct Schema;\n\n`;
+
+            code += `\ttemplate<typename T>\n`;
+            code += `\tstruct UnionSchema;\n\n`;
 
             code += `\ttemplate<typename Class, typename Member>\n`;
             code += `\tstruct Field {\n`;
@@ -1220,12 +1305,23 @@
             code += `\tstatic constexpr Field<Class, Member> make_field(const char* name, Member Class::*ptr) {\n`;
             code += `\t\treturn { name, ptr };\n\t}\n\n`;
 
-            code += `\ttemplate<>\n`
-            code += `\tstruct Schema<void> {\n`
-            code += `\t\tstatic constexpr auto fields = std::make_tuple();\n`
-            code += `\t};\n\n`
+            code += `\ttemplate<typename Tag, typename MemberPtr>\n`;
+            code += `\tstruct VariantField {\n`;
+            code += `\t\tTag       kind;\n`;
+            code += `\t\tMemberPtr ptr;\n`;
+            code += `\t};\n\n`;
+
+            code += `\ttemplate<typename Tag, typename MemberPtr>\n`;
+            code += `\tstatic constexpr VariantField<Tag, MemberPtr> make_variant(Tag kind, MemberPtr ptr) {\n`;
+            code += `\t\treturn { kind, ptr };\n\t}\n\n`;
+
+            code += `\ttemplate<>\n`;
+            code += `\tstruct Schema<void> {\n`;
+            code += `\t\tstatic constexpr auto fields = std::make_tuple();\n`;
+            code += `\t};\n\n`;
         }
 
+        // Hash Router
         if (sw.hash) {
             const methods = [...model.requests, ...model.notifications].map(m => m.method);
             const hashValues = methods.map(m => ({
@@ -1240,20 +1336,19 @@
 
             code += generateEnumCode("RequestMethod", 'RM', hashValues, methods, -1, true);
 
-            // Lookup function
             code += `\tstatic RequestMethod toRequestMethod(${cfg.string} val) {\n`;
             code += `\t\tif (val.len < 0) return RM_NONE;\n`;
             code += HashAlgos[cfg.hAlgo].cpp + "\n";
             code += `\t\th ^= ${cfg.hSeed};\n`;
-            code += '\t\th ^= (h >> 16);\n\t\th *= 0x85ebca6bU;\n\t\th ^= (h >> 13);\n\t\th *= 0xc2b2ae35U;\n\t\th ^= (h >> 16);\n'
+            code += '\t\th ^= (h >> 16);\n\t\th *= 0x85ebca6bU;\n\t\th ^= (h >> 13);\n\t\th *= 0xc2b2ae35U;\n\t\th ^= (h >> 16);\n';
             code += `\t\tuint32_t index = h % ${cfg.hSize};\n`;
             code += `\t\treturn (RequestMethod) (index);\n\t}\n\n`;
         }
 
-        // Forward Declaration
+        // Forward Declarations
         if (selectedNodes.size > 0) {
             code += `\t// Forward Declarations\n`;
-            code += '\t// ===\n\n'
+            code += '\t// ===\n\n';
             selectedNodes.forEach(nodeName => {
                 const s = model.structures.find(item => item.name === nodeName);
                 if (s) {
@@ -1275,47 +1370,42 @@
             }
         });
 
-        // Structs and Schemas Actual Definitions
-
+        // Structs and Schemas
         selectedNodes.forEach(nodeName => {
             const s = model.structures.find(item => item.name === nodeName);
             if (!s) return;
 
             code += generateDoc(s, "\t");
 
-            // Inheritance
             const parents = (s.extends || []).map(e => e.name);
             const inheritance = parents.length > 0 ? " : " + parents.map(p => `public ${p}`).join(", ") : "";
 
             code += `\tstruct ${s.name}${inheritance} {\n`;
 
-            // Struct body
             const result = generateStructRecursive(s.properties, model, sw, "\t\t", s.name);
             code += result.code;
 
             code += `\t};\n\n`;
 
-            // Render Schemas
             if (sw.schema) {
-                const allProps = getRecursiveProperties(s.properties, model, s.extends).map(p => {
-                    const isLit = p.type.kind === 'literal';
-                    return { name: p.name, type: isLit ? "_" + toPascalCase(p.name) + "*" : "" };
-                });
+                const allProps = getRecursiveProperties(s.properties, model, s.extends).map(p => ({
+                    name: p.name,
+                    type: ""
+                }));
 
-                const maxFlattenedNameLen = Math.max(...allProps.map(p => p.name.length)) + 1;
+                const maxFlattenedNameLen = Math.max(...allProps.map(p => p.name.length), 0) + 1;
 
                 code += generateSchema(s.name, allProps, maxFlattenedNameLen, s.name);
                 code += result.schemas;
             }
-
         });
 
         code += '}\n\n';
 
+        // Paths Typedefs
         if (sw.paths) {
             code += 'namespace Lsp {\n\n';
 
-            // Group methods (requests + notifications) by category (e.g., textDocument)
             const allMethods = [...model.requests, ...model.notifications];
             const categories = {};
             const noCategory = [];
@@ -1323,9 +1413,7 @@
             allMethods.forEach(m => {
                 const parts = m.method.split('/');
 
-                if (!m.params) {
-                    return;
-                }
+                if (!m.params) return;
 
                 if (parts.length < 2) {
                     noCategory.push(`\ttypedef ${cfg.ns}::${m.params.name.padEnd(30)} ${toPascalCase(parts[0])};\n`);
@@ -1337,12 +1425,11 @@
                 const category = toPascalCase(parts[0]);
                 const methodName = toPascalCase(parts.slice(1).join(''));
 
-                // Only add if the parameters struct for this method is currently selected
                 if (!categories[category]) categories[category] = [];
                 categories[category].push(`\t\ttypedef ${cfg.ns}::${m.params.name.padEnd(30)} ${methodName};`);
             });
 
-            noCategory.forEach(str => { code += str});
+            noCategory.forEach(str => { code += str; });
             code += '\n';
 
             for (const [cat, typedefs] of Object.entries(categories)) {
@@ -1352,7 +1439,6 @@
             code += `}`;
         }
 
-        // Footer Comment
         code += `\n\n// ===\n`;
         code += `// END OF AUTO-GENERATED LSP PROTOCOL\n\n`;
 
@@ -1375,7 +1461,6 @@
         if (s && s.extends) {
             s.extends.forEach(base => {
                 if (base.kind === 'reference') {
-                    // Recording the parent automatically
                     selectWithDependencies(base.name);
                 }
             });
@@ -1388,15 +1473,19 @@
         } else {
             selectWithDependencies(name);
         }
-        renderList(); // meh
+        renderList();
         generateCode();
     }
 
     function selectAll(val) {
-        if(!model) return;
+        if (!model) return;
         selectedNodes.clear();
-        if(val) { model.structures.forEach(s => selectedNodes.add(s.name)); model.enumerations.forEach(e => selectedNodes.add(e.name)); }
-        renderList(); generateCode();
+        if (val) {
+            model.structures.forEach(s => selectedNodes.add(s.name));
+            model.enumerations.forEach(e => selectedNodes.add(e.name));
+        }
+        renderList();
+        generateCode();
     }
 
     async function copyToClipboard() {
@@ -1410,10 +1499,8 @@
                 code = code.replace(/\t/g, spaces);
             }
 
-            // 2. Write the string directly to the system clipboard
             await navigator.clipboard.writeText(code);
 
-            // 3. Visual feedback (Change button text)
             const btn = document.querySelector('.toolbar button');
             const originalText = btn.innerText;
             btn.innerText = "Copied!";
@@ -1427,10 +1514,9 @@
             }, 2000);
 
         } catch (err) {
-            // Fallback for older browsers or non-secure contexts (http vs https)
             console.error('Clipboard API failed, using fallback', err);
             const ta = document.getElementById('raw-output');
-            ta.style.display = 'block'; // Must be visible to select
+            ta.style.display = 'block';
             ta.select();
             document.execCommand('copy');
             ta.style.display = 'none';

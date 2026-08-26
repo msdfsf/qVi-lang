@@ -76,6 +76,7 @@ namespace Parser {
 
         // Counters and Indices
         int   idxInScope; // Track definition index in current scope
+        // DEPRECATE
         ArrId arrId;
         VarId varId;
         ErrId errId;

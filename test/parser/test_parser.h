@@ -20,6 +20,7 @@ inline void gParserPreSuite() {
     allocInit();
     Type::init();
     Ast::init();
+    Lex::init();
 
     Reg::Unit* unit = alloc<Reg::Unit>();
     unit->ast = alloc<AstContext>();
@@ -27,7 +28,9 @@ inline void gParserPreSuite() {
     Ast::init(unit->ast);
     Ast::init(unit->reg);
     unit->ast = unit->ast;
-    unit->ast->errorCount = Config::maxErrorCount;
+
+    // TODO: we may want this, but proper initialization has to happen
+    // unit->ast->errorCount = Config::maxErrorCount;
 
     Parser::init(&ctx);
     ctx.unit = unit;
@@ -38,6 +41,7 @@ inline void gParserPreSuite() {
 inline void gParserPostSuite() {
     Ast::release(ctx.unit->ast);
     Ast::release(ctx.unit->reg);
+    Lex::release();
     Parser::release(&ctx);
 }
 

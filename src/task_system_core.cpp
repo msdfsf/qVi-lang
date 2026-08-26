@@ -109,6 +109,8 @@ namespace TaskSystem::Core {
                 ctx->errId &= THREAD_MASK;
 
                 ctx->idxInScope = 0;
+
+                break;
             }
 
             case TK_PRE_VALIDATION:
@@ -119,12 +121,16 @@ namespace TaskSystem::Core {
 
                 ctx->unit = NULL;
                 DArray::clear(&ctx->fCandidates);
+
+                break;
             }
 
             case TK_BACKEND: // TODO
             case TK_COMPILE_TIME_BUILD: {
                 Interpreter::CompilerState* ctx = &state->c;
                 Interpreter::clear(ctx);
+
+                break;
             }
 
             default: {
@@ -164,16 +170,12 @@ namespace TaskSystem::Core {
         allocInit();
         nallocInit();
 
-        Parser::init(&worker->state.p);
-        Validator::init(&worker->state.v);
-        Interpreter::init(&worker->state.c);
-
-        uint64_t prefixID = (uint64_t) worker->id << 56;
-
-        worker->state.p.varId = prefixID;
-        worker->state.p.arrId = prefixID;
-        worker->state.p.defId = prefixID;
-        worker->state.p.errId = prefixID;
+        // TODO: lexer has two thread_local dynamic containers, therefore
+        //       we need to make sure its initiated per thread...
+        //       we dont need to care about releasing it, as its not a
+        //       big deal for now, but we have to get rid of these thread_locals
+        //       or make them static...
+        Lex::init();
 
         while (1) {
 

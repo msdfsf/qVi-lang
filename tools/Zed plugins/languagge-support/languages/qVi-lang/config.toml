@@ -1,0 +1,3 @@
+name = "qVi"
+scope = "source.qVi"
+path_suffixes = ["qvi", "qv"]

@@ -239,7 +239,7 @@ namespace Parser {
     //
 
     void init(ParseContext* ctx) {
-        Lex::init();
+        //Lex::init();
 
         memset(ctx, 0, sizeof(ParseContext));
 
@@ -248,7 +248,7 @@ namespace Parser {
     }
 
     void release(ParseContext* ctx) {
-        Lex::release();
+        //Lex::release();
 
         DArray::release(&ctx->nodeStack);
         DArray::release(&ctx->defStack);
@@ -522,8 +522,8 @@ namespace Parser {
 
                 case Lex::TK_IDENTIFIER : {
                     // bare statement or label
-                    token = Lex::tryToken(&lspan, { Lex::TK_IDENTIFIER });
-                    if (token.kind == Lex::TK_IDENTIFIER) {
+                    token = Lex::tryToken(&lspan, { Lex::TK_STATEMENT_BEGIN });
+                    if (token.kind == Lex::TK_STATEMENT_BEGIN) {
                         token = parseLabel(ctx, &lspan, (QualifiedName*) tokenVal.any, End { Lex::TK_STATEMENT_END });
                     } else {
                         token = parseBareStatement(ctx, &lspan, prevPos, End { Lex::TK_STATEMENT_END });
@@ -1594,44 +1594,6 @@ namespace Parser {
         return token;
     }
 
-    Lex::Token parseWhileLoop(ParseContext* ctx, Span* const span) {
-        SpanEx lspan = markSpanStart(span);
-
-        Lex::Token token;
-
-        WhileLoop* loop = Ast::Node::makeWhileLoop();
-
-        Scope* currentScope = ctx->currentScope;
-        Scope* newScope = Ast::Node::makeScope();
-        newScope->base.scope = ctx->currentScope;
-        // setParentIdx(newScope);
-
-        Variable* newOperand;
-        ctx->currentScope = newScope;
-        token = parseExpression(ctx, &lspan, &newOperand, INVALID_POS, End { Lex::TK_SCOPE_BEGIN, Lex::TK_STATEMENT_BEGIN });
-        ctx->currentScope = currentScope;
-
-        SyntaxNode* tmpLoop = ctx->currentLoop;
-        ctx->currentLoop = (SyntaxNode*) loop;
-
-        ScopeEnd scopeEnd = (ScopeEnd) (token.kind == Lex::TK_STATEMENT_BEGIN);
-
-        ctx->currentScope = newScope;
-        token = parseScope(ctx, &lspan, SC_COMMON, scopeEnd);
-        ctx->currentScope = currentScope;
-
-        ctx->currentLoop = tmpLoop;
-
-        loop->base.scope = ctx->currentScope;
-        loop->bodyScope = newScope;
-        loop->expression = newOperand;
-
-        DArray::push(&ctx->nodeStack, &loop);
-
-        loop->base.span = finalizeSpan(&lspan, span);
-        return token;
-    }
-
     // returns 'start' expression if its not a range via outLeftExp
     // we have a precedency over end token...
     Lex::Token parseRangeExpression(ParseContext* ctx, Span* span, End end, RangeExpression** range, Variable** outLeftExp) {
@@ -2171,7 +2133,7 @@ namespace Parser {
             if (token.kind == Lex::TK_STATEMENT_END) continue;
             if (token.kind == Lex::TK_SCOPE_END) break;
 
-            Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL);
+            Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL, "TODO");
             return Lex::toToken(Err::UNEXPECTED_SYMBOL);
         }
         typeDef->vars = (VariableDefinition**) commitStack(&ctx->nodeStack, mark, &typeDef->varCount);

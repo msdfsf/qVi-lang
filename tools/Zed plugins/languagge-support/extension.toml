@@ -1,8 +1,9 @@
-id = "vi-lang"
-name = "Vi Language Support"
-version = "0.0.1"
+id = "qVi-lang"
+name = "qVi Language Support"
+version = "0.0.2"
 schema_version = 1
+description = "Language support and LSP integration for qVi."
 
-[language_servers.vi-lsp]
-name = "Vi Lang LSP"
-languages = ["ViLang"]
+[language_servers.qvi-lsp]
+name = "qVi LSP"
+languages = ["qVi"]

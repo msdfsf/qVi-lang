@@ -212,8 +212,8 @@ namespace Diag {
 
         if (sev == SEV_ERROR) {
             if constexpr (Config::ERROR_RECOVERY_ENABLED) {
-                if (ctx->errorCount < Config::maxErrorCount) {
-                    AstError* err = &ctx->errors[ctx->errorCount];
+                if (ctx->errorCount > 0 && ctx->errorCount <= Config::maxErrorCount) {
+                    AstError* err = &ctx->errors[ctx->errorCount - 1];
                     err->severity = sev;
                     err->err = code;
                     err->span = getSpanStamp(span);

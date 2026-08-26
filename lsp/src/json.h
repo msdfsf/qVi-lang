@@ -63,6 +63,7 @@ typedef struct JsonLex {
 
 void     jsonLexInit   (JsonLex* ctx, JsonString src, JsonString fname);
 JsonType jsonNext      (JsonLex* ctx);
+JsonType jsonPeek      (JsonLex* ctx);
 void     jsonSkipValue (JsonLex* ctx, JsonType type);
 void     jsonAssert    (JsonLex* js, JsonType provided, JsonType expected);
 bool     jsonMatch     (JsonLex* ctx, JsonType provided, JsonType expected);

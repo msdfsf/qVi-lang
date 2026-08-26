@@ -1,3 +1,0 @@
-name = "ViLang"
-scope = "source.vilang"
-path_suffixes = ["vi"]

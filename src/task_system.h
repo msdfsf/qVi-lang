@@ -22,8 +22,6 @@
 
 
 
-namespace Compiler { enum BuildCommand : uint8_t; }
-
 namespace TaskSystem {
 
     // Suppose to initialize workers and prepare

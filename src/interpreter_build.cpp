@@ -1620,6 +1620,7 @@ namespace Interpreter {
         return Err::OK;
     }
 
+    /*
     Err::Err compile(CompilerState* state, WhileLoop* node) {
         // TODO : kinda wasteful, maybe we create either flag or
         //  force each line-like statement to be parsed as Statement
@@ -1657,7 +1658,7 @@ namespace Interpreter {
 
         return Err::OK;
     }
-
+*/
     // TODO
     Err::Err compile(CompilerState* state, Loop* node) {
         // TODO : kinda wasteful, maybe we create either flag or
@@ -1767,12 +1768,14 @@ namespace Interpreter {
         updateSourceLocation(state, node->base.span);
 
         pushOpcode(state, OC_JUMP);
-        if (state->currentLoop->type == NT_WHILE_LOOP) {
-            pushOperand(state, state->currentLoopAddress - state->bytecode.logicalPos + 1);
-        } else {
-            pushOperand(state, state->listHeadContinue);
-            state->listHeadContinue = state->bytecode.logicalPos - 8;
-        }
+
+        // TODO: for empty loop
+        // if (state->currentLoop->type == NT_LOOP) {
+        //     pushOperand(state, state->currentLoopAddress - state->bytecode.logicalPos + 1);
+        // } else {
+        // }
+        pushOperand(state, state->listHeadContinue);
+        state->listHeadContinue = state->bytecode.logicalPos - 8;
 
         return Err::OK;
     }
@@ -1926,8 +1929,6 @@ namespace Interpreter {
                 return compile(state, (Branch*) node);
             case NT_SWITCH_CASE :
                 return compile(state, (SwitchCase*) node);
-            case NT_WHILE_LOOP :
-                return compile(state, (WhileLoop*) node);
             case NT_LOOP :
                 return compile(state, (Loop*) node);
             case NT_RETURN_STATEMENT :

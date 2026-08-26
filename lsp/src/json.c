@@ -199,6 +199,27 @@ JsonType jsonNext(JsonLex* ctx) {
 
 }
 
+JsonType jsonPeek(JsonLex* ctx) {
+
+    size_t startPos = ctx->pos;
+
+    jsonSkip(ctx);
+    if (ctx->pos >= ctx->src.len) return JSON_EOF;
+
+    char ch = ctx->src.data[ctx->pos];
+    switch (ch) {
+        case '{': return JSON_OBJECT_OPEN;
+        case '}': return JSON_OBJECT_CLOSE;
+        case '[': return JSON_ARRAY_OPEN;
+        case ']': return JSON_ARRAY_CLOSE;
+        case '"': return JSON_STRING;
+        default: return jsonParseBareWord(ctx);
+    }
+
+    ctx->pos = startPos;
+
+}
+
 void jsonSkipValue(JsonLex* ctx, JsonType type) {
     if (type == JSON_OBJECT_OPEN || type == JSON_ARRAY_OPEN) {
         int depth = 1;

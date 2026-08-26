@@ -82,6 +82,7 @@ namespace TaskSystem::Core {
     Worker* getCurrentWorker();
     Worker* getWorkers();
 
+    void enqueue(Task task);
     void runWorker(Worker* worker);
 
     void beginGroup();

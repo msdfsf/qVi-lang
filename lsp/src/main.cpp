@@ -8,9 +8,10 @@
 #include "json.h"
 #include "lsp.h"
 #include "comm_provider.h"
-#include "../../src/dynamic_arena.h"
 
 #include <cstdio>
+#include <debugapi.h>
+#include <synchapi.h>
 
 
 
@@ -23,25 +24,27 @@ static bool match(JsonString str, const char* lit) {
 }
 
 template <typename T>
-static JsonString generateResponse(JsonWriter* js, T* result, int id) {
+static JsonString generateResponse(CommProvider::Info* comm, T* result, int id) {
+    JsonWriter js;
+    // TODO: for now static size, make json return bool if write was successful or not?
+    jsonWriterInit(&js, comm->buffer.data, comm->buffer.capacity);
 
-    jsonWriteObjectStart(js);
-    jsonWriteKey(js, "jsonrpc"_js);
-    jsonWriteStr(js, "2.0"_js);
+    jsonWriteObjectStart(&js);
+    jsonWriteKey(&js, "jsonrpc"_js);
+    jsonWriteStr(&js, "2.0"_js);
 
-    jsonWriteKey(js, "id"_js);
-    jsonWriteInt(js, id);
+    jsonWriteKey(&js, "id"_js);
+    jsonWriteInt(&js, id);
 
-    jsonWriteKey(js, "result"_js);
+    jsonWriteKey(&js, "result"_js);
     //jsonWriteObjectStart(js);
 
-    Lsp::serialize(js, result);
+    Lsp::serialize(&js, result);
 
     //jsonWriteObjectEnd(js);
-    jsonWriteObjectEnd(js);
+    jsonWriteObjectEnd(&js);
 
-    return jsonWriterCommit(js);
-
+    return jsonWriterCommit(&js);
 }
 
 Arena::Container lspAllocatorArena;
@@ -49,9 +52,10 @@ Arena::Container lspAllocatorArena;
 #include <fcntl.h>
 #include <io.h>
 int main() {
-
     #ifdef _DEBUG
-    while (!IsDebuggerPresent()) Sleep(100);
+    while (!IsDebuggerPresent()) Sleep(3);
+    #else
+    Sleep(10000);
     #endif
 
     if (_setmode(_fileno(stdin), _O_BINARY) == -1) {
@@ -64,15 +68,8 @@ int main() {
         return 1;
     }
 
-    CommProvider::Err err;
     CommProvider::Info comm;
-    comm.type = CommProvider::CT_STD;
-
-    Arena::Container generalArena;
-    Arena::init(&generalArena, 1024 * 32);
-
-    Arena::Container requestArena;
-    Arena::init(&requestArena, 1024 * 1024 * 32);
+    init(&comm, CommProvider::CT_STD);
 
     Arena::init(&lspAllocatorArena, 1024 * 1024 * 32);
     Lsp::Allocator lspAllocator = {
@@ -80,12 +77,17 @@ int main() {
         .context = &lspAllocatorArena
     };
 
+    // Prepare global state
     Lsp::State::allocator = lspAllocator;
-    alc = &generalArena;
-    nalc = &generalArena;
-
+    Lsp::State::permission = Lsp::P_PARSE;
+    Lsp::State::comm = &comm;
+    #ifdef _DEBUG
+    Lsp::State::compilerThreadCount = 0;
+    #else
+    Lsp::State::compilerThreadCount = 4;
+    #endif
+    
     Lsp::init();
-
     Lsp::report({ Lsp::Inf::INFO }, "Initialization finished.");
 
     bool beOrNotToBe = true;
@@ -93,16 +95,17 @@ int main() {
         JsonLex js = { 0 };
         JsonType token;
 
+        Arena::clear(&lspAllocatorArena);
+        CommProvider::releaseMessage(&comm);
+
         CommProvider::Message msg = { 0 };
-        err = CommProvider::read(&comm, &msg);
+        CommProvider::Err err = CommProvider::read(&comm, &msg);
 
         if (err == CommProvider::ERR_CLOSED) break;
         if (err != CommProvider::OK) continue;
 
-        Arena::clear(&requestArena);
         jsonLexInit(&js, msg.body, "lsp_input"_js);
-
-
+        fprintf(stderr, "\n%.*s\n", msg.body.len, msg.body.data);
 
         // Extract:
         // "id": <number>
@@ -117,7 +120,6 @@ int main() {
         JsonString methodUri = { 0 };
 
         while (true) {
-
             token = jsonNext(&js);
             if (token == JSON_OBJECT_CLOSE) break;
             if (!jsonMatch(&js, token, JSON_KEY)) break;
@@ -141,7 +143,6 @@ int main() {
                 break;
             }
             jsonSkipValue(&js, token);
-
         }
 
 
@@ -153,10 +154,6 @@ int main() {
         Lsp::T::RequestMethod method = Lsp::toRequestMethod(methodUri);
 
         // Dispatch requested method
-        JsonWriter jsWr;
-        char* buffer = (char*) requestArena.head->data;
-        jsonWriterInit(&jsWr, buffer, requestArena.blockPayloadSize);
-
         JsonString resp = { 0, 0 };
         switch (method) {
 
@@ -175,6 +172,51 @@ int main() {
                 // Features
                 caps->textDocumentSync       = sync;
                 caps->hoverProvider          = true;
+
+
+
+                // SemanticTokens
+                // ---
+
+                caps->semanticTokensProvider = Lsp::alloc<Lsp::T::SemanticTokensOptions>(&lspAllocator);
+                caps->semanticTokensProvider->full.kind = Lsp::T::SemanticTokensOptions::Full::_EStruct;
+                caps->semanticTokensProvider->full._struct = {
+                    .delta = true
+                };
+
+                caps->semanticTokensProvider->legend = Lsp::alloc<Lsp::T::SemanticTokensLegend>(&lspAllocator);
+
+                constexpr size_t TOKEN_TYPE_COUNT = 10;
+
+                Lsp::Slice<String>* tokenTypes = &caps->semanticTokensProvider->legend->tokenTypes;
+                tokenTypes->size = TOKEN_TYPE_COUNT;
+                tokenTypes->data = Lsp::alloc<String>(&lspAllocator, TOKEN_TYPE_COUNT);
+
+                tokenTypes->data[0] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_KEYWORD);
+                tokenTypes->data[1] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_TYPE);
+                tokenTypes->data[2] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_FUNCTION);
+                tokenTypes->data[3] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_VARIABLE);
+                tokenTypes->data[4] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_ENUM);
+                tokenTypes->data[5] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_NAMESPACE);
+                tokenTypes->data[6] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_MODIFIER);
+                tokenTypes->data[7] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_OPERATOR);
+                tokenTypes->data[8] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_STRING);
+                tokenTypes->data[9] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_TYPES_NUMBER);
+
+                constexpr size_t TOKEN_MODIFIER_COUNT = 5;
+
+                Lsp::Slice<String>* tokenModifiers = &caps->semanticTokensProvider->legend->tokenModifiers;
+                tokenModifiers->size = TOKEN_MODIFIER_COUNT;
+                tokenModifiers->data = Lsp::alloc<String>(&lspAllocator, TOKEN_MODIFIER_COUNT);
+
+                tokenModifiers->data[0] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_MODIFIERS_DECLARATION);
+                tokenModifiers->data[1] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_MODIFIERS_READONLY);
+                tokenModifiers->data[2] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_MODIFIERS_STATIC);
+                tokenModifiers->data[3] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_MODIFIERS_DEPRECATED);
+                tokenModifiers->data[4] = Lsp::T::toString(Lsp::T::SEMANTIC_TOKEN_MODIFIERS_MODIFICATION);
+
+
+
                 //caps->definitionProvider     = true;
                 //caps->documentSymbolProvider = true;
                 //caps->declarationProvider    = true;
@@ -182,12 +224,12 @@ int main() {
 
                 // Server Info
                 result.serverInfo = Lsp::alloc<Lsp::T::InitializeResult::_ServerInfo>(&lspAllocator);
-                result.serverInfo->name    = "MyLspServer";
+                result.serverInfo->name    = "qVi-LanguageServer";
                 result.serverInfo->version = "0.1.0";
 
                 result.capabilities = caps;
 
-                resp = generateResponse(&jsWr, &result, id);
+                resp = generateResponse(&comm, &result, id);
                 break;
             }
 
@@ -223,13 +265,33 @@ int main() {
                 break;
             }
 
+            case Lsp::T::RM_TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL: {
+                using namespace Lsp::TextDocument;
+
+                Lsp::T::SemanticTokens* result =
+                    Lsp::handle(Lsp::parse<SemanticTokensfull>(&js, &lspAllocator));
+
+                resp = generateResponse(&comm, result, id);
+                break;
+            }
+
+            case Lsp::T::RM_TEXT_DOCUMENT_SEMANTIC_TOKENS_FULL_DELTA: {
+                using namespace Lsp::TextDocument;
+
+                Lsp::T::SemanticTokensDelta* result =
+                    Lsp::handle(Lsp::parse<SemanticTokensfulldelta>(&js, &lspAllocator));
+
+                resp = generateResponse(&comm, result, id);
+                break;
+            }
+
             case Lsp::T::RM_TEXT_DOCUMENT_HOVER: {
                 using namespace Lsp::TextDocument;
 
                 Lsp::T::Hover* result =
                     Lsp::handle(Lsp::parse<Hover>(&js, &lspAllocator));
 
-                resp = generateResponse(&jsWr, result, id);
+                resp = generateResponse(&comm, result, id);
                 break;
             }
 
@@ -239,6 +301,9 @@ int main() {
 
             case Lsp::T::RM_SHUTDOWN: {
                 beOrNotToBe = 0;
+
+                JsonWriter jsWr;
+                jsonWriterInit(&jsWr, comm.buffer.data, comm.buffer.capacity);
 
                 jsonWriteObjectStart(&jsWr);
                     jsonWriteKey(&jsWr, "jsonrpc"_js); jsonWriteStr(&jsWr, "2.0"_js);
@@ -261,7 +326,8 @@ int main() {
 
     }
 
+    CommProvider::release(&comm);
     Lsp::release();
-    return 0;
 
+    return 0;
 }

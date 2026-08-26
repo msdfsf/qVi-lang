@@ -112,7 +112,6 @@ enum NodeType : AllocType {
     NT_FUNCTION,
     NT_BRANCH,
     NT_SWITCH_CASE,
-    NT_WHILE_LOOP,
     NT_LOOP,
     NT_RETURN_STATEMENT,
     NT_CONTINUE_STATEMENT,
@@ -465,6 +464,7 @@ struct TypeSpecifier {
         FunctionPrototype* baseFcn; // The base function pointer type
     };
 
+    // TODO: We need a separate span for qualifier for lsp
     Span* span;
 
     // In the order they were written
@@ -574,12 +574,6 @@ struct SwitchCase {
 
     uint32_t caseExpCount;
     uint32_t caseCount;
-};
-
-struct WhileLoop {
-    SyntaxNode base;
-    Scope*     bodyScope;
-    Variable*  expression;
 };
 
 struct Loop {
@@ -721,6 +715,7 @@ struct ImportStatement {
 
 // contain references to nodes in linear way
 // so validator dont have to traverse tree that much
+// Deprecate: we can store only global symbols if we continue to do so
 struct AstRegistry {
     static constexpr int dataSize = 29;
     union {
@@ -935,6 +930,7 @@ namespace Ast {
         void   getName(SyntaxNode* node, String** str);
 
         Span* getNameSpan(SyntaxNode* node);
+        int   getTokenLen(SyntaxNode* node);
     };
 
     namespace Find {
@@ -1036,7 +1032,6 @@ constexpr int nodeTypeSize[AT_COUNT] = {
     sizeof(Function),
     sizeof(Branch),
     sizeof(SwitchCase),
-    sizeof(WhileLoop),
     sizeof(Loop),
     sizeof(ReturnStatement),
     sizeof(ContinueStatement),
@@ -1085,8 +1080,6 @@ constexpr int nodeTypeSize[AT_COUNT] = {
 // TODO: shall we deprecate?
 #if !defined(_CUSTOM_ALLOCATOR_)
 
-    inline thread_local Allocator* nalc = NULL;
-
     inline void nallocInit() {
     }
 
@@ -1106,10 +1099,8 @@ constexpr int nodeTypeSize[AT_COUNT] = {
 
 #else
 
-    extern thread_local AllocatorHandle nalc;
-
-    extern nallocInit();
-    extern nallocRelease();
+    extern void nallocInit();
+    extern void nallocRelease();
 
     extern void* nalloc   (AllocType type);
     extern void* nalloc   (AllocType type, size_t count);

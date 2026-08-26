@@ -716,16 +716,6 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
             break;
         }
 
-        case NT_WHILE_LOOP: {
-            WhileLoop* wl = (WhileLoop*) node;
-            indent(ctx, out);
-            IO::write(out, "while (");
-            if (wl->expression) emitVariable(ctx, out, wl->expression);
-            IO::write(out, ") ");
-            if (wl->bodyScope) emitNode(ctx, (SyntaxNode*) wl->bodyScope, out);
-            break;
-        }
-
         case NT_LOOP: {
             indent(ctx, out);
             IO::write(out, "for (;;) ");

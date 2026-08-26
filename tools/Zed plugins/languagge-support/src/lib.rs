@@ -4,7 +4,7 @@ struct MyExtension;
 
 impl MyExtension {
     fn get_path_to_language_server_executable(&self) -> zed::Result<String> {
-        Ok("D:\\tmpLang\\lsp\\build\\vi-lsp.exe".to_string())
+        Ok("D:\\tmpLang\\build\\debug\\qVi-lsp.exe".to_string())
     }
 
     fn get_args_for_language_server(&self) -> zed::Result<Vec<String>> {

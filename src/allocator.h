@@ -88,8 +88,7 @@
 #else
 
     typedef void* AllocatorMarker;
-    typedef void* AllocatorHandle;
-    extern thread_local AllocatorHandle alc;
+    typedef void* Allocator;
 
     extern bool allocIsInitialized();
     extern void allocInit();
