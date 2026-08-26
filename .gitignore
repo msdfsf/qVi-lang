@@ -6,7 +6,6 @@ src/.vscode/
 tmp/*
 lsp/build/
 tools/Zed\ plugins/languagge-support/target/
-tools/Zed\ plugins/languagge-support/Cargo.toml
 
 *.exe
 *.txt
