@@ -67,7 +67,7 @@ inline Test::Case gFunctionParserCases[] = {
     TEST_CASE(test_function_standard_with_return) {
         PARSE_FUNCTION(
             "add",
-            "(a: i32, b: i32) -> i32 {\n"
+            "a: i32, b: i32) -> i32 {\n"
             "    return a + b;\n"
             "}"
         );
@@ -81,7 +81,7 @@ inline Test::Case gFunctionParserCases[] = {
     TEST_CASE(test_function_void_no_return) {
         PARSE_FUNCTION(
             "log_message",
-            "(id: u64) {\n"
+            "id: u64) {\n"
             "    print(id);\n"
             "}"
         );
@@ -94,7 +94,7 @@ inline Test::Case gFunctionParserCases[] = {
     TEST_CASE(test_function_zero_parameters) {
         PARSE_FUNCTION(
             "get_tick_count",
-            "() -> u64 {\n"
+            ") -> u64 {\n"
             "    return 1000;\n"
             "}"
         );
@@ -107,7 +107,7 @@ inline Test::Case gFunctionParserCases[] = {
         ctx.foreignContext = true;
         PARSE_FUNCTION(
             "draw_pixel",
-            "(x: f32, y: f32) -> u8;"
+            "x: f32, y: f32) -> u8;"
         );
 
         assertFunctionBase(fn, "draw_pixel", 2 /*inArgs*/, true /*hasReturn*/, false /*hasBody*/);
@@ -120,7 +120,7 @@ inline Test::Case gFunctionParserCases[] = {
     TEST_CASE(test_function_return_pointer) {
         PARSE_FUNCTION(
             "find_node",
-            "(id: u64) -> Node^ {\n"
+            "id: u64) -> Node^ {\n"
             "    return null;\n"
             "}"
         );
@@ -134,7 +134,7 @@ inline Test::Case gFunctionParserCases[] = {
     TEST_CASE(test_function_with_error_set) {
         PARSE_FUNCTION(
             "read_packet",
-            "(buffer: u8^) using NetError -> u64 {\n"
+            "buffer: u8^) using NetError -> u64 {\n"
             "    return 64;\n"
             "}"
         );
@@ -149,7 +149,7 @@ inline Test::Case gFunctionParserCases[] = {
     TEST_CASE(test_function_single_statement_body) {
         PARSE_FUNCTION(
             "square",
-            "(x: i32) -> i32: return x * x;"
+            "x: i32) -> i32: return x * x;"
         );
 
         assertFunctionBase(fn, "square", 1, true, true);

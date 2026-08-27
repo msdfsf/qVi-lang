@@ -4,6 +4,6 @@ version = "0.0.2"
 schema_version = 1
 description = "Language support and LSP integration for qVi."
 
-[language_servers.qvi-lsp]
-name = "qVi LSP"
-languages = ["qVi"]
+[language_servers.qVi-lsp]
+name = "qVi-lang LSP"
+languages = ["qVi-lang"]

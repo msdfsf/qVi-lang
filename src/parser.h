@@ -98,7 +98,7 @@ namespace Parser {
 
     // Scopes and Blocks
     Lex::Token parseScope(ParseContext* ctx, Span* span, const ScopeType type, const ScopeEnd end, StackMark dsmarkStart = NULL_STACK_MARK);
-    Lex::Token parseNamespace(ParseContext* ctx, Span* span);
+    Lex::Token parseNamespace(ParseContext* ctx, Span* span, QualifiedName* name);
     Lex::Token parseForeignScope(ParseContext* ctx, Span* span);
 
     // Statements
@@ -110,7 +110,7 @@ namespace Parser {
     Lex::Token parseLabel(ParseContext* ctx, Span* span, FullToken prev, NodeType nodeType, End end);
     Lex::Token parseLabel(ParseContext* ctx, Span* span, QualifiedName* name, End end);
     Lex::Token parseAssignment(ParseContext* ctx, Span* span, const Pos startPos, const End end);
-    Lex::Token parseVarDefinition(ParseContext* ctx, Span* span, QualifiedName* name, const End end);
+    Lex::Token parseVarDefinition(ParseContext* ctx, Span* span, FullToken prev, QualifiedName* name, const End end);
     Lex::Token parseDefinitionAssignment(ParseContext* ctx, Span* span, FullToken prev, VariableDefinition* def, const End end, Flags flags);
 
     // Types
