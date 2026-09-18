@@ -27,6 +27,7 @@ namespace TaskSystem {
     // Suppose to initialize workers and prepare
     // persistent thread-local contexts.
     void init(uint64_t workerCount);
+    void release();
 
     uint64_t getWorkerId();
 

@@ -27,9 +27,16 @@ INamed SyntaxNode::dir = { NULL, 0 };
 
 void Ast::init(AstContext* ast) {
     memset(ast, 0, sizeof(AstContext));
+    // TODO: to Config
+    Arena::init(&ast->tmpArena, 4 * 2048);
+}
+
+void Ast::clear(AstContext* ast) {
+    Arena::clear(&ast->tmpArena);
 }
 
 void Ast::release(AstContext* ast) {
+    Arena::release(&ast->tmpArena);
 }
 
 void Ast::init(AstRegistry* reg) {
@@ -42,8 +49,16 @@ void Ast::init(AstRegistry* reg) {
     }
 }
 
-void Ast::release(AstRegistry* reg) {
+void Ast::clear(AstRegistry* reg) {
+    for (int i = 0; i < AstRegistry::dataSize; i++) {
+        DArray::clear(reg->data + i);
+    }
+}
 
+void Ast::release(AstRegistry* reg) {
+    for (int i = 0; i < AstRegistry::dataSize; i++) {
+        DArray::release(reg->data + i);
+    }
 }
 
 // TODO : define arg counts only once
@@ -59,7 +74,7 @@ void Ast::init() {
     fPrintf->name.buff = (char*) Internal::IFS_PRINTF;
     fPrintf->name.len = sizeof(Internal::IFS_PRINTF) - 1;
     fPrintf->internalIdx = Internal::IF_PRINTF;
-    fPrintf->base.semStatus = TaskStatus::TS_READY;
+    fPrintf->base.state = NS_VALIDATED;
 
     fPrintf->prototype.inArgs = alloc<VariableDefinition*>(2);
 
@@ -72,7 +87,7 @@ void Ast::init() {
     VariableDefinition* fPrintArg2 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
     fPrintArg2->var = (Variable*) nalloc(NT_VARIABLE);
     fPrintArg2->var->base.scope = SyntaxNode::root;
-    fPrintArg2->var->value.type = Type::basicTypes + Type::DT_MULTIPLE_TYPES;
+    fPrintArg2->var->value.type = Type::getInfo(Type::DT_MULTIPLE_TYPES);
     fPrintArg2->var->value.hasValue = 0;
 
     fPrintf->prototype.inArgs[0] = fPrintArg1;
@@ -88,7 +103,7 @@ void Ast::init() {
     fAlloc->name.buff = (char*) Internal::IFS_ALLOC;
     fAlloc->name.len = sizeof(Internal::IFS_ALLOC) - 1;
     fAlloc->internalIdx = Internal::IF_ALLOC;
-    fAlloc->base.semStatus = TaskStatus::TS_READY;
+    fAlloc->base.state = NS_VALIDATED;
 
     fAlloc->prototype.inArgs = alloc<VariableDefinition*>();
 
@@ -109,7 +124,7 @@ void Ast::init() {
     fFree->name.buff = (char*) Internal::IFS_FREE;
     fFree->name.len = sizeof(Internal::IFS_FREE) - 1;
     fFree->internalIdx = Internal::IF_FREE;
-    fFree->base.semStatus = TaskStatus::TS_READY;
+    fFree->base.state = NS_VALIDATED;
 
     fFree->prototype.inArgs = alloc<VariableDefinition*>(2);
 
@@ -144,7 +159,7 @@ void Ast::init() {
 
     vTrue->value.type = Type::basicTypes + Type::DT_INT;
     vTrue->value.hasValue = true;
-    vTrue->value.u64 = 0;
+    vTrue->value.u64 = 1;
 
     vTrue->name.buff = (char*) Internal::IVS_TRUE;
     vTrue->name.len = sizeof(Internal::IVS_TRUE) - 1;
@@ -171,8 +186,16 @@ void Ast::init() {
 
 }
 
+void Ast::clear() {
+    // TODO
+}
+
 void Ast::release() {
     // TODO
+}
+
+bool Ast::Internal::isInternal(FunctionType type) {
+    return type > IF_NONE && type <= IF_COUNT;
 }
 
 Variable* unwrap(Variable* var) {
@@ -192,7 +215,26 @@ Variable* unwrap(Variable* var) {
     return var;
 }
 
+Variable* unwrapWithCasts(Variable* var) {
+    Expression* ex = var->expression;
+    while (ex) {
+        if (ex->type == EXT_UNARY) {
+            UnaryExpression* uex = (UnaryExpression*) ex;
+            if (uex->base.opType == OP_NONE) {
+                ex = uex->operand->expression;
+                var = uex->operand;
+            }
+        } else if (ex->type == EXT_CAST) {
+            Cast* cast = (Cast*) ex;
+            ex = cast->operand->expression;
+            var = cast->operand;
+        } else {
+            return var;
+        }
+    }
 
+    return var;
+}
 
 AcquireNodeReturn acquireNode(uint8_t* statusField, uint8_t* nodeWorkerId, uint8_t workerId, bool wait) {
     std::atomic_ref<uint8_t> status(*statusField);
@@ -229,7 +271,7 @@ AcquireNodeReturn acquireNode(uint8_t* statusField, uint8_t* nodeWorkerId, uint8
 // Must be called if acquireNode returned true
 void releaseNode(uint8_t* statusField, bool success) {
     std::atomic_ref<uint8_t> status(*statusField);
-    status.store(success ? TS_READY : TS_PENDING, std::memory_order_release);
+    status.store(TS_PENDING, std::memory_order_release);
     status.notify_all();
 }
 
@@ -815,7 +857,6 @@ _defineInScope(GotoStatement, NT_GOTO_STATEMENT);
 
 void init(SyntaxNode* node) {
     node->ogNode = NULL;
-    node->definitionIdx = 0;
     node->scope = NULL;
     node->flags = 0;
     node->span = NULL;
@@ -913,7 +954,7 @@ void Ast::Node::init(Function* node) {
     node->bodyScope = NULL;
     node->errorSet = NULL;
     node->errorSetName = NULL;
-    node->internalIdx = 0;
+    node->internalIdx = Internal::IF_NONE;
     node->returns = NULL;
     node->returnCount = 0;
 

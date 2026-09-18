@@ -61,6 +61,7 @@ namespace TaskSystem::Core {
 
     struct Worker {
         int id;
+        bool amIAlive;
 
         std::thread thread;
         std::atomic<bool> hasWork;
@@ -81,6 +82,7 @@ namespace TaskSystem::Core {
     TaskFunction* getTaskFunction(Core::TaskKind kind);
     Worker* getCurrentWorker();
     Worker* getWorkers();
+    uint64_t getWorkerCount();
 
     void enqueue(Task task);
     void runWorker(Worker* worker);

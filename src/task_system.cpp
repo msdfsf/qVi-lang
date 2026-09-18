@@ -1,6 +1,11 @@
 #include "task_system.h"
+#include "array_list.h"
+#include "interpreter.h"
+#include "parser.h"
 #include "task_system_core.h"
 #include "config.h"
+#include "validator.h"
+#include <cstdint>
 
 
 namespace TaskSystem {
@@ -32,6 +37,26 @@ namespace TaskSystem {
             Interpreter::init(&worker->state.c);
 
             worker->thread.detach();
+        }
+    }
+
+    void release() {
+        Core::Worker*  workers     = TaskSystem::Core::getWorkers();
+        const uint64_t workerCount = TaskSystem::Core::getWorkerCount();
+
+        for (int i = 0 ; i < workerCount; i++) {
+            Core::Worker* worker = workers + i;
+
+            DArray::release(&worker->stack);
+            DArray::release(&worker->localStack);
+
+            Parser::release(&worker->state.p);
+            Validator::release(&worker->state.v);
+            Interpreter::release(&worker->state.c);
+
+            // TODO: do a proper thing
+            worker->amIAlive = false;
+            worker->hasWork.notify_one();
         }
     }
 

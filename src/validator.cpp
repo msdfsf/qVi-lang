@@ -31,8 +31,13 @@
 // compile-time evaluation after all type information is
 // resolved—can be offloaded to the TaskSystem.
 
-// TODO : unite calling TypeInfo instances as 'type' or 'aType' etc.
-//        for now they usually go as 'info'
+// TODO: unite calling TypeInfo instances as 'type' or 'aType' etc.
+//       for now they usually go as 'info'
+// TODO: handle print empty params, like "%", , 2;
+// TODO: add tmp string allocator as global thing to use across all files
+//       that would be integrated in IO::Buffer.
+//       then we can simplify Type::toStr calls and use Type::TypeInfo
+//       to always generate full type names
 
 #include "validator.h"
 #include "array_list.h"
@@ -43,6 +48,7 @@
 #include "globals.h"
 #include "logger.h"
 #include "operators.h"
+#include "print_format.h"
 #include "registry.h"
 #include "set.h"
 #include "string.h"
@@ -58,8 +64,11 @@
 #include "debug_helper.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 
 
 
@@ -172,6 +181,14 @@ namespace Validator {
             if (err != Err::OK) return err;
         }
 
+        // TODO: dont we just create a anonymous node?
+        if (fcn->prototype.outArg) {
+            err = validate(ctx, fcn->prototype.outArg);
+            if (err != Err::OK) return err;
+        }
+
+        fcn->base.state = NS_TYPE_READY;
+
         if (fcn->bodyScope) {
             err = validate(ctx, fcn->bodyScope);
             if (err != Err::OK) return err;
@@ -181,11 +198,9 @@ namespace Validator {
             if (err != Err::OK) return err;
         }
 
-        err = validate(ctx, fcn->prototype.outArg);
-        if (err != Err::OK) return err;
-
         ctx->currentFunction = prevFcn;
 
+        fcn->base.state = NS_VALIDATED;
         return Err::OK;
     }
 
@@ -622,7 +637,7 @@ namespace Validator {
         const uint32_t callInCnt = call->inArgCount;
 
         const bool isVariadic = (fcnInCnt > 0 &&
-            fcn->prototype.inArgs[fcnInCnt - 1]->var->value.type->kind == Type::DT_MULTIPLE_TYPES);
+            fcn->prototype.inArgs[fcnInCnt - 1]->var->value.type == Type::getInfo(Type::DT_MULTIPLE_TYPES));
 
         if (!isVariadic && fcnInCnt != callInCnt) {
             outScore->value = 0;
@@ -650,8 +665,8 @@ namespace Validator {
             Variable* fArg = fcn->prototype.inArgs[i]->var;
             Variable* cArg = call->inArgs[i];
 
-            const Type::Kind fDtype = fArg->value.type->kind;
-            const Type::Kind cDtype = cArg->value.type->kind;
+            const Type::TypeInfo* fType = fArg->value.type;
+            const Type::TypeInfo* cType = cArg->value.type;
 
             // Exact Match
             if (fArg->value.type == cArg->value.type) {
@@ -660,10 +675,10 @@ namespace Validator {
             }
 
             // Numeric Rules
-            if (Type::isInt(cDtype) && Type::isInt(fDtype)) {
-                if (Type::isSignedInt(cDtype) == Type::isSignedInt(fDtype)) {
+            if (Type::isInt(cType) && Type::isInt(fType)) {
+                if (Type::isSignedInt(cType) == Type::isSignedInt(fType)) {
                     // Promotion (Safe) vs Decrease (Dangerous)
-                    score += Type::basicTypes[cDtype].size < Type::basicTypes[fDtype].size
+                    score += Type::basicTypes[cType->kind].size < Type::basicTypes[fType->kind].size
                              ? FOS_PROMOTION : FOS_SIZE_DECREASE;
                 } else {
                     score += FOS_SIGN_CHANGE;
@@ -671,19 +686,19 @@ namespace Validator {
                 continue;
             }
 
-            if (Type::isFloat(cDtype) && Type::isFloat(fDtype)) {
-                score += Type::basicTypes[cDtype].size < Type::basicTypes[fDtype].size
+            if (Type::isFloat(cType) && Type::isFloat(fType)) {
+                score += Type::basicTypes[cType->kind].size < Type::basicTypes[fType->kind].size
                          ? FOS_PROMOTION : FOS_SIZE_DECREASE;
                 continue;
             }
 
-            if (Type::isInt(cDtype) && Type::isFloat(fDtype)) {
+            if (Type::isInt(cType) && Type::isFloat(fType)) {
                 score += FOS_TO_FLOAT;
                 continue;
             }
 
             // General Implicit Casts
-            if (validateImplicitCast(cDtype, fDtype)) {
+            if (Type::canImplicitCast(cType, fType)) {
                 score += FOS_IMPLICIT_CAST;
                 continue;
             }
@@ -696,8 +711,9 @@ namespace Validator {
         outScore->value = score;
     }
 
-    // TODO : on error fill ctx with top score functions for better message.
-    Function* findClosestFunction(SymbolIndexEntry* entry, Variable* callOp) {
+    // TODO: we need to return compilation error...
+    // TODO: on error fill ctx with top score functions for better message.
+    Function* findClosestFunction(ValidationContext* ctx, SymbolIndexEntry* entry, Variable* callOp) {
         Scope* scope        = callOp->base.scope;
         FunctionCall* call  = (FunctionCall*) callOp->expression;
         const int callInCnt = call->inArgCount;
@@ -705,7 +721,15 @@ namespace Validator {
         if (!entry) return NULL;
         if (entry->kind == SymbolIndexEntry::SINGLE) {
             if (entry->node->type == NT_FUNCTION) {
-                return (Function*) entry->node;
+                Function* fcn = (Function*) entry->node;
+
+                if (fcn->base.state < NS_TYPE_READY) {
+                    // TODO: we may want to have a function ensureTypeReady or something
+                    Err::Err err = ensureValidated(ctx, (SyntaxNode*) fcn);
+                    if (err != Err::OK) return NULL;
+                }
+
+                return fcn;
             } else {
                 return NULL;
             }
@@ -717,6 +741,11 @@ namespace Validator {
 
         for (int i = 0; i < entry->overloads.count; i++) {
             Function* fcn = (Function*) entry->overloads.data[i];
+            if (fcn->base.state < NS_TYPE_READY) {
+                // TODO: we may want to have a function ensureTypeReady or something
+                Err::Err err = ensureValidated(ctx, (SyntaxNode*)fcn);
+                if (err != Err::OK) return NULL;
+            }
 
             FunctionScore score;
             computeFunctionMatchScore(fcn, call, &score);
@@ -801,6 +830,12 @@ namespace Validator {
 
                 case TypeDecorator::DEC_ARRAY: {
                     if (dec->flags & IS_EMBEDED) {
+                        // TODO: ?
+                        type = isAmbiguous ?
+                            Type::tmpMakeSlice(type, dec->flags) :
+                            Type::makeSlice(type, dec->flags);
+                        break;
+                    } else if (dec->flags != 0) {
                         type = isAmbiguous ?
                             Type::tmpMakeSlice(type, dec->flags) :
                             Type::makeSlice(type, dec->flags);
@@ -843,8 +878,89 @@ namespace Validator {
         return (Err::Err) isAmbiguous;
     }
 
+    Err::Err resolveAmbagiousType(ValidationContext* ctx, Span* span, Type::TypeInfo* expected, Type::TypeInfo** outTarget) {
+        Type::TypeInfo* target = *outTarget;
+
+        // Eventually we end up at the base type.
+        // We do not care about type check, we just
+        // need to build the type with expected lengths
+        // so then we can put both types to a cast checker
+        if (expected == target) return Err::OK;
+
+        // Recursive Case
+        if (Type::isIndexable(expected)) {
+            if (!Type::isIndexable(target)) {
+                Diag::report(ctx->unit->ast, span, Err::INVALID_DATA_TYPE,
+                    Diag::Format {
+                        "Expected indexable type, but got scalar type"
+                    });
+                return Err::INVALID_DATA_TYPE;
+            }
+
+            Type::TypeInfoEx* expectedEx = (Type::TypeInfoEx*) expected;
+            Type::TypeInfoEx* targetEx   = (Type::TypeInfoEx*) target;
+
+            Type::TypeInfo* expectedElem = expectedEx->ptr.element;
+            Type::TypeInfo* targetElem   = targetEx->ptr.element;
+
+            // Recursively resolve inner element types down to base types
+            Err::Err err = resolveAmbagiousType(ctx, span, expectedElem, &targetElem);
+            if (err != Err::OK) return err;
+
+            // TODO: check also for target kind
+            // Rebuild the target with expected dimensions/flags
+            if (expected->kind == Type::DT_ARRAY) {
+                if (target->kind == Type::DT_ARRAY &&
+                    targetEx->arr.elementCount != expectedEx->arr.elementCount &&
+                    targetEx->arr.elementCount != Type::ARRAY_LEN_UNKNOWN) {
+                    Diag::report(ctx->unit->ast, span, Err::INVALID_ARRAY_LENGTH,
+                        Diag::Format {
+                            "Array size mismatch: expected [%llu], but found [%llu]"
+                        },
+                        expectedEx->arr.elementCount,
+                        targetEx->arr.elementCount);
+                    return Err::INVALID_ARRAY_LENGTH;
+                }
+
+                *outTarget = Type::makeArray(targetElem, expectedEx->arr.elementCount);
+            } else if (expected->kind == Type::DT_POINTER) {
+                *outTarget = Type::makePointer(targetElem);
+            } else if (expected->kind == Type::DT_SLICE) {
+                if (target->kind == Type::DT_SLICE && (targetEx->slc.flags != expectedEx->slc.flags)) {
+                    Diag::report(ctx->unit->ast, span, Err::INVALID_DATA_TYPE,
+                        Diag::Format {
+                            "Slice qualifier mismatch: expected [%s], but found [%s]"
+                        }, expectedEx->slc.flags, targetEx->slc.flags);
+                    return Err::INVALID_DATA_TYPE;
+                }
+
+                *outTarget = Type::makeSlice(targetElem, expectedEx->slc.flags);
+            } else {
+                Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_ERROR,
+                    Diag::Format {
+                        "Unhandled indexable type kind in type resolution"
+                    });
+                return Err::UNEXPECTED_ERROR;
+            }
+
+            return Err::OK;
+        }
+
+        if (Type::isIndexable(target)) {
+            Diag::report(ctx->unit->ast, span, Err::INVALID_DATA_TYPE,
+                Diag::Format {
+                    "Expected scalar type, but got container type"
+                });
+            return Err::INVALID_DATA_TYPE;
+        }
+
+        // TODO: handle here ambagious base type if we implement something like this later
+        return Err::OK;
+    }
+
     Err::Err validate(ValidationContext* ctx, VariableDefinition* def) {
         Err::Err err;
+        if (def->base.state == NS_VALIDATED) return Err::OK;
 
         // TODO : think more if this needs to be abstrated together with 'applyTypeSpecifier'
         if (def->type.baseType == Type::DT_UNDEFINED) {
@@ -892,7 +1008,7 @@ namespace Validator {
         }
 
         err = applyTypeSpecifier(ctx, &def->type, &def->var->value.type);
-        if (err != Err::OK) return err;
+        if (err < 0) return err;
 
         bool isAmbiguous = (int64_t) err == Type::RS_AMBIGUOUS;
 
@@ -903,16 +1019,35 @@ namespace Validator {
             if (err != Err::OK) return err;
 
             if (isAmbiguous) {
+                err = resolveAmbagiousType(ctx, def->base.span, def->var->value.type, &expectedType);
                 Type::tmpClear();
-            } else {
-                err = applyImplicitCast(ctx, def->var, expectedType);
-                if (err != Err::OK) return err;
+            }
+
+            err = applyImplicitCast(ctx, def->var, expectedType);
+            if (err != Err::OK) return err;
+
+            // TODO: for now patch, later rethink architecture with this in mind
+            //       (we share one type for lvalue and rvalue)
+            if (def->var->expression &&
+                def->var->expression->type == EXT_CAST &&
+                def->var->value.type != expectedType) {
+                UnaryExpression* uex = Ast::Node::makeUnaryExpression();
+                uex->base.opType = OP_NONE;
+                uex->operand = Ast::Node::makeVariable();
+                uex->operand->def = NULL;
+                uex->operand->value = def->var->value;
+                uex->operand->expression = def->var->expression;
+
+                def->var->expression = (Expression*) uex;
+                def->var->value.type = expectedType;
             }
         }
 
+        def->base.state = NS_VALIDATED;
         return Err::OK;
     }
 
+    // TODO: check for circular imports
     Err::Err validate(ValidationContext* ctx, TypeDefinition* td) {
         Err::Err err;
 
@@ -939,7 +1074,118 @@ namespace Validator {
 
         computeTypeInfo(ctx, td);
 
+        td->base.state = NS_VALIDATED;
         return err;
+    }
+
+    Err::Err mapFormatError(PrintFormat::Err err) {
+        switch (err) {
+            case PrintFormat::OK:
+            case PrintFormat::OK_ESCAPED:                  return Err::OK;
+            case PrintFormat::INVALID_OPTION:              return Err::UNEXPECTED_ERROR;
+            case PrintFormat::UNEXPECTED_SYMBOL:           return Err::UNEXPECTED_SYMBOL;
+            case PrintFormat::UNEXPECTED_END:              return Err::UNEXPECTED_END_OF_FILE;
+            case PrintFormat::INCOMPLETE_FORMAT_SPECIFIER: return Err::UNEXPECTED_ERROR;
+            default:                                       return Err::UNEXPECTED_ERROR;
+        }
+    }
+
+    PrintFormat::Err parseFormatString(String fmt, FormatStringDescriptor* desc) {
+        uint64_t escCount = 0;
+        uint64_t fmtCount = 0;
+
+        uint64_t idx = 0;
+        for (; idx < fmt.len; idx++) {
+            const char ch = fmt.buff[idx];
+            if (ch == '%') {
+                if (idx + 1 < fmt.len && fmt[idx + 1] == '%') {
+                    idx++;
+                    escCount++;
+                    continue;
+                }
+                fmtCount++;
+            }
+        }
+
+        desc->string      = fmt.buff;
+        desc->chunkCount  = escCount + fmtCount;
+        desc->formatCount = fmtCount;
+        desc->chunks      = alloc<FormatStringDescriptor::Chunk>(desc->chunkCount);
+
+        // We use it as index now
+        fmtCount = 0;
+
+        idx = 0;
+        while (idx < fmt.len) {
+            if (fmt.buff[idx] == '%') {
+                const uint64_t startIdx = idx;
+                idx++;
+
+                FormatStringDescriptor::Chunk* chunk = desc->chunks + fmtCount;
+                PrintFormat::Err err = PrintFormat::parse(fmt.buff, &idx, &chunk->format.format);
+
+                if (err == PrintFormat::OK_ESCAPED) {
+                    chunk->escape.offset = startIdx;
+                    chunk->format.kind = FormatStringDescriptor::ESCAPE;
+                } else if (err == PrintFormat::OK) {
+                    chunk->format.offset = (uint32_t) startIdx;
+                    chunk->format.length = (uint32_t) (idx - startIdx);
+                    chunk->format.kind = FormatStringDescriptor::FORMAT;
+                } else {
+                    return err;
+                }
+
+                fmtCount++;
+            } else {
+                idx++;
+            }
+        }
+
+        return PrintFormat::OK;
+    }
+
+    Err::Err validateFormatString(ValidationContext* ctx, Variable* fmt, Variable** args, uint32_t argCount) {
+        fmt = unwrapWithCasts(fmt);
+        if (!fmt->expression || fmt->expression->type != EXT_STRING_INITIALIZATION) {
+            Diag::report(ctx->unit->ast, fmt->base.span, Err::UNEXPECTED_ERROR,
+                Diag::Format {
+                    "Format string must be a compile-time string literal."
+                });
+            return Err::UNEXPECTED_ERROR;
+        }
+
+        StringInitialization* init = (StringInitialization*) fmt->expression;
+        if (!init->format) {
+            init->format = alloc<FormatStringDescriptor>();
+        }
+
+        PrintFormat::Err ferr = parseFormatString(init->rawData, init->format);
+        if (ferr != PrintFormat::OK) {
+            Err::Err err = mapFormatError(ferr);
+            Diag::report(ctx->unit->ast, fmt->base.span, err,
+                Diag::Format {
+                    "%s",
+                }, PrintFormat::getErrorDescription(ferr));
+            return err;
+        }
+
+        if (argCount != init->format->formatCount) {
+            Diag::report(ctx->unit->ast, fmt->base.span, Err::INVALID_ARGUMENTS,
+                Diag::Format {
+                    "Format string expects %llu arguments, but %llu were provided."
+                }, (uint64_t) init->format->formatCount, (uint64_t) argCount);
+            return Err::INVALID_ARGUMENTS;
+        }
+
+        for (int i = 0; i < argCount; i++) {
+            FormatStringDescriptor::Chunk* chunk = init->format->chunks + i;
+            Variable* arg = args[i];
+
+            // TODO: do we want to do here something?
+
+        }
+
+        return Err::OK;
     }
 
     Err::Err validate(ValidationContext* ctx, Scope* scope) {
@@ -974,7 +1220,7 @@ namespace Validator {
             // err = validateDataType(ctx, var->value.type->kind, var->value.str, var->base.span);
             // if (err != Err::OK) return err;
 
-            var->base.semStatus = TS_READY;
+            var->base.state = NS_VALIDATED;
             return Err::OK;
         }
 
@@ -1030,8 +1276,11 @@ namespace Validator {
 
                 Function* fcn = call->fcn;
 
-                err = ensureValidated(ctx, &fcn->base);
-                if (err != Err::OK) return err;
+                if (fcn->base.state < NS_TYPE_READY) {
+                    // TODO: we may want to have a function ensureTypeReady or something
+                    err = ensureValidated(ctx, (SyntaxNode*)fcn);
+                    if (err != Err::OK) return err;
+                }
 
                 int callArgCount = call->inArgCount;
                 int fixedCount = fcn->prototype.inArgCount;
@@ -1057,7 +1306,13 @@ namespace Validator {
                     Ast::Node::copyRef(call->outArg, call->fcn->prototype.outArg->var);
                     resolveResultType(ctx, call, var);
                 } else {
-                    var->value.type->kind = Type::DT_VOID;
+                    var->value.type = Type::basicTypes + Type::DT_VOID;
+                }
+
+                // Format string validation for internal print function
+                if (fcn->internalIdx == Ast::Internal::IF_PRINTF) {
+                    err = validateFormatString(ctx, call->inArgs[0], call->inArgs + 1, call->inArgCount - 1);
+                    if (err != Err::OK) return err;
                 }
 
                 break;
@@ -1068,14 +1323,14 @@ namespace Validator {
 
                 err = validate(ctx, range->bidx, target);
                 if (err != Err::OK) return err;
-                if (!isInt(range->bidx->value.type->kind)) {
+                if (range->bidx && !isInt(range->bidx->value.type->kind)) {
                     Diag::report(ctx->unit->ast, range->bidx->base.span, Err::INVALID_DATA_TYPE, "TODO");
                     return Err::INVALID_DATA_TYPE;
                 }
 
                 err = validate(ctx, range->eidx, target);
                 if (err != Err::OK) return err;
-                if (!isInt(range->eidx->value.type->kind)) {
+                if (range->eidx && !isInt(range->eidx->value.type->kind)) {
                     Diag::report(ctx->unit->ast, range->bidx->base.span, Err::INVALID_DATA_TYPE, "TODO");
                     return Err::INVALID_DATA_TYPE;
                 }
@@ -1093,7 +1348,9 @@ namespace Validator {
                 const uint64_t len = init->rawData.len / init->charType->size;
                 var->value.type = Type::makeArray(init->charType, len);
 
-                const int arrDtypeSize = var->value.type->size;
+                Type::ArrayInfo* aInfo = (Type::ArrayInfo*) var->value.type;
+
+                const int arrDtypeSize = aInfo->element->size;
                 const int strDtypeSize = init->charType->size;
 
                 if (arrDtypeSize < strDtypeSize) {
@@ -1121,15 +1378,16 @@ namespace Validator {
 
             case EXT_ARRAY_INITIALIZATION: {
                 ArrayInitialization* init = (ArrayInitialization*) ex;
-                Type::ArrayInfo* aInfo = (Type::ArrayInfo*) target;
+                Type::TypeInfoEx* type = (Type::TypeInfoEx*) target;
 
-                if (aInfo && aInfo->elementCount != Type::ARRAY_LEN_UNKNOWN) {
-                    if (aInfo->elementCount != (uint64_t) init->attributeCount) {
+                if (type && (type->base.kind == Type::DT_SLICE || Type::isResolvedArray(type))) {
+                    if (type->base.kind == Type::DT_ARRAY &&
+                        type->arr.elementCount != (uint64_t) init->attributeCount) {
                         Diag::report(ctx->unit->ast, var->base.span, Err::INVALID_TYPE_CONVERSION,
                             Diag::Format {
                                 "Array initializer has %d elements, but target type '%s' expects %llu elements.",
                             },
-                            init->attributeCount, Type::str(&aInfo->base), (uint64_t) aInfo->elementCount
+                            init->attributeCount, Type::str(&type->arr.base), (uint64_t) type->arr.elementCount
                         );
                         return Err::INVALID_TYPE_CONVERSION;
                     }
@@ -1137,18 +1395,18 @@ namespace Validator {
                     for (int i = 0; i < init->attributeCount; i++) {
                         Variable* eVar = init->attributes[i];
 
-                        err = validate(ctx, eVar, aInfo->element);
+                        err = validate(ctx, eVar, type->ptr.element);
                         if (err != Err::OK) return err;
 
                         // TODO: think about cast... I guess its better to not cast
                         //       and cast the array as whole, so then vec instructions
                         //       can be used, but it may result in additional ass pain
-                        err = applyImplicitCast(ctx, eVar, aInfo->element);
+                        err = applyImplicitCast(ctx, eVar, type->ptr.element);
                         if (err != Err::OK) return err;
                     }
 
-                    if (Type::isTmp(&aInfo->base)) {
-                        var->value.type = Type::makeArray(aInfo->element, init->attributeCount);
+                    if (type->base.kind == Type::DT_SLICE || Type::isTmp(&type->arr.base)) {
+                        var->value.type = Type::makeArray(type->ptr.element, init->attributeCount);
                     } else {
                         var->value.type = target;
                     }
@@ -1283,12 +1541,11 @@ namespace Validator {
     Err::Err validate(ValidationContext* ctx, Variable* var, Type::TypeInfo* target) {
         Err::Err err;
 
-        if (!var) return Err::OK;
-
-        if (var->base.semStatus == TS_READY) return Err::OK;
-        var->base.semStatus = TS_PENDING;
-
-        if (var->value.hasValue) return Err::OK;
+        if (!var ||
+            var->base.state == NS_VALIDATED ||
+            var->value.hasValue) {
+            return Err::OK;
+        }
 
         if (!var->def) {
             err = linkVariable(ctx, var);
@@ -1302,14 +1559,14 @@ namespace Validator {
             // TODO : dont like this call, think about it more...
             Ast::Node::copyRef(var, var->def->var);
 
-            var->base.semStatus = TS_READY;
+            var->base.state = NS_VALIDATED;
             return Err::OK;
         }
 
         err = validateExpression(ctx, var, target);
         if (err != Err::OK) return err;
 
-        var->base.semStatus = TS_READY;
+        var->base.state = NS_VALIDATED;
         return Err::OK;
     }
 
@@ -1355,6 +1612,16 @@ namespace Validator {
         return Err::OK;
     }
 
+    void sortSwitchCases(SwitchCase::Sorted* data, uint32_t count) {
+        Utils::sort(
+            data,
+            count,
+            sizeof(SwitchCase::Sorted),
+            offsetof(SwitchCase::Sorted, val)
+        );
+    }
+
+    // TODO: cast case expression to i64
     Err::Err validate(ValidationContext* ctx, SwitchCase* node) {
         Err::Err err;
 
@@ -1367,8 +1634,11 @@ namespace Validator {
             return Err::UNEXPECTED_ERROR;
         }
 
-        err = validate(ctx, (SyntaxNode*)node->switchExp);
+        err = validate(ctx, (SyntaxNode*) node->switchExp);
         if (err != Err::OK) return Err::OK;
+
+        node->sorted = alloc<SwitchCase::Sorted>(node->caseExpCount);
+        node->sortedCount = node->caseExpCount;
 
         for (uint32_t i = 0; i < node->caseExpCount; i++) {
             Variable* caseVar = node->casesExp[i];
@@ -1377,13 +1647,51 @@ namespace Validator {
             err = validate(ctx, caseVar);
             if (err != Err::OK) return err;
 
-            if (caseVar->def) {
-                err = Interpreter::eval(ctx, caseVar);
-                if (err != Err::OK) return err;
-            }
+            err = Interpreter::eval(ctx, caseVar);
+            if (err != Err::OK) return err;
+
+            // if (caseVar->def) {
+            //    err = Interpreter::eval(ctx, caseVar);
+            //    if (err != Err::OK) return err;
+            //}
 
             err = applyImplicitCast(ctx, caseVar, node->switchExp->value.type);
             if (err != Err::OK) return err;
+
+            // TODO: validate that we have compile time value
+            node->sorted[i].idx = i;
+            node->sorted[i].val = caseVar->value.i64;
+        }
+
+        sortSwitchCases(node->sorted, node->sortedCount);
+
+        // Check for duplicates
+        for (uint32_t i = 1; i < node->caseExpCount; i++) {
+            int64_t a = node->sorted[i - 1].val;
+            int64_t b = node->sorted[i].val;
+            if (a == b) {
+                Variable* var = node->casesExp[node->sorted[i].idx];
+                Diag::report(ctx->unit->ast, var->base.span, Err::UNEXPECTED_ERROR,
+                    Diag::Format {
+                        "TODO: Duplicate case value '%lld'.",
+                    }, b
+                );
+            }
+        }
+
+        // Pick strategy
+        // TODO: coefficients to Config
+        {
+            const int64_t minValue = node->sorted[0].val;
+            const int64_t maxValue = node->sorted[node->sortedCount - 1].val;
+
+            if (node->sortedCount <= 3) {
+                node->strategy = CS_LINEAR;
+            } else if (0.5 * (maxValue - minValue) > node->sortedCount) {
+                node->strategy = CS_BINARY;
+            } else {
+                node->strategy = CS_JUMP_TABLE;
+            }
         }
 
         for (uint32_t i = 0; i < node->caseCount; i++) {
@@ -1404,16 +1712,22 @@ namespace Validator {
     Err::Err validate(ValidationContext* ctx, RangeExpression* range) {
         Err::Err err;
 
-        err = validate(ctx, range->bidx);
-        if (err != Err::OK) return err;
-        if (!Type::isInt(range->bidx->value.type)) {
-            applyImplicitCast(ctx, range->bidx, Type::basicTypes + Type::DT_I64);
+        if (range->bidx) {
+            err = validate(ctx, range->bidx);
+            if (err != Err::OK) return err;
+
+            if (!Type::isInt(range->bidx->value.type)) {
+                applyImplicitCast(ctx, range->bidx, Type::basicTypes + Type::DT_I64);
+            }
         }
 
-        err = validate(ctx, range->eidx);
-        if (err != Err::OK) return err;
-        if (!Type::isInt(range->eidx->value.type)) {
-            applyImplicitCast(ctx, range->eidx, Type::basicTypes + Type::DT_I64);
+        if (range->eidx) {
+            err = validate(ctx, range->eidx);
+            if (err != Err::OK) return err;
+
+            if (!Type::isInt(range->eidx->value.type)) {
+                applyImplicitCast(ctx, range->eidx, Type::basicTypes + Type::DT_I64);
+            }
         }
 
         return Err::OK;
@@ -1433,6 +1747,7 @@ namespace Validator {
         aliasDef->var->value = source->value;
     }
 
+    // TODO: force cast to u64, so we dont have gabarage on smaller types
     Err::Err validate(ValidationContext* ctx, Loop* node) {
         Err::Err err;
 
@@ -1440,66 +1755,57 @@ namespace Validator {
 
         // Arg
         if (node->arg.kind == Loop::Arg::EXPRESSION) {
+            // either condition or iterable
             err = validate(ctx, node->arg.exp);
             if (err != Err::OK) return err;
 
-            Type::Kind kind = node->arg.exp->value.type->kind;
-            if (Type::isArrayLike(kind)) {
-                if (kind != Type::DT_ERROR) {
-                    Diag::report(ctx->unit->ast, node->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
-                        "Type '%s' is not iterable."
-                    }, Type::str(kind));
-                }
+            Type::TypeInfo* type = node->arg.exp->value.type;
+            if (Type::isTruthy(type)) {
+                node->arg.kind = Loop::Arg::CONDITION;
+            } else if (Type::isArrayLike(type)) {
+                node->arg.kind = Loop::Arg::ITERABLE;
+            } else {
+                Diag::report(ctx->unit->ast, node->base.span, Err::UNEXPECTED_ERROR,
+                    Diag::Format {
+                        "Type '%s' cannot be used as a loop condition or iterable."
+                    }, Type::str(type));
+                return Err::UNEXPECTED_ERROR;
             }
-        } else {
+        } else if (node->arg.kind == Loop::Arg::RANGE) {
+            // range
             err = validate(ctx, node->arg.range);
             if (err != Err::OK) return err;
         }
 
         // As
         if (node->item) {
-            if (node->arg.kind != Loop::Arg::EXPRESSION) {
-                // TODO : error
-            }
-            // aliasVariable(node->item, node->arg.exp);
-        }
+            Type::TypeInfo* type;
+            bool isReference = node->item->type.qualifier & Type::Q_REF;
 
-        if (node->index.var) {
-            if (node->index.var->base.type == NT_VARIABLE) {
-                validate(ctx, node->index.var);
-            } else {
-                if (node->index.def->var->value.type->kind == Type::DT_VOID) {
-                    node->index.def->var->value.hasValue = true;
-                    node->index.def->var->value.type->kind = Type::DT_I64;
-                    node->index.def->var->value.i64 = 0;
+            if (node->arg.kind == Loop::Arg::ITERABLE) {
+                type = ((Type::PointerInfo*) node->arg.exp->value.type)->element;
+                if (isReference) {
+                    type = Type::makePointer(type);
                 }
+            } else {
+                if (isReference) {
+                    Diag::report(ctx->unit->ast, node->item->base.span, Err::UNEXPECTED_ERROR,
+                        Diag::Format {
+                            "Cannot bind loop counter by reference (&) in range or condition loops."
+                        });
+                    return Err::UNEXPECTED_ERROR;
+                }
+                type = Type::getInfo(Type::DT_I64);
             }
+
+            node->item->var->value.type = type;
+            node->item->base.state = NS_VALIDATED;
         }
 
-        // By
-        /*
-        if (node->stride) {
-            err = validate(ctx, node->stride);
-            if (!Type::isInt(node->stride->value.type)) {
-                applyImplicitCast(ctx, node->stride, Type::basicTypes + Type::DT_I64);
-            }
-
-            // TODO : for now only compile time expression
-            err = Interpreter::eval(ctx, node->stride);
-            if (err != Err::OK) return err;
+        // At
+        if (node->index.var) {
+            validate(ctx, (SyntaxNode*) node->index.var);
         }
-
-        // While
-        if (node->condition) {
-            err = validate(ctx, node->condition);
-            if (err != Err::OK) return err;
-
-            if (!Type::isTruthy(node->condition->value.type)) {
-                Diag::report(ctx->unit->ast, node->condition->base.span, Err::INVALID_DATA_TYPE);
-                return Err::INVALID_DATA_TYPE;
-            }
-        }
-        */
 
         // Body
         if (node->bodyScope) {
@@ -1507,9 +1813,9 @@ namespace Validator {
             ctx->currentLoop = (SyntaxNode*) node;
 
             err = validate(ctx, (SyntaxNode*) node->bodyScope);
-            if (err != Err::OK) return err;
 
             ctx->currentLoop = prevLoop;
+            if (err != Err::OK) return err;
         }
 
         return Err::OK;
@@ -1788,12 +2094,12 @@ namespace Validator {
     Err::Err ensureValidated(ValidationContext* ctx, SyntaxNode* node, SyntaxNode* triggerNode) {
         Err::Err err = Err::OK;
 
-        if (node->semStatus == TS_READY) {
+        if (node->state == NS_VALIDATED) {
             return Err::OK;
         }
 
         AcquireNodeReturn ans =
-            acquireNode(&node->semStatus, &node->workerId, ctx->workerId, true);
+            acquireNode(&node->lock, &node->workerId, ctx->workerId, true);
 
         if (ans == ANR_ACQUIRED_FOR_WORK) {
             switch(node->type) {
@@ -1835,7 +2141,7 @@ namespace Validator {
                 }
             }
 
-            releaseNode(&node->semStatus, true);
+            releaseNode(&node->lock, true);
         } else if (ans == ANR_ALREADY_ACQUIRED_BY_CALLER) {
             // TODO : Proper Errors
             if (triggerNode) {
@@ -1893,15 +2199,18 @@ namespace Validator {
         // We basically go through top level nodes that can be exported
         // TODO : make sure reg has only top level stuff...
         for (int i = 0; i < reg->customDataTypes.size; i++) {
-            ensureValidated(ctx, *(SyntaxNode**) DArray::get(&reg->customDataTypes, i));
+            err = ensureValidated(ctx, *(SyntaxNode**) DArray::get(&reg->customDataTypes, i));
+            if (err != Err::OK) return err;
         }
 
         for (int i = 0; i < reg->variableDefinitions.size; i++) {
-            ensureValidated(ctx, *(SyntaxNode**) DArray::get(&reg->variableDefinitions, i));
+            err = ensureValidated(ctx, *(SyntaxNode**) DArray::get(&reg->variableDefinitions, i));
+            if (err != Err::OK) return err;
         }
 
         for (int i = 0; i < reg->fcns.size; i++) {
-            ensureValidated(ctx, *(SyntaxNode**) DArray::get(&reg->fcns, i));
+            err = ensureValidated(ctx, *(SyntaxNode**) DArray::get(&reg->fcns, i));
+            if (err != Err::OK) return err;
         }
 
         // Validate remaining local nodes
@@ -2041,6 +2350,9 @@ namespace Validator {
     Err::Err linkCall(ValidationContext* ctx, Variable* callOp) {
         Err::Err err;
 
+        Type::TypeInfo* outType;
+        Function* fcn;
+
         FunctionCall* call = (FunctionCall*) (callOp->expression);
         if (call->fcn) return Err::OK;
 
@@ -2048,12 +2360,9 @@ namespace Validator {
 
         SymbolIndexEntry* entry;
         err = resolveQualifiedNameAsIndexEntry(ctx, callOp->base.scope, &call->name, &entry);
-        if (err != Err::OK) return err;
+        if (err != Err::OK) goto defer;
 
-        Arena::rollback(&ctx->tmpArena, marker);
-
-        Type::TypeInfo* outType;
-        Function* fcn = findClosestFunction(entry, callOp);
+        fcn = findClosestFunction(ctx, entry, callOp);
         if (!fcn) {
             if (
                 entry->kind == SymbolIndexEntry::SINGLE &&
@@ -2068,21 +2377,26 @@ namespace Validator {
             } else {
                 // TODO : proper error
                 Diag::report(ctx->unit->ast, callOp->base.span, Err::SYMBOL_NOT_FOUND);
-                return (Err::Err) Err::SYMBOL_NOT_FOUND;
+                err = Err::SYMBOL_NOT_FOUND;
+                goto defer;
             }
-
         } else {
             call->fptr = NULL;
             call->fcn = fcn;
-            outType = fcn->prototype.outArg->var->value.type;
+            outType = fcn->prototype.outArg ?
+                fcn->prototype.outArg->var->value.type :
+                NULL;
         }
 
         // TODO: do we realy need to be a Variable
-        call->outArg = new Variable();
+        call->outArg = alloc<Variable>();
         call->outArg->value.hasValue = false;
         call->outArg->value.type = outType;
 
-        return Err::OK;
+        defer:
+        Arena::rollback(&ctx->tmpArena, marker);
+
+        return err;
     }
 
     Err::Err verifyFunctionsAreGlobal(ValidationContext* ctx) {
@@ -2162,8 +2476,7 @@ namespace Validator {
         eType->memberCount    = en->varCount;
 
         if (eType->memberCount > 0) {
-            eType->members = alloc<Type::EnumMemberInfo>(eType->memberCount
-            );
+            eType->members = alloc<Type::EnumMemberInfo>(eType->memberCount);
 
             for (uint64_t i = 0; i < en->varCount; i++) {
                 QualifiedName* name = &en->vars[i]->name;
@@ -2182,24 +2495,18 @@ namespace Validator {
 
     // Pass already validated node
     Err::Err computeTypeInfo(ValidationContext* ctx, TypeDefinition* td) {
-        // TODO: deprecate?
-        if (td->state == TS_READY) return Err::OK;
-
-        if (td->state == TS_RUNNING) {
-            // TODO : add new error, add path logging
-            Diag::report(ctx->unit->ast, td->base.span, Err::CIRCULAR_IMPORT);
-            return Err::CIRCULAR_IMPORT;
-        }
-
-        td->state = TS_RUNNING;
+        if (td->base.state >= NS_TYPE_READY) return Err::OK;
 
         Type::StructInfo* sInfo;
         // TODO : shall we allocate this at definition creation?
         td->type = alloc<Type::TypeInfoEx>();
-        sInfo = (Type::StructInfo*) td->type;
+        td->type->astNode = (SyntaxNode*) td;
 
+        sInfo = (Type::StructInfo*) td->type;
         sInfo->members = alloc<Type::StructMemberInfo>(td->varCount);
         sInfo->memberCount = td->varCount;
+        sInfo->name.buff = td->name.buff;
+        sInfo->name.len = td->name.len;
 
         uint64_t offset = 0;
         uint64_t align  = 0;
@@ -2209,7 +2516,7 @@ namespace Validator {
 
             Type::TypeInfo* mInfo = var->value.type;
             sInfo->members[i].type = mInfo;
-            sInfo->members[i].offset = offset;
+            sInfo->members[i].offset = offset + Utils::getPadding(offset, mInfo->align);
             sInfo->members[i].name = { var->name.buff, var->name.len };
 
             offset += mInfo->size;
@@ -2223,14 +2530,19 @@ namespace Validator {
         td->type->base.rank = 0;
         td->type->base.kind = Type::DT_STRUCT;
 
-        td->state = TS_READY;
-
+        td->base.state = NS_TYPE_READY;
         return Err::OK;
     }
 
     // Wraps rvar in a Cast expression using the type described by target.
     // Assumes the cast has already been validated.
-    void wrapInCast(ValidationContext* ctx, Variable* source, Type::TypeInfo* target, uint64_t flags) {
+    void wrapInCast(ValidationContext* ctx, Variable* source, Type::TypeInfo* target, Type::CastKind kind) {
+        if (kind == Type::CK_FROM_LOWER_LEVEL_EQUAL) return;
+        if (kind == Type::CK_FROM_LOWER_LEVEL) {
+            // TODO: ? call applyImplicit cast?
+            target = ((Type::PointerInfo*) target)->element;
+        }
+
         // clone the current node to preserve also metadata
         // TODO: maybe no need to do a full copy
         Variable* innerOperand = Ast::Node::copy(source);
@@ -2238,9 +2550,15 @@ namespace Validator {
         Cast* castEx = Ast::Node::makeCast();
         castEx->operand = innerOperand;
         castEx->target = target;
+        castEx->kind = kind;
 
         source->expression = (Expression*) castEx;
         source->value.type = target;
+        source->value.hasValue = false;
+    }
+
+    Span* tryToObtainSpan(Variable* var) {
+        return var->base.span ? var->base.span : var->name.span;
     }
 
     // TODO: lval/rvar are weird, as we not necessary cast during assignments
@@ -2258,14 +2576,14 @@ namespace Validator {
             return Err::OK;
         }
 
-        Err::Err err = validateImplicitCast(ctx, source->value.type, target);
+        Err::Err err = validateImplicitCast(ctx, tryToObtainSpan(source), source->value.type, target);
         if (err < 0) {
             // TODO : error
             Diag::report(ctx->unit->ast, source->base.span, Err::UNEXPECTED_SYMBOL, "It was a bad day for an implicit cast :(");
             return Err::UNEXPECTED_SYMBOL;
         }
 
-        wrapInCast(ctx, source, target, (uint64_t) err);
+        wrapInCast(ctx, source, target, (Type::CastKind) err);
 
         return Err::OK;
     }
@@ -2316,7 +2634,7 @@ namespace Validator {
         // TODO : add validation of members path name, doesn't suppose to have one
         //        but not sure it should happen here...
 
-        if (parentType->kind == Type::DT_ARRAY) {
+        if (Type::isArrayLike(parentType->kind)) {
             // TODO : think more
             if (Strings::compare(memberName, String(Lex::KWS_ARRAY_LENGTH))) {
                 bex->base.base.type = EXT_GET_LENGTH;
@@ -2367,7 +2685,8 @@ namespace Validator {
         } else if (parentType->kind == Type::DT_STRUCT) {
             sType = (Type::StructInfo*) parentType;
         } else {
-            Diag::report(ctx->unit->ast, bex->right->base.span, Err::INVALID_TYPE_CONVERSION,
+            Span* span = bex->right->base.span ? bex->right->base.span : bex->right->name.span;
+            Diag::report(ctx->unit->ast, span, Err::INVALID_TYPE_CONVERSION,
                 Diag::Format{
                     "Invalid type '%*.s' for member selection!"
                 }, 0, 0); // TODO
@@ -2441,35 +2760,46 @@ namespace Validator {
                 bex->base.opType = OP_SLICE;
 
                 RangeExpression* range = (RangeExpression*) bex->right->expression;
-                Variable* bidxVar = unwrap(range->bidx);
-                Variable* eidxVar = unwrap(range->eidx);
 
-                if (bidxVar->value.hasValue && eidxVar->value.hasValue) {
-                    const int64_t bidx = bidxVar->value.i64;
-                    const int64_t eidx = eidxVar->value.i64;
+                Value bidx;
+                if (!range->bidx) {
+                    bidx.hasValue = true;
+                    bidx.i64 = 0;
+                } else {
+                    bidx = unwrap(range->bidx)->value;
+                }
 
-                    if (eidx < bidx) {
+                Value eidx;
+                if (!range->eidx) {
+                    eidx.hasValue = type->base.kind == Type::DT_ARRAY;
+                    eidx.i64 = eidx.hasValue ? type->arr.elementCount - 1 : 0;
+                } else {
+                    eidx = unwrap(range->eidx)->value;
+                }
+
+                if (bidx.hasValue && eidx.hasValue) {
+                    if (eidx.i64 < bidx.i64) {
                         Diag::report(ctx->unit->ast, bex->right->base.span, Err::UNEXPECTED_ERROR,
                             Diag::Format {
                                 "Invalid slice range [%lld..%lld]: end index cannot be less than start index.",
                             },
-                            bidx, eidx
+                            bidx.i64, eidx.i64
                         );
                         return Err::UNEXPECTED_ERROR;
                     }
 
-                    if (bidx < 0) {
+                    if (bidx.i64 < 0) {
                         Diag::report(ctx->unit->ast, bex->right->base.span, Err::UNEXPECTED_ERROR,
                             Diag::Format {
                                 "Invalid slice start index (%lld); start index cannot be negative.",
                             },
-                            bidx
+                            bidx.i64
                         );
                         return Err::UNEXPECTED_ERROR;
                     }
 
                     // TODO: Type::getMember ?
-                    var->value.type = Type::makeArray(type->ptr.element, eidx - bidx);
+                    var->value.type = Type::makeArray(type->ptr.element, eidx.i64 - bidx.i64 + 1);
                 } else {
                     var->value.type = Type::makeSlice(type->ptr.element, IS_CONST);
                 }
@@ -2481,7 +2811,9 @@ namespace Validator {
         } else if (op == OP_MEMBER_SELECTION) {
             return resolveMember(ctx, bex, var);
         } else if (isPredicate(op)) {
-            if (Type::isPrimitive(lType) && Type::isPrimitive(rType)) {
+            // TODO: do struct comparison
+            if ((Type::isPrimitive(lType) && Type::isPrimitive(rType)) ||
+                (Type::isIntegerOrEnum(lType) && Type::isIntegerOrEnum(rType))) {
                 var->value.type = Type::basicTypes + Type::DT_BOOL;
                 return Err::OK;
             }
@@ -2495,17 +2827,50 @@ namespace Validator {
             );
 
             return Err::INVALID_TYPE_CONVERSION;
+        } else if (op == OP_CONCATENATION) {
+            const Type::TypeInfo* failedL = nullptr;
+            const Type::TypeInfo* failedR = nullptr;
+
+            Type::CastKind ans = Type::canConcat(lType, rType, &failedL, &failedR);
+            if (ans == Type::CK_INVALID) {
+                Diag::report(ctx->unit->ast, var->base.span, Err::UNEXPECTED_ERROR,
+                    Diag::Format {
+                        "Cannot concatenate types '%s' and '%s'",
+                    },
+                    Type::str(failedL ? failedL->kind : lType->kind),
+                    Type::str(failedR ? failedR->kind : rType->kind));
+                return Err::UNEXPECTED_ERROR;
+            }
+
+            Type::TypeInfoEx* lTypeEx = (Type::TypeInfoEx*) lType;
+            Type::TypeInfoEx* rTypeEx = (Type::TypeInfoEx*) rType;
+
+            wrapInCast(ctx, bex->right, lType, ans);
+
+            if (lType->kind == Type::DT_ARRAY && lType->kind == rType->kind) {
+                var->value.type = Type::makeArray(lTypeEx->arr.element,
+                    lTypeEx->arr.elementCount + rTypeEx->arr.elementCount);
+            } else {
+                // we have at least one potentially runtime value, we have
+                // to fallback to slice
+                var->value.type = Type::makeSlice(lTypeEx->arr.element, Type::Q_CONST);
+            }
+
+            return Err::OK;
+        } else if (isCast(op)) {
+            var->value.type = rType;
+            return Err::OK;
         }
 
         Err::Err err;
-        if (lType->rank > rType->rank) {
+        if (lType->rank < rType->rank) {
             err = applyImplicitCast(ctx, bex->left, bex->right->value.type);
+            var->value.type = bex->right->value.type;
         } else {
             err = applyImplicitCast(ctx, bex->right, bex->left->value.type);
+            var->value.type = bex->left->value.type;
         }
         if (err != Err::OK) return err;
-
-        var->value.type = bex->left->value.type;
 
         return Err::OK;
     }
@@ -2527,17 +2892,6 @@ namespace Validator {
         return Err::INVALID_RVALUE;
     }
 
-    // TODO: can we get rid of it?
-    bool validateImplicitCast(const Type::Kind source, const Type::Kind target) {
-        const bool basicTypes     = Type::isBasic(source) || Type::isBasic(target);
-        const bool arrayToPointer = (source == Type::DT_ARRAY && target == Type::DT_POINTER);
-        const bool arrayToSlice   = (source == Type::DT_SLICE && target == Type::DT_ARRAY);
-        const bool enumToInt      = Type::isIntegerOrEnum(source) && Type::isIntegerOrEnum(target);
-        const bool ptrToPtr       = source == Type::DT_POINTER && target == Type::DT_POINTER;
-
-        return basicTypes || arrayToPointer || arrayToSlice || enumToInt || ptrToPtr;
-    }
-
     // uses ctx->tmpArena
     String resolveTypeName(Validator::ValidationContext* ctx, Type::TypeInfo* type) {
         constexpr int bufferSize = 512;
@@ -2551,37 +2905,46 @@ namespace Validator {
         };
 
         writeTypeName(&stream, type);
-        Arena::rollback(&ctx->tmpArena, str.buff - buffer);
+        Arena::rollback(&ctx->tmpArena, stream.buffer.len);
 
+        str.len = bufferSize - stream.buffer.len;
         return str;
     }
 
-    Err::Err validateImplicitCast(ValidationContext* ctx, Type::TypeInfo* source, Type::TypeInfo* target) {
-        if (source == target) return Err::OK;
+    Err::Err validateImplicitCast(ValidationContext* ctx, Span* span, Type::TypeInfo* source, Type::TypeInfo* target) {
+        const Type::TypeInfo* failedSource = NULL;
+        const Type::TypeInfo* failedTarget = NULL;
 
-        if (validateImplicitCast(source->kind, target->kind)) {
-            return Err::OK;
+        Type::CastKind ans = Type::canImplicitCast(source, target, &failedSource, &failedTarget);
+        if (ans != Type::CK_INVALID) {
+            return (Err::Err) ans;
         }
 
-        if (target->kind == Type::DT_ARRAY) {
-            Type::ArrayInfo* aInfo = (Type::ArrayInfo*) target;
-
-            Err::Err err = validateImplicitCast(ctx, source, aInfo->element);
-            if (err != Err::OK) return err;
-
-            // TODO: make special ret type?
-            return (Err::Err) IS_CASTED_FROM_LOWER_LEVEL;
-        }
-
+        // Error mumbling:
         Arena::Marker marker = Arena::getMarker(&ctx->tmpArena);
 
-        String sourceName = resolveTypeName(ctx, source);
-        String targetName = resolveTypeName(ctx, target);
-        Diag::report(ctx->unit->ast, NULL, Err::INVALID_TYPE_CONVERSION,
-            sourceName.len, sourceName.buff, targetName.len, targetName.buff);
+        String srcName = resolveTypeName(ctx, source);
+        String dstName = resolveTypeName(ctx, target);
+
+        if (failedSource && failedTarget && (failedSource != source || failedTarget != target)) {
+            String innerSrc = resolveTypeName(ctx, (Type::TypeInfo*)failedSource);
+            String innerDst = resolveTypeName(ctx, (Type::TypeInfo*)failedTarget);
+
+            Diag::report(ctx->unit->ast, span, Err::INVALID_TYPE_CONVERSION,
+                Diag::Format{
+                    "Cannot convert '%.*s' to '%.*s': element '%.*s' cannot be converted to '%.*s'"
+                },
+                srcName.len, srcName.buff,
+                dstName.len, dstName.buff,
+                innerSrc.len, innerSrc.buff);
+        } else {
+            Diag::report(ctx->unit->ast, span, Err::INVALID_TYPE_CONVERSION,
+                Diag::Format{
+                    "Cannot convert '%.*s' to '%.*s'"
+                }, srcName.len, srcName.buff, dstName.len, dstName.buff);
+        }
 
         Arena::rollback(&ctx->tmpArena, marker);
-
         return Err::INVALID_TYPE_CONVERSION;
     }
 

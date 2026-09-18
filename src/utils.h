@@ -37,4 +37,8 @@ namespace Utils {
 
     }
 
+    void sort(void* data, uint32_t count, uint32_t stride, uint32_t keyOffset);
+    void insertionSort(void* data, uint32_t count, uint32_t stride, uint32_t keyOffset);
+    void quickSort(void* data, uint32_t count, uint32_t stride, uint32_t keyOffset);
+
 }

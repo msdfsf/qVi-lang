@@ -15,13 +15,15 @@
 
 #define GEN_VEC_FCN_VS(name, dtype, op) \
     void name(void* vout, void* va, uint64_t vs, const int len) { \
-        dtype* out = (dtype*)vout; dtype* a = (dtype*)va; dtype s = (dtype)vs; \
+        dtype* out = (dtype*)vout; dtype* a = (dtype*)va; \
+        dtype s = *((dtype*)&vs); \
         for (int i = 0; i < len; i++) out[i] = a[i] op s; \
     }
 
 #define GEN_VEC_FCN_SV(name, dtype, op) \
     void name(void* vout, void* va, uint64_t vs, const int len) { \
-        dtype* out = (dtype*)vout; dtype* a = (dtype*)va; dtype s = (dtype)vs; \
+        dtype* out = (dtype*)vout; dtype* a = (dtype*)va; \
+        dtype s = *((dtype*)&vs); \
         for (int i = 0; i < len; i++) out[i] = s op a[i]; \
     }
 
@@ -142,145 +144,177 @@ GEN_VEC_CAST_BY_DEST(uint64_t, U64)
 GEN_VEC_CAST_BY_DEST(float,    F32)
 GEN_VEC_CAST_BY_DEST(double,   F64)
 
-
-
-// --- Generate tables
-//
-
-#define GEN_VEC_FCN_NAME_BY_OPER_INT(ftag, oname) \
-    GEN_VEC_FCN_NAME(ftag, I8,  oname), \
-    GEN_VEC_FCN_NAME(ftag, I16, oname), \
-    GEN_VEC_FCN_NAME(ftag, I32, oname), \
-    GEN_VEC_FCN_NAME(ftag, I64, oname), \
-    GEN_VEC_FCN_NAME(ftag, U8,  oname), \
-    GEN_VEC_FCN_NAME(ftag, U16, oname), \
-    GEN_VEC_FCN_NAME(ftag, U32, oname), \
-    GEN_VEC_FCN_NAME(ftag, U64, oname), \
-    NULL, \
-    NULL,
-
-#define GEN_VEC_FCN_NAME_BY_OPER(ftag, oname) \
-    GEN_VEC_FCN_NAME(ftag, I8,  oname), \
-    GEN_VEC_FCN_NAME(ftag, I16, oname), \
-    GEN_VEC_FCN_NAME(ftag, I32, oname), \
-    GEN_VEC_FCN_NAME(ftag, I64, oname), \
-    GEN_VEC_FCN_NAME(ftag, U8,  oname), \
-    GEN_VEC_FCN_NAME(ftag, U16, oname), \
-    GEN_VEC_FCN_NAME(ftag, U32, oname), \
-    GEN_VEC_FCN_NAME(ftag, U64, oname), \
-    GEN_VEC_FCN_NAME(ftag, F32, oname), \
-    GEN_VEC_FCN_NAME(ftag, F64, oname),
-
-#define GEN_VEC_FCN_NAME_BY_DEST(tname) \
-    GEN_VEC_FCN_NAME(C, tname, I8),  \
-    GEN_VEC_FCN_NAME(C, tname, I16), \
-    GEN_VEC_FCN_NAME(C, tname, I32), \
-    GEN_VEC_FCN_NAME(C, tname, I64), \
-    GEN_VEC_FCN_NAME(C, tname, U8),  \
-    GEN_VEC_FCN_NAME(C, tname, U16), \
-    GEN_VEC_FCN_NAME(C, tname, U32), \
-    GEN_VEC_FCN_NAME(C, tname, U64), \
-    GEN_VEC_FCN_NAME(C, tname, F32), \
-    GEN_VEC_FCN_NAME(C, tname, F64),
-
-VecFunctionBinary vecDispatchBinary[] = {
-    GEN_VEC_FCN_NAME_BY_OPER(B, Add)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Sub)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Mul)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Div)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(B, Mod)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(B, And)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(B, Or)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(B, Xor)
-    GEN_VEC_FCN_NAME_BY_OPER(B, BoolAnd)
-    GEN_VEC_FCN_NAME_BY_OPER(B, BoolOr)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(B, Shr)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(B, Shl)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Eq)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Neq)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Lte)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Gte)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Lt)
-    GEN_VEC_FCN_NAME_BY_OPER(B, Gt)
-};
-
-VecFunctionScalar vecDispatchScalarR[] = {
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Add)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Sub)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Mul)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Div)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(VS, Mod)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(VS, And)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(VS, Or)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(VS, Xor)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, BoolAnd)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, BoolOr)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(VS, Shr)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(VS, Shl)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Eq)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Neq)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Lte)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Gte)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Lt)
-    GEN_VEC_FCN_NAME_BY_OPER(VS, Gt)
-};
-
-VecFunctionScalar vecDispatchScalarL[] = {
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Add)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Sub)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Mul)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Div)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(SV, Mod)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(SV, And)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(SV, Or)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(SV, Xor)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, BoolAnd)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, BoolOr)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(SV, Shr)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(SV, Shl)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Eq)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Neq)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Lte)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Gte)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Lt)
-    GEN_VEC_FCN_NAME_BY_OPER(SV, Gt)
-};
-
-VecFunctionUnary vecDispatchUnary[] = {
-    GEN_VEC_FCN_NAME_BY_OPER(U, Add)
-    GEN_VEC_FCN_NAME_BY_OPER(U, Sub)
-    //GEN_VEC_FCN_NAME_BY_OPER(U, Addr)
-    //GEN_VEC_FCN_NAME_BY_OPER(U, Value)
-    GEN_VEC_FCN_NAME_BY_OPER_INT(U, Neg)
-    GEN_VEC_FCN_NAME_BY_OPER(U, Inc)
-    GEN_VEC_FCN_NAME_BY_OPER(U, Dec)
-    GEN_VEC_FCN_NAME_BY_OPER(U, BoolNeg)
-};
-
-VecFunctionCast vecDispatchCast[] = {
-    GEN_VEC_FCN_NAME_BY_DEST(I8)
-    GEN_VEC_FCN_NAME_BY_DEST(I16)
-    GEN_VEC_FCN_NAME_BY_DEST(I32)
-    GEN_VEC_FCN_NAME_BY_DEST(I64)
-    GEN_VEC_FCN_NAME_BY_DEST(U8)
-    GEN_VEC_FCN_NAME_BY_DEST(U16)
-    GEN_VEC_FCN_NAME_BY_DEST(U32)
-    GEN_VEC_FCN_NAME_BY_DEST(U64)
-    GEN_VEC_FCN_NAME_BY_DEST(F32)
-    GEN_VEC_FCN_NAME_BY_DEST(F64)
-};
-
+GEN_VEC_FCN_F(vecFillI8,  int8_t)
+GEN_VEC_FCN_F(vecFillI16, int16_t)
 GEN_VEC_FCN_F(vecFillI32, int32_t)
 GEN_VEC_FCN_F(vecFillI64, int64_t)
+GEN_VEC_FCN_F(vecFillU8,  uint8_t)
+GEN_VEC_FCN_F(vecFillU16, uint16_t)
 GEN_VEC_FCN_F(vecFillU32, uint32_t)
 GEN_VEC_FCN_F(vecFillU64, uint64_t)
 GEN_VEC_FCN_F(vecFillF32, float)
 GEN_VEC_FCN_F(vecFillF64, double)
-VecFunctionFill vecDispatchFill[] = {
-    vecFillI32,
-    vecFillI64,
-    vecFillU32,
-    vecFillU64,
-    vecFillF32,
-    vecFillF64
-};
+
+
+
+// --- Actual dispatching
+//
+
+#define RETURN_TYPE_ALL(ftag, oname, dtype) \
+    switch (dtype) { \
+        case Type::DT_I8:  return GEN_VEC_FCN_NAME(ftag, I8,  oname); \
+        case Type::DT_I16: return GEN_VEC_FCN_NAME(ftag, I16, oname); \
+        case Type::DT_I32: return GEN_VEC_FCN_NAME(ftag, I32, oname); \
+        case Type::DT_I64: return GEN_VEC_FCN_NAME(ftag, I64, oname); \
+        case Type::DT_U8:  return GEN_VEC_FCN_NAME(ftag, U8,  oname); \
+        case Type::DT_U16: return GEN_VEC_FCN_NAME(ftag, U16, oname); \
+        case Type::DT_U32: return GEN_VEC_FCN_NAME(ftag, U32, oname); \
+        case Type::DT_U64: return GEN_VEC_FCN_NAME(ftag, U64, oname); \
+        case Type::DT_F32: return GEN_VEC_FCN_NAME(ftag, F32, oname); \
+        case Type::DT_F64: return GEN_VEC_FCN_NAME(ftag, F64, oname); \
+        default: return nullptr; \
+    }
+
+#define RETURN_TYPE_INT(ftag, oname, dtype) \
+    switch (dtype) { \
+        case Type::DT_I8:  return GEN_VEC_FCN_NAME(ftag, I8,  oname); \
+        case Type::DT_I16: return GEN_VEC_FCN_NAME(ftag, I16, oname); \
+        case Type::DT_I32: return GEN_VEC_FCN_NAME(ftag, I32, oname); \
+        case Type::DT_I64: return GEN_VEC_FCN_NAME(ftag, I64, oname); \
+        case Type::DT_U8:  return GEN_VEC_FCN_NAME(ftag, U8,  oname); \
+        case Type::DT_U16: return GEN_VEC_FCN_NAME(ftag, U16, oname); \
+        case Type::DT_U32: return GEN_VEC_FCN_NAME(ftag, U32, oname); \
+        case Type::DT_U64: return GEN_VEC_FCN_NAME(ftag, U64, oname); \
+        default: return nullptr; \
+    }
+
+#define RETURN_CAST_SRC(destName, src) \
+    switch (src) { \
+        case Type::DT_I8:  return GEN_VEC_FCN_NAME(C, destName, I8);  \
+        case Type::DT_I16: return GEN_VEC_FCN_NAME(C, destName, I16); \
+        case Type::DT_I32: return GEN_VEC_FCN_NAME(C, destName, I32); \
+        case Type::DT_I64: return GEN_VEC_FCN_NAME(C, destName, I64); \
+        case Type::DT_U8:  return GEN_VEC_FCN_NAME(C, destName, U8);  \
+        case Type::DT_U16: return GEN_VEC_FCN_NAME(C, destName, U16); \
+        case Type::DT_U32: return GEN_VEC_FCN_NAME(C, destName, U32); \
+        case Type::DT_U64: return GEN_VEC_FCN_NAME(C, destName, U64); \
+        case Type::DT_F32: return GEN_VEC_FCN_NAME(C, destName, F32); \
+        case Type::DT_F64: return GEN_VEC_FCN_NAME(C, destName, F64); \
+        default: return nullptr; \
+    }
+
+VecFunctionBinary vecGetBinary(Type::Kind dtype, OperatorEnum oper) {
+    switch (oper) {
+        case OP_ADDITION:              RETURN_TYPE_ALL(B, Add, dtype);
+        case OP_SUBTRACTION:           RETURN_TYPE_ALL(B, Sub, dtype);
+        case OP_MULTIPLICATION:        RETURN_TYPE_ALL(B, Mul, dtype);
+        case OP_DIVISION:              RETURN_TYPE_ALL(B, Div, dtype);
+        case OP_MODULO:                RETURN_TYPE_INT(B, Mod, dtype);
+        case OP_BITWISE_AND:           RETURN_TYPE_INT(B, And, dtype);
+        case OP_BITWISE_OR:            RETURN_TYPE_INT(B, Or,  dtype);
+        case OP_BITWISE_XOR:           RETURN_TYPE_INT(B, Xor, dtype);
+        case OP_SHIFT_LEFT:            RETURN_TYPE_INT(B, Shl, dtype);
+        case OP_SHIFT_RIGHT:           RETURN_TYPE_INT(B, Shr, dtype);
+        case OP_EQUAL:                 RETURN_TYPE_ALL(B, Eq,  dtype);
+        case OP_NOT_EQUAL:             RETURN_TYPE_ALL(B, Neq, dtype);
+        case OP_LESS_THAN:             RETURN_TYPE_ALL(B, Lt,  dtype);
+        case OP_LESS_THAN_OR_EQUAL:    RETURN_TYPE_ALL(B, Lte, dtype);
+        case OP_GREATER_THAN:          RETURN_TYPE_ALL(B, Gt,  dtype);
+        case OP_GREATER_THAN_OR_EQUAL: RETURN_TYPE_ALL(B, Gte, dtype);
+        case OP_BOOL_AND:              RETURN_TYPE_ALL(B, BoolAnd, dtype);
+        case OP_BOOL_OR:               RETURN_TYPE_ALL(B, BoolOr,  dtype);
+        default: return NULL;
+    }
+}
+
+VecFunctionScalar vecGetScalarR(Type::Kind dtype, OperatorEnum oper) {
+    switch (oper) {
+        case OP_ADDITION:              RETURN_TYPE_ALL(VS, Add, dtype);
+        case OP_SUBTRACTION:           RETURN_TYPE_ALL(VS, Sub, dtype);
+        case OP_MULTIPLICATION:        RETURN_TYPE_ALL(VS, Mul, dtype);
+        case OP_DIVISION:              RETURN_TYPE_ALL(VS, Div, dtype);
+        case OP_MODULO:                RETURN_TYPE_INT(VS, Mod, dtype);
+        case OP_BITWISE_AND:           RETURN_TYPE_INT(VS, And, dtype);
+        case OP_BITWISE_OR:            RETURN_TYPE_INT(VS, Or,  dtype);
+        case OP_BITWISE_XOR:           RETURN_TYPE_INT(VS, Xor, dtype);
+        case OP_SHIFT_LEFT:            RETURN_TYPE_INT(VS, Shl, dtype);
+        case OP_SHIFT_RIGHT:           RETURN_TYPE_INT(VS, Shr, dtype);
+        case OP_EQUAL:                 RETURN_TYPE_ALL(VS, Eq,  dtype);
+        case OP_NOT_EQUAL:             RETURN_TYPE_ALL(VS, Neq, dtype);
+        case OP_LESS_THAN:             RETURN_TYPE_ALL(VS, Lt,  dtype);
+        case OP_LESS_THAN_OR_EQUAL:    RETURN_TYPE_ALL(VS, Lte, dtype);
+        case OP_GREATER_THAN:          RETURN_TYPE_ALL(VS, Gt,  dtype);
+        case OP_GREATER_THAN_OR_EQUAL: RETURN_TYPE_ALL(VS, Gte, dtype);
+        case OP_BOOL_AND:              RETURN_TYPE_ALL(VS, BoolAnd, dtype);
+        case OP_BOOL_OR:               RETURN_TYPE_ALL(VS, BoolOr,  dtype);
+        default: return nullptr;
+    }
+}
+
+VecFunctionScalar vecGetScalarL(Type::Kind dtype, OperatorEnum oper) {
+    switch (oper) {
+        case OP_ADDITION:              RETURN_TYPE_ALL(SV, Add, dtype);
+        case OP_SUBTRACTION:           RETURN_TYPE_ALL(SV, Sub, dtype);
+        case OP_MULTIPLICATION:        RETURN_TYPE_ALL(SV, Mul, dtype);
+        case OP_DIVISION:              RETURN_TYPE_ALL(SV, Div, dtype);
+        case OP_MODULO:                RETURN_TYPE_INT(SV, Mod, dtype);
+        case OP_BITWISE_AND:           RETURN_TYPE_INT(SV, And, dtype);
+        case OP_BITWISE_OR:            RETURN_TYPE_INT(SV, Or,  dtype);
+        case OP_BITWISE_XOR:           RETURN_TYPE_INT(SV, Xor, dtype);
+        case OP_SHIFT_LEFT:            RETURN_TYPE_INT(SV, Shl, dtype);
+        case OP_SHIFT_RIGHT:           RETURN_TYPE_INT(SV, Shr, dtype);
+        case OP_EQUAL:                 RETURN_TYPE_ALL(SV, Eq,  dtype);
+        case OP_NOT_EQUAL:             RETURN_TYPE_ALL(SV, Neq, dtype);
+        case OP_LESS_THAN:             RETURN_TYPE_ALL(SV, Lt,  dtype);
+        case OP_LESS_THAN_OR_EQUAL:    RETURN_TYPE_ALL(SV, Lte, dtype);
+        case OP_GREATER_THAN:          RETURN_TYPE_ALL(SV, Gt,  dtype);
+        case OP_GREATER_THAN_OR_EQUAL: RETURN_TYPE_ALL(SV, Gte, dtype);
+        case OP_BOOL_AND:              RETURN_TYPE_ALL(SV, BoolAnd, dtype);
+        case OP_BOOL_OR:               RETURN_TYPE_ALL(SV, BoolOr,  dtype);
+        default: return nullptr;
+    }
+}
+
+VecFunctionUnary vecGetUnary(Type::Kind dtype, OperatorEnum oper) {
+    switch (oper) {
+        case OP_UNARY_PLUS:       RETURN_TYPE_ALL(U, Add, dtype);
+        case OP_UNARY_MINUS:      RETURN_TYPE_ALL(U, Sub, dtype);
+        case OP_NEGATION:         RETURN_TYPE_ALL(U, BoolNeg, dtype);
+        case OP_BITWISE_NEGATION: RETURN_TYPE_INT(U, Neg, dtype);
+        case OP_INCREMENT:        RETURN_TYPE_ALL(U, Inc, dtype);
+        case OP_DECREMENT:        RETURN_TYPE_ALL(U, Dec, dtype);
+        default: return nullptr;
+    }
+}
+
+VecFunctionCast vecGetCast(Type::Kind dest, Type::Kind src) {
+    switch (dest) {
+        case Type::DT_I8:  RETURN_CAST_SRC(I8,  src);
+        case Type::DT_I16: RETURN_CAST_SRC(I16, src);
+        case Type::DT_I32: RETURN_CAST_SRC(I32, src);
+        case Type::DT_I64: RETURN_CAST_SRC(I64, src);
+        case Type::DT_U8:  RETURN_CAST_SRC(U8,  src);
+        case Type::DT_U16: RETURN_CAST_SRC(U16, src);
+        case Type::DT_U32: RETURN_CAST_SRC(U32, src);
+        case Type::DT_U64: RETURN_CAST_SRC(U64, src);
+        case Type::DT_F32: RETURN_CAST_SRC(F32, src);
+        case Type::DT_F64: RETURN_CAST_SRC(F64, src);
+        default: return nullptr;
+    }
+}
+
+VecFunctionFill vecGetFill(Type::Kind dtype) {
+    switch (dtype) {
+        case Type::DT_I8:  return vecFillI8;
+        case Type::DT_I16: return vecFillI16;
+        case Type::DT_I32: return vecFillI32;
+        case Type::DT_I64: return vecFillI64;
+        case Type::DT_U8:  return vecFillU8;
+        case Type::DT_U16: return vecFillU16;
+        case Type::DT_U32: return vecFillU32;
+        case Type::DT_U64: return vecFillU64;
+        case Type::DT_F32: return vecFillF32;
+        case Type::DT_F64: return vecFillF64;
+        default: return nullptr;
+    }
+}

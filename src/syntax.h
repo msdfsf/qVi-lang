@@ -20,6 +20,7 @@
 #include "array_list.h"
 #include "dynamic_arena.h"
 #include "ordered_dict.h"
+#include "print_format.h"
 #include "set.h"
 #include "task_status.h"
 
@@ -44,7 +45,6 @@ struct Variable;
 struct Function;
 struct Branch;
 struct SwitchCase;
-struct WhileLoop;
 struct Loop;
 struct ErrorSet;
 struct ReturnStatement;
@@ -78,6 +78,12 @@ struct ForeignFunction;
 struct LangDef;
 
 struct TypeDefinition;
+
+namespace Ast {
+    namespace Internal {
+        enum FunctionType : uint32_t;
+    }
+}
 
 namespace Interpreter {
     struct ExeBlock;
@@ -220,6 +226,16 @@ struct SymbolIndex {
 //  SYNTAX NODES
 // ===
 
+enum NodeState : uint8_t {
+    NS_UNRESOLVED   = 0,
+    NS_TYPE_READY   = 2, // Safe to use expression, ex. at least signature is ready
+    NS_VALIDATED    = 4, // Node is 100% typechecked/validated
+    NS_ABI_READY    = 3, // TODO: DUNNO, think more
+    NS_COMPILE_TIME = 5,
+    NS_ERROR        = 6, // Node was in validation, but failed
+                         // TODO: separate error for cmp time?
+};
+
 struct SyntaxNode {
     static Scope* root;
     static INamed dir;
@@ -228,21 +244,17 @@ struct SyntaxNode {
     // need option to get access to the original node
     SyntaxNode* ogNode = NULL;
 
-    NodeType type;
     Scope*   scope = NULL;
     Span*    span;
     uint64_t flags;
 
-    int definitionIdx;
-
     // What import we came from...
     ImportStatement* import;
 
-    // Status of Linking, Type Resolution etc...
-    uint8_t semStatus;
-    // Status of Bytecode Generation, Evaluation etc...
-    uint8_t cmpStatus;
-    // TODO
+    NodeType  type;
+    NodeState state;
+
+    uint8_t lock;
     uint8_t workerId;
 };
 
@@ -378,11 +390,38 @@ struct TypeInitialization {
     Variable* fillVar;
 };
 
+struct FormatStringDescriptor {
+    char* string;
+
+    enum Kind {
+        FORMAT,
+        ESCAPE,
+    };
+
+    union Chunk {
+        struct Format {
+            Kind              kind;
+            PrintFormat::Info format;
+            uint32_t          offset;
+            uint32_t          length;
+        } format;
+
+        struct Escape {
+            Kind     kind;
+            uint32_t offset;
+        } escape;
+    }*       chunks;
+    uint32_t chunkCount;
+    uint32_t formatCount;
+};
+
 struct StringInitialization {
     Expression base;
 
     String rawData;
     Type::TypeInfo* charType;
+
+    FormatStringDescriptor* format;
 };
 
 struct ArrayInitialization {
@@ -408,11 +447,7 @@ struct Cast {
 
     Type::TypeInfo* target;
     Variable*       operand;
-
-    enum Kind {
-        DEFAULT = 0,
-        FROM_LOWER_LEVEL
-    } kind;
+    Type::CastKind  kind;
 };
 
 struct Alloc {
@@ -534,7 +569,8 @@ struct Function {
     Extern::LibraryHandle lib;
     void* externAddress;
 
-    int internalIdx; // if it is > 0, then its internal function, and value represents unique id, otherwise should be ignored ***** TODO : for now value: -1 is used as identifer to not render function, fix it later *****
+    // TODO: name
+    Ast::Internal::FunctionType internalIdx; // if it is > 0, then its internal function, and value represents unique id, otherwise should be ignored ***** TODO : for now value: -1 is used as identifer to not render function, fix it later *****
 };
 
 struct ForeignFunction {
@@ -563,6 +599,15 @@ struct Branch {
     uint32_t   expressionCount;
 };
 
+enum CaseStrategy {
+    CS_LINEAR,
+    CS_BINARY,
+    CS_JUMP_TABLE,
+};
+
+// NOTE: caseCount and caseExpCount should be equal in valid
+//       program. But because we can recover from errors and
+//       provide partially true result, they are separated.
 struct SwitchCase {
     SyntaxNode base;
 
@@ -574,6 +619,14 @@ struct SwitchCase {
 
     uint32_t caseExpCount;
     uint32_t caseCount;
+
+    struct Sorted {
+        int64_t  val; // compile-time value its sorted by
+        uint32_t idx; // back idx to cases/exp
+    }* sorted;
+    uint32_t sortedCount;
+
+    CaseStrategy strategy;
 };
 
 struct Loop {
@@ -589,13 +642,16 @@ struct Loop {
         };
 
         enum Kind {
+            ITERABLE,
+            CONDITION,
             EXPRESSION,
             RANGE,
         } kind;
     } arg;
 
     // We are expression array[i] or array + i
-    Variable* item;
+    VariableDefinition* item;
+
     // We can be either reference to existing index or new one.
     union {
         Variable*           var;
@@ -774,6 +830,9 @@ struct AstContext {
 
     AstRegistry* reg; // TODO : remove?
 
+    // To do all tmp allocations
+    Arena::Container tmpArena;
+
     // each bit corresponds with the InternaFunction enum
     // indicates if function was used at least once in code
     uint64_t usedFunctionMask;
@@ -794,12 +853,15 @@ struct AstContext {
 namespace Ast {
 
     void init();
+    void clear();
     void release();
 
     void init   (AstContext* ast);
+    void clear  (AstContext* ast);
     void release(AstContext* ast);
 
     void init   (AstRegistry* reg);
+    void clear  (AstRegistry* reg);
     void release(AstRegistry* reg);
 
     namespace Node {
@@ -816,7 +878,6 @@ namespace Ast {
         void init(ForeignFunction* node);
         void init(Branch* node);
         void init(SwitchCase* node);
-        void init(WhileLoop* node);
         void init(Loop* node);
         void init(ReturnStatement* node);
         void init(ContinueStatement* node);
@@ -859,7 +920,6 @@ namespace Ast {
         ForeignFunction*    makeForeignFunction();
         Branch*             makeBranch();
         SwitchCase*         makeSwitchCase();
-        WhileLoop*          makeWhileLoop();
         Loop*               makeLoop();
         ReturnStatement*    makeReturnStatement();
         ContinueStatement*  makeContinueStatement();
@@ -902,7 +962,6 @@ namespace Ast {
         ForeignFunction*    copy(ForeignFunction* node);
         Branch*             copy(Branch* node);
         SwitchCase*         copy(SwitchCase* node);
-        WhileLoop*          copy(WhileLoop* node);
         Loop*               copy(Loop* node);
         ReturnStatement*    copy(ReturnStatement* node);
         ContinueStatement*  copy(ContinueStatement* node);
@@ -1001,6 +1060,7 @@ namespace Ast {
         };
 
         enum FunctionType : uint32_t {
+            IF_NONE   = 0, // TODO: name
             IF_PRINTF = 1,
             IF_ALLOC  = 2,
             IF_FREE   = 3,
@@ -1011,6 +1071,8 @@ namespace Ast {
         extern Function functions[IF_COUNT];
 
         extern Variable* zero;
+
+        bool isInternal(FunctionType type);
     };
 
 };
@@ -1115,6 +1177,7 @@ constexpr int nodeTypeSize[AT_COUNT] = {
 // ===
 
 Variable* unwrap(Variable* var);
+Variable* unwrapWithCasts(Variable* var);
 
 
 

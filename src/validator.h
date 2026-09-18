@@ -101,7 +101,6 @@ namespace Validator {
     Err::Err validate(ValidationContext* ctx, VariableAssignment* node);
     Err::Err validate(ValidationContext* ctx, Branch* node);
     Err::Err validate(ValidationContext* ctx, SwitchCase* node);
-    Err::Err validate(ValidationContext* ctx, WhileLoop* node);
     Err::Err validate(ValidationContext* ctx, Loop* node);
     Err::Err validate(ValidationContext* ctx, ReturnStatement* node);
     Err::Err validate(ValidationContext* ctx, Enumerator* node);
@@ -110,10 +109,10 @@ namespace Validator {
 
     Err::Err validateExpression(ValidationContext* ctx, Variable* var, Type::TypeInfo* target = NULL);
 
-    bool     validateImplicitCast(const Type::Kind dtype, const Type::Kind dtypeRef);
-    Err::Err validateImplicitCast(ValidationContext* ctx, Type::TypeInfo* source, Type::TypeInfo* target);
+    Err::Err validateImplicitCast(ValidationContext* ctx, Span* span, Type::TypeInfo* source, Type::TypeInfo* target);
     Err::Err validateAttributeCast(Variable* var, Variable* attribute);
     Err::Err validatePointerAssignment(AstContext* ast, const Value* const val);
+    Err::Err resolveAmbagiousType(ValidationContext* ctx, Span* span, Type::TypeInfo* expected, Type::TypeInfo** outTarget);
 
     Err::Err applyVariableLinkage(ValidationContext* ctx, Variable* var, SyntaxNode* definition);
 
@@ -126,7 +125,7 @@ namespace Validator {
     Err::Err resolveQualifiedNameAsIndexEntry(ValidationContext* ctx, Scope* startScope, QualifiedName* name, SymbolIndexEntry** outEntry, bool reportErrors = true);
 
     Function*   findExactFunction  (Scope* scope, INamed* const name, FunctionPrototype* const fptr);
-    Function*   findClosestFunction(SymbolIndexEntry* entry, Variable* callOp);
+    Function*   findClosestFunction(ValidationContext* ctx, SymbolIndexEntry* entry, Variable* callOp);
     SyntaxNode* findInternalSymbol (const String* name);
 
     bool areInOrder(Span* before, Span* after);

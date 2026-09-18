@@ -17,6 +17,7 @@
 #include "allocator.h"
 #include "syntax.h"
 #include <atomic>
+#include <cstdint>
 
 
 
@@ -68,6 +69,10 @@ namespace TaskSystem::Core {
 
     Worker* getWorkers() {
         return gWorkers;
+    }
+
+    uint64_t getWorkerCount() {
+        return gWorkerCount;
     }
 
 
@@ -166,6 +171,7 @@ namespace TaskSystem::Core {
 
     void runWorker(Worker* worker) {
         gCurrentWorker = worker;
+        worker->amIAlive = true;
 
         allocInit();
         nallocInit();
@@ -177,7 +183,7 @@ namespace TaskSystem::Core {
         //       or make them static...
         Lex::init();
 
-        while (1) {
+        while (worker->amIAlive) {
 
             worker->hasWork.wait(false);
 
