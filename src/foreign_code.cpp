@@ -1,10 +1,12 @@
 #include "allocator.h"
 #include "data_types.h"
 #include "diagnostic.h"
+#include "dynamic_arena.h"
 #include "file_system.h"
 #include "globals.h"
 #include "interpreter.h"
 #include "registry.h"
+#include "strlib.h"
 #include "syntax.h"
 #include "task_status.h"
 #include "task_system.h"
@@ -140,9 +142,17 @@ namespace Extern {
 
 
     void init() {
-        gLibSet.hashMethod = Set::HM_12_FNV1A;
-        gLibSet.keyOffset = getMemberOffset(LibrarySlot, id);
         Set::init(&gLibSet, 512);
+        gLibSet.keyOffset = getMemberOffset(LibrarySlot, id);
+        gLibSet.hashMethod = Set::HM_12_FNV1A;
+    }
+
+    void clear() {
+        Set::clear(&gLibSet);
+    }
+
+    void release() {
+        Set::release(&gLibSet);
     }
 
 
@@ -164,7 +174,7 @@ namespace Extern {
 
     Err::Err loadLibrary(AstContext* ast, String name, LibraryLoadLevel level, LibraryHandle* out) {
         HMODULE hnd = NULL;
-        AllocatorMarker aMarker = allocMark();
+        Arena::Marker aMarker = Arena::getMarker(&ast->tmpArena);
 
         String wname = utf8ToWChar(name);
 
@@ -195,7 +205,7 @@ namespace Extern {
             return Err::LIBRARY_LOAD_FAILED;
         }
 
-        wchar_t* fullPath = (wchar_t*) alloc<wchar_t>(FileSystem::MAX_FILE_PATH);
+        wchar_t* fullPath = (wchar_t*) Arena::push(&ast->tmpArena, sizeof(wchar_t) * FileSystem::MAX_FILE_PATH);
         DWORD resultSize = GetModuleFileNameW(hnd, fullPath, FileSystem::MAX_FILE_PATH);
         DWORD errCode = GetLastError();
         if (resultSize == 0 || errCode == ERROR_INSUFFICIENT_BUFFER) {
@@ -212,7 +222,7 @@ namespace Extern {
                 name.len, name.buff, osErrBuff
             );
 
-            allocRollback(aMarker);
+            Arena::rollback(&ast->tmpArena, aMarker);
             return Err::UNEXPECTED_ERROR;
         }
 
@@ -240,7 +250,7 @@ namespace Extern {
                 fullPath, osErrBuff
             );
 
-            allocRollback(aMarker);
+            Arena::rollback(&ast->tmpArena, aMarker);
             return Err::UNEXPECTED_ERROR;
         }
 
@@ -263,7 +273,7 @@ namespace Extern {
                 fullPath, osErrBuff
             );
 
-            allocRollback(aMarker);
+            Arena::rollback(&ast->tmpArena, aMarker);
             return Err::UNEXPECTED_ERROR;
         }
 
@@ -277,12 +287,15 @@ namespace Extern {
         lockLibSet();
 
         LibrarySlot* libSlot = (LibrarySlot*) Set::find(&gLibSet, (uint64_t) &libId);
-
         if (!libSlot) {
             // TODO
             libSlot = alloc<LibrarySlot>();
             libSlot->id = libId;
-            libSlot->lib.dllPath = wcharToUtf8(String { (char*) fullPath, resultSize });
+
+            libSlot->lib.dllPath.buff = alloc<char>(resultSize);
+            libSlot->lib.dllPath.len  = resultSize;
+            Strings::copy(wcharToUtf8(String { (char*) fullPath, resultSize }), libSlot->lib.dllPath);
+
             libSlot->lib.osHandle = (void*) hnd;
             libSlot->lib.loadLevel = level;
 
@@ -309,7 +322,7 @@ namespace Extern {
                         libSlot->lib.dllPath.len, libSlot->lib.dllPath.buff, osErrBuff
                     );
 
-                    allocRollback(aMarker);
+                    Arena::rollback(&ast->tmpArena, aMarker);
                     return Err::LIBRARY_LOAD_FAILED;
                 }
             }
@@ -322,7 +335,7 @@ namespace Extern {
 
         unlockLibSet();
 
-        allocRollback(aMarker);
+        Arena::rollback(&ast->tmpArena, aMarker);
         return Err::OK;
     }
 
@@ -468,9 +481,12 @@ namespace Extern {
             err = loadLibrary(ast, lib->dllPath, LL_EXECUTE, &fcn->lib);
             if (err != Err::OK) return err;
 
-            err = resolveFunction(ast, fcn);
-            if (err != Err::OK) return err;
+            // err = resolveFunction(ast, fcn);
+            // if (err != Err::OK) return err;
         }
+
+        Err::Err err = resolveFunction(ast, fcn);
+        if (err != Err::OK) return err;
 
         const uint32_t argCount = fcn->prototype.inArgCount;
         VariableDefinition** args = fcn->prototype.inArgs;
@@ -486,6 +502,7 @@ namespace Extern {
             Value* src = &args[i]->var->value;
             Abi::Arg* dest = abiArgs + i;
 
+            Abi::ensureTypeInfoReady(ast, src->type, abi);
             abi->classify(dest, src->type->abi);
             if (Abi::isRegFloat(dest->pass)) {
                 if (fRegUsed < abi->fRegCount) {
@@ -505,8 +522,7 @@ namespace Extern {
 
             uintptr_t ptr = Utils::alignForward(stackOffset, abi->stackAlign);
 
-            if (Type::isStructLike(src->type->kind)) {
-                Abi::ensureTypeInfoReady(ast, src->type, abi);
+            if (Type::isStructLike(src->type)) {
                 dest->size = src->type->abi->type->base.size;
             } else {
                 dest->size = src->type->size;
@@ -525,6 +541,7 @@ namespace Extern {
 
         // and also precompute return info
         Value* retVal = &fcn->prototype.outArg->var->value;
+        Abi::ensureTypeInfoReady(ast, retVal->type, abi);
         abi->classify(&abiCtx->retArg, retVal->type->abi);
 
         return Err::OK;
@@ -1301,16 +1318,18 @@ namespace Extern::Abi {
         SyntaxNode* node = (SyntaxNode*) ((Type::TypeInfoEx*) type)->astNode;
         if (!node) {
             ensureTypeInfoReady(&driver->layout, type);
+            return Err::OK;
         }
 
-        if (node->cmpStatus == TS_READY) return Err::OK;
+        if (node->state == NS_ABI_READY) return Err::OK;
 
         AcquireNodeReturn ans =
-            acquireNode(&node->cmpStatus, &node->workerId, TaskSystem::getWorkerId(), true);
+            acquireNode(&node->lock, &node->workerId, TaskSystem::getWorkerId(), true);
 
         if (ans == ANR_ACQUIRED_FOR_WORK) {
             ensureTypeInfoReady(&driver->layout, type);
-            releaseNode(&node->cmpStatus, true);
+            node->state = NS_ABI_READY;
+            releaseNode(&node->lock, true);
         } else if (ans == ANR_ALREADY_ACQUIRED_BY_CALLER) {
             // TODO : Proper Errors
             Diag::report(ast, node->span, Err::UNEXPECTED_ERROR, Diag::Format {

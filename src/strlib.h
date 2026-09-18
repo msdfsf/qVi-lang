@@ -72,4 +72,8 @@ namespace Strings {
 
     }
 
+    inline void copy(const String source, const String target) {
+        std::memcpy(target.buff, source.buff, target.len);
+    }
+
 }

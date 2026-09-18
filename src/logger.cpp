@@ -3,6 +3,7 @@
 #include "globals.h"
 #include "io.h"
 #include "utils.h"
+#include "config.h"
 
 #include <cstdarg>
 #include <cstdint>
@@ -88,7 +89,9 @@ namespace Logger {
     void flush(IO::Stream* stream) {
         uint32_t currentLen = getBufferIndex();
         if (currentLen > 0) {
-            IO::write(stream, gBuffer, currentLen);
+            if constexpr (Config::LOGGING_ENABLED) {
+                IO::write(stream, gBuffer, currentLen);
+            }
         }
 
         gBufferPreviousLength = currentLen;
@@ -99,8 +102,10 @@ namespace Logger {
         uint32_t currentLen = getBufferIndex();
         if (currentLen == 0) return;
 
-        for (uint32_t i = 0; i < flushStreamCount; i++) {
-            IO::write(&flushStreams[i], gBuffer, currentLen);
+        if constexpr (Config::LOGGING_ENABLED) {
+            for (uint32_t i = 0; i < flushStreamCount; i++) {
+                IO::write(&flushStreams[i], gBuffer, currentLen);
+            }
         }
 
         gBufferPreviousLength = currentLen;
@@ -110,6 +115,10 @@ namespace Logger {
 
     String getInternalBuffer() {
         return gBuffer;
+    }
+
+    IO::Stream* getInternalStream() {
+        return &gBufferStream;
     }
 
     char* getLastString(int* len) {

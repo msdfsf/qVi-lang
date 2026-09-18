@@ -8,6 +8,7 @@
 #include "emitter_drivers/emitter_driver_c.h"
 #include "emitter_drivers/emitter_driver_debug.h"
 #include "emitter_drivers/emitter_driver_vm.h"
+#include "file_system.h"
 #include <cstdint>
 
 
@@ -63,7 +64,16 @@ namespace Compiler {
     extern Target*      targets[TK_COUNT + 1]; // Null-terminated
     extern bool         debugInfo;
     extern uint8_t      optLevel;
+    extern bool         cascade;
 
-    int compile();
+    extern uint8_t threadCount;
+
+    void init();
+    void clear();
+    void release();
+
+    int64_t compile();
+    int64_t runFrontend(FileSystem::Handle fileHandle);
+    int64_t runBackends(FileSystem::Handle fileHandle);
 
 }

@@ -64,6 +64,7 @@ compiler <command> <input_file> [options]
 | `-g, --debug` | Generate debug information |
 | `-O<level>` | Optimization level: 0 (default), 1, 2, 3 |
 | `-b, --bat` | Indicate the program is called from a batch script |
+| `-cascade` | Backend is asked to also produce outputs for all prior pipeline stages (Check -> Translate -> Build -> Run).
 | `-h, --help` | Print help message |
 
 ### Targets

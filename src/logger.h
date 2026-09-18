@@ -106,6 +106,8 @@ namespace Logger {
     //
     String getInternalBuffer();
 
+    IO::Stream* getInternalStream();
+
     // String of last logged string valid till the next
     // log call on the same thread.
     char* getLastString(int* len);

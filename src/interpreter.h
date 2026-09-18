@@ -121,7 +121,9 @@ namespace Interpreter {
         double   f64;
     };
 
-    // TODO : sync with Type::Kind
+    // TODO: sync with Type::Kind
+    // TODO: add INC/DEC instructions?
+    // TODO: add generic store load with offset+size operands?
     // order of dtypes matters, see DtypeOffset
     enum Opcode : uint8_t {
         OC_PUSH_I8,
@@ -226,6 +228,7 @@ namespace Interpreter {
         OC_POP,
         OC_POP_N,
         OC_DUP,
+        OC_DUP_N,
         OC_CROP,
         OC_SWAP,
 
@@ -374,9 +377,13 @@ namespace Interpreter {
         OC_JUMP,
         OC_JUMP_IF_TRUE, // pops
         OC_JUMP_IF_FALSE, // pops
+        OC_JUMP_TABLE,
 
         OC_CALL,
         OC_RET, // TODO separate RET_BLOB
+
+        OC_MEMCPY,
+        OC_MEMSET,
 
         OC_GROW,
 
@@ -419,34 +426,38 @@ namespace Interpreter {
     };
 
     enum VecDescriptorEncoding : uint64_t {
-        DE_DTYPE_SHIFT     = 0,
-        DE_OPER_SHIFT      = 8,
-        DE_SRC_DTYPE_SHIFT = 16,
-        DE_FLAGS_SHIFT     = 32,
+        DE_TYPE_SHIFT     = 0,
+        DE_OPER_SHIFT     = 8,
+        DE_SRC_TYPE_SHIFT = 16,
+        DE_DST_SIZE_SHIFT = 24,
+        DE_SRC_SIZE_SHIFT = 40,
+        DE_FLAGS_SHIFT    = 56,
 
-        DE_DTYPE_MASK     = ((uint64_t) 0xFF) << DE_DTYPE_SHIFT,
-        DE_OPER_MASK      = ((uint64_t) 0xFF) << DE_OPER_SHIFT,
-        DE_SRC_DTYPE_MASK = ((uint64_t) 0xFF) << DE_SRC_DTYPE_SHIFT,
-        DE_FLAGS_MASK     = ((uint64_t) 0xFFFFFFFF) << DE_FLAGS_SHIFT,
+        DE_TYPE_MASK     = ((uint64_t) 0xFF)   << DE_TYPE_SHIFT,
+        DE_OPER_MASK     = ((uint64_t) 0xFF)   << DE_OPER_SHIFT,
+        DE_SRC_TYPE_MASK = ((uint64_t) 0xFF)   << DE_SRC_TYPE_SHIFT,
+        DE_DST_SIZE_MASK = ((uint64_t) 0xFFFF) << DE_DST_SIZE_SHIFT,
+        DE_SRC_SIZE_MASK = ((uint64_t) 0xFFFF) << DE_SRC_SIZE_SHIFT,
+        DE_FLAGS_MASK    = ((uint64_t) 0xFF)   << DE_FLAGS_SHIFT,
 
-        // F as Flags, as names are pretty long at this point
-        DE_F_DEST_SHIFT  = 31,
-        DE_F_LEFT_SHIFT  = 30,
-        DE_F_RIGHT_SHIFT = 29,
-        DE_F_IS_DEST_STACK_SHIFT = 28,
+        DE_F_DEST_SHIFT          = 7,
+        DE_F_LEFT_SHIFT          = 6,
+        DE_F_RIGHT_SHIFT         = 5,
+        DE_F_IS_DEST_STACK_SHIFT = 4,
 
-        DE_F_DEST  = 1U << DE_F_DEST_SHIFT,
-        DE_F_LEFT  = 1U << DE_F_LEFT_SHIFT,
-        DE_F_RIGHT = 1U << DE_F_RIGHT_SHIFT,
+        DE_F_DEST          = 1U << DE_F_DEST_SHIFT,
+        DE_F_LEFT          = 1U << DE_F_LEFT_SHIFT,
+        DE_F_RIGHT         = 1U << DE_F_RIGHT_SHIFT,
         DE_F_IS_DEST_STACK = 1U << DE_F_IS_DEST_STACK_SHIFT,
     };
 
     struct VecDescriptor {
-        Type::Kind   dtype;
+        Type::Kind   type;
         OperatorEnum oper;
-        Type::Kind   srcDtype; // for cast
-        uint8_t      reserved;
-        uint32_t     flags;
+        Type::Kind   srcType; // for cast
+        uint8_t      flags;
+        uint16_t     dstElemSize;
+        uint16_t     srcElemSize;
     };
     static_assert(sizeof(VecDescriptor) == sizeof(vmword), "VecDescriptor must match 'vmword' size!");
 
@@ -455,11 +466,11 @@ namespace Interpreter {
         VecDescriptor desc;
     };
 
+    // If 'type' is null, this slot holds the variable itself.
+    // If 'type' is non-null, this is a meta slot allocated for 'var' (e.g. a backing buffer).
     struct LocalVarInfo {
-        // for now enough
         Variable* var;
-        uint64_t  size;
-        uint64_t  align;
+        Type::TypeInfo* type;
     };
 
     struct LineInfo {
@@ -470,6 +481,7 @@ namespace Interpreter {
 
     struct VecResult {
         bool isTmp;
+        bool isScalar;
     };
 
     constexpr uint64_t patchListHeadNull = 0xFFFF;
@@ -542,6 +554,14 @@ namespace Interpreter {
         uint64_t fixedSize;
         uint64_t defaultArgsSize;
 
+        // Sometimes we want to write directly to lhs during
+        // compilation of rhs to skip overhead of producing tmp
+        // result that will be copied later...
+        // We need to tracks if the RHS op used dest ptr directly
+        // TODO: not consumed, but written or something
+        bool vecLhsWritten = false;
+
+        bool vecTmpMemUsed;
         VecResult vecResult;
 
         // vectorized opperations metadata
@@ -604,11 +624,13 @@ namespace Interpreter {
         state->maxAlign = 0;
         state->fixedSize = 0;
         state->defaultArgsSize = 0;
-        state->vecResult = { 0 };
         state->maxArrayLiteralSize = 0;
         state->currentArrayLiteralOffset = 0;
         state->lastOpcode = Interpreter::OC_NOP;
         state->exe = NULL;
+        state->vecLhsWritten = false;
+        state->vecResult = { 0 };
+        state->vecTmpMemUsed = false;
     }
 
     inline ExeBlock* makeExeBlock() {
@@ -659,6 +681,11 @@ namespace Interpreter {
 
     vmword encodeVecDescriptor(const VecDescriptor desc);
     VecDescriptor decodeVecDescriptor(const vmword word);
+
+    bool vdIsDestTmp(VecDescriptor desc);
+    bool vdIsLeftTmp(VecDescriptor desc);
+    bool vdIsRightTmp(VecDescriptor desc);
+    bool vdIsDestStack(VecDescriptor desc);
 
     LineInfo* findLineForOffset(ExeBlock * block, uint64_t targetOffset);
 

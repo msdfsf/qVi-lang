@@ -72,13 +72,28 @@ namespace Type {
         Q_EMBED = 1 << 1,
         Q_CONST = 1 << 2,
         Q_FLUID = 1 << 3,
-        Q_ALLOC = 1 << 4
+        Q_ALLOC = 1 << 4,
+
+        // Meta qualifier
+        Q_REF   = 1 << 5,
     };
 
     // Expected to be used during resolving to signal status
     enum ResolutionStatus : int64_t {
         RS_CONCRETE  = 0,
         RS_AMBIGUOUS = 1, // Contains inferred dimensions ([?]), uses tmpArena
+    };
+
+    enum CastKind : uint8_t {
+        CK_INVALID = 0,
+        CK_EXACT,
+        CK_ARRAY_TO_POINTER,
+        CK_PROMOTION,
+
+        // Source type matches targets element type
+        CK_FROM_LOWER_LEVEL_EQUAL,
+        // Source has to be casted to targets element type
+        CK_FROM_LOWER_LEVEL,
     };
 
     // As we may want to use it in runtime
@@ -180,11 +195,13 @@ namespace Type {
 
 
 
+    TypeInfo* getInfo(Kind kind);
+
     inline int isInt(int x) {
         return x >= DT_I8 && x <= DT_U64;
     }
 
-    inline int isInt(TypeInfo* x) {
+    inline int isInt(const TypeInfo* x) {
         return isInt(x->kind);
     }
 
@@ -192,7 +209,7 @@ namespace Type {
         return x >= DT_I8 && x <= DT_I64;
     }
 
-    inline int isSignedInt(TypeInfo* x) {
+    inline int isSignedInt(const TypeInfo* x) {
         return isSignedInt(x->kind);
     }
 
@@ -200,31 +217,31 @@ namespace Type {
         return x >= DT_U8 && x <= DT_U64;
     }
 
-    inline int isUnsignedInt(TypeInfo* x) {
+    inline int isUnsignedInt(const TypeInfo* x) {
         return isUnsignedInt(x->kind);
     }
 
-    inline int isFloat(int x) {
+    inline int isFloat(const int x) {
         return x >= DT_F32 && x <= DT_F64;
     }
 
-    inline int isFloat(TypeInfo* x) {
+    inline int isFloat(const TypeInfo* x) {
         return isFloat(x->kind);
     }
 
     inline int isTruthy(int x) {
-        return isInt(x);
+        return isInt(x) || x == DT_POINTER;
     }
 
     inline int isTruthy(TypeInfo* x) {
-        return isInt(x->kind);
+        return isTruthy(x->kind);
     }
 
     inline int isPrimitive(int x) {
         return (x >= DT_I8 && x <= DT_F64) || x == DT_POINTER;
     }
 
-    inline int isPrimitive(TypeInfo* x) {
+    inline int isPrimitive(const TypeInfo* x) {
         return isPrimitive(x->kind);
     }
 
@@ -236,11 +253,11 @@ namespace Type {
         return isScalar(x->kind);
     }
 
-    inline bool isIntegerOrEnum(int x) {
+    inline bool isIntegerOrEnum(const int x) {
         return (x >= DT_I8 && x <= DT_U64) || x == DT_ENUM;
     }
 
-    inline bool isIntegerOrEnum(TypeInfo* x) {
+    inline bool isIntegerOrEnum(const TypeInfo* x) {
         return isIntegerOrEnum(x->kind);
     }
 
@@ -264,7 +281,7 @@ namespace Type {
         return x == DT_ARRAY || x == DT_SLICE;
     }
 
-    inline int isArrayLike(TypeInfo* x) {
+    inline int isArrayLike(const TypeInfo* x) {
         return isArrayLike(x->kind);
     }
 
@@ -274,6 +291,25 @@ namespace Type {
 
     inline int isIndexable(TypeInfo* x) {
         return isIndexable(x->kind);
+    }
+
+    inline int isResolvedArray(TypeInfo* x) {
+        return x->kind == Type::DT_ARRAY &&
+            ((ArrayInfo*) x)->elementCount != ARRAY_LEN_UNKNOWN;
+    }
+
+    inline int isResolvedArray(TypeInfoEx* x) {
+        return isResolvedArray(&x->base);
+    }
+
+    // TODO: make non 'isIndexable' guarded variant?
+    inline int areElementsTheSame(TypeInfo* a, TypeInfo* b) {
+        return isIndexable(a) && isIndexable(b) &&
+            ((PointerInfo*) a)->element == ((PointerInfo*) b)->element;
+    }
+
+    inline TypeInfo* getElement(const TypeInfo* x) {
+        return ((PointerInfo*) x)->element;
     }
 
     // TODO: better name?
@@ -287,6 +323,7 @@ namespace Type {
     }
 
     void init();
+    void clear();
     void release();
 
     TypeInfo* tmpMakePointer(TypeInfo* info);
@@ -309,6 +346,20 @@ namespace Type {
     StructMemberInfo* findMember(StructInfo* type, String* name);
     StructMemberInfo* findMember(StructInfo* type, String name, int* idx);
     StructMemberInfo* findMember(StructInfo* type, String* name, int* idx);
+
+    CastKind canConcat(
+        const TypeInfo* lType,
+        const TypeInfo* rType,
+        const TypeInfo** outFailedLeft = NULL,
+        const TypeInfo** outFailedRight = NULL
+    );
+
+    CastKind canImplicitCast(
+        const TypeInfo* source,
+        const TypeInfo* target,
+        const TypeInfo** outFailedSource = NULL,
+        const TypeInfo** outFailedTarget = NULL
+    );
 
     const char* str(Kind kind);
     const char* str(TypeInfo* info);

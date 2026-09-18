@@ -12,6 +12,10 @@ namespace OrderedDict {
         DArray::init(&dict->pairs, initialSize, sizeof(Pair));
     }
 
+    void release(Container* dict) {
+        DArray::release(&dict->pairs);
+    }
+
     struct Slot {
         bool match;
         int idx;

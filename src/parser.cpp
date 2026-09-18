@@ -62,7 +62,8 @@
 // getting stuck in place. Each 'parse' function syncs to the best valid
 // token for its specific context and returns it. Hence, parsing avoid
 // generating 'error states', which greatly simplifies the logic.
-
+//
+// TODO: make spans for everything!
 
 #include "parser.h"
 
@@ -199,10 +200,6 @@ namespace Parser {
     inline void assignId(Id* dest, Id* src) {
         *src = *src & THREAD_MASK + (*src & INDEX_MASK + 1);
         *dest = *src;
-    }
-
-    inline void setDefinitionIdx(ParseContext* ctx, SyntaxNode* node) {
-        node->definitionIdx = ctx->idxInScope;
     }
 
 
@@ -452,7 +449,7 @@ namespace Parser {
                         goto defer;
                     }
 
-                    Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL);
+                    Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL, "}");
                     token = sync(&lspan, { Lex::TK_END });
                     goto defer;
                 }
@@ -741,7 +738,7 @@ namespace Parser {
         Lex::TokenValue tokenVal;
         Lex::Token token = Lex::nextToken(span, &tokenVal);
 
-        if (token.kind == Lex::TK_IDENTIFIER || Lex::isDtype(token)) {
+        if (token.kind == Lex::TK_IDENTIFIER || Lex::isDtype(token) || Lex::isQualifier(token)) {
             return parseVarDefinition(ctx, span, { token, tokenVal }, name, end);
         } else if (token.kind == Lex::TK_KEYWORD) {
             switch (token.detail) {
@@ -877,6 +874,7 @@ namespace Parser {
         } else if (token.kind == Lex::TK_IDENTIFIER) {
             type->baseType = Type::DT_UNDEFINED;
             type->baseName = (QualifiedName*) tokenVal.any;
+            type->baseName->span = getSpanStamp(&lspan);
         } else if (token.kind == Lex::TK_PARENTHESIS_BEGIN) {
             type->baseType = Type::DT_FUNCTION;
             parseFunctionPointer(ctx, &lspan, &type->baseFcn);
@@ -1336,6 +1334,7 @@ namespace Parser {
 
         if (token.kind == Lex::TK_OP_ARROW) {
             fcn->prototype.outArg = Ast::Node::makeVariableDefinition();
+            fcn->prototype.outArg->base.scope = paramScope; // TODO: ?
             token = Lex::nextToken(&lspan, &tokenVal);
 
             token = parseDataType(ctx, &lspan, { token, tokenVal }, NULL_FLAG, &fcn->prototype.outArg->type);
@@ -1396,7 +1395,6 @@ namespace Parser {
 
         Scope* newScope = Ast::Node::makeScope();
         newScope->base.scope = ctx->currentScope;
-        setDefinitionIdx(ctx, &newScope->base);
 
         Variable* newOperand;
         token = parseExpression(ctx, &lspan, &newOperand, INVALID_POS, End { Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN });
@@ -1429,7 +1427,6 @@ namespace Parser {
 
                 Scope* newScope = Ast::Node::makeScope();
                 newScope->base.scope = currentScope;
-                setDefinitionIdx(ctx, &newScope->base);
 
                 ScopeEnd scopeEnd = (ScopeEnd) (token.kind == Lex::TK_STATEMENT_BEGIN);
 
@@ -1457,7 +1454,6 @@ namespace Parser {
 
             Scope *newScope = Ast::Node::makeScope();
             newScope->base.scope = ctx->currentScope;
-            setDefinitionIdx(ctx, &newScope->base);
 
             ScopeEnd scopeEnd = (ScopeEnd) (token.kind == Lex::TK_STATEMENT_BEGIN);
             ctx->currentScope = newScope;
@@ -1540,8 +1536,8 @@ namespace Parser {
             }
 
             Scope* sc = Ast::Node::makeScope();
-            sc->base.scope = ctx->currentScope;
-            // setParentIdx(sc);
+            sc->base.scope = switchCase->base.scope;
+            ctx->currentScope = sc;
 
             if (token.kind == Lex::TK_STATEMENT_BEGIN) {
                 token = parseScope(ctx, &lspan, SC_COMMON, SE_STATEMENT);
@@ -1554,6 +1550,13 @@ namespace Parser {
 
             if (elseCase) {
                 switchCase->elseCase = sc;
+
+                token = Lex::nextToken(&lspan);
+                if (token.kind != Lex::TK_SCOPE_END) {
+                    Diag::report(ctx->unit->ast, &lspan, Err::UNEXPECTED_SYMBOL, "}");
+                    token = sync(&lspan, SyncType::ST_SCOPE);
+                }
+
                 break;
             }
 
@@ -1577,6 +1580,7 @@ namespace Parser {
 
         ctx->nodeStack.size = smark;
 
+        ctx->currentScope = switchCase->base.scope;
         DArray::push(&ctx->unit->reg->switchCases, &switchCase);
         DArray::push(&ctx->nodeStack, &switchCase);
 
@@ -1608,29 +1612,30 @@ namespace Parser {
             leftExp = NULL;
             token = Lex::nextToken(span);
         }
-
+        
         // second expression could be 'eidx' OR 'step'
-         Variable* secondExp = NULL;
-         token = parseExpression(ctx, span, &secondExp, INVALID_POS,
-             { Lex::TK_RANGE, Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN },
-             ALLOW_UNEXPECTED_END | EMPTY_EXPRESSION_ALLOWED | USE_KEYWORD_AS_END);
+        Variable* secondExp = NULL;
+        token = parseExpression(ctx, span, &secondExp, INVALID_POS,
+            { Lex::TK_RANGE, Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN },
+            ALLOW_UNEXPECTED_END | EMPTY_EXPRESSION_ALLOWED | USE_KEYWORD_AS_END);
 
-         Variable* stepExp  = NULL;
-         Variable* rightExp = NULL;
+        Variable* stepExp = NULL;
+        Variable* rightExp = NULL;
 
-         if (token.kind == Lex::TK_RANGE) {
-             stepExp = secondExp;
+        if (token.kind == Lex::TK_RANGE) {
+            stepExp = secondExp;
 
-             token = parseExpression(ctx, span, &rightExp, INVALID_POS,
-                 { Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN }, USE_KEYWORD_AS_END);
-         } else {
-             rightExp = secondExp;
-         }
+            token = parseExpression(ctx, span, &rightExp, INVALID_POS,
+                { Lex::TK_STATEMENT_BEGIN, Lex::TK_SCOPE_BEGIN }, USE_KEYWORD_AS_END);
+        }
+        else {
+            rightExp = secondExp;
+        }
 
-         *range = alloc<RangeExpression>();
-         (*range)->bidx = leftExp;
-         (*range)->step = stepExp;
-         (*range)->eidx = rightExp;
+        *range = Ast::Node::makeRangeExpression();
+        (*range)->bidx = leftExp;
+        (*range)->step = stepExp;
+        (*range)->eidx = rightExp;
 
         return token;
     }
@@ -1661,8 +1666,11 @@ namespace Parser {
         if (exp) {
             loop->arg.exp = exp;
             loop->arg.kind = Loop::Arg::EXPRESSION;
-        } else {
+        } else if (loop->arg.range) {
             loop->arg.kind = Loop::Arg::RANGE;
+        } else {
+            loop->arg.kind = Loop::Arg::CONDITION;
+            loop->arg.exp = Ast::Internal::variables + Ast::Internal::IV_TRUE;
         }
 
         if (isEndToken(token, end))            goto parseBody;
@@ -1674,23 +1682,27 @@ namespace Parser {
             // As - [&]name
             token = Lex::nextToken(&lspan, &tokenVal);
 
+            bool isReference = false;
             if (token.kind == Lex::TK_OP_AND) {
-                loop->item = Ast::Node::makeVariable();
-                loop->item->expression = (Expression*) Ast::Node::makeUnaryExpression();
-                ((OperationExpression*) loop->item->expression)->opType = OP_BITWISE_AND;
-                ((UnaryExpression*) loop->item->expression)->operand = Ast::Node::makeVariable();
-
+                isReference = true;
                 token = Lex::nextToken(&lspan, &tokenVal);
             }
 
             if (token.kind == Lex::TK_IDENTIFIER) {
-                if (loop->item) {
-                    UnaryExpression* uex = (UnaryExpression*) loop->item->expression;
-                    uex->operand->name = *(QualifiedName*) tokenVal.any;
-                } else {
-                    loop->item = Ast::Node::makeVariable();
-                    loop->item->name = *(QualifiedName*) tokenVal.any;
-                }
+                VariableDefinition* def = Ast::Node::makeVariableDefinition();
+                def->base.scope = outerScope;
+                def->type.qualifier = Type::Q_NONE;
+                def->type.decoratorCount = 0;
+                def->base.span = getSpanStamp(&lspan);
+                def->type.qualifier = isReference ? Type::Q_REF : Type::Q_NONE;
+
+                def->var = makeVariable(def);
+                def->var->name = *(QualifiedName*) tokenVal.any;
+
+                DArray::push(&ctx->defStack, &def);
+                DArray::push(&ctx->nodeStack, &def);
+
+                loop->item = def;
 
                 token = Lex::nextToken(&lspan, &tokenVal);
             }
@@ -1712,10 +1724,12 @@ namespace Parser {
 
             if (token.kind == Lex::TK_IDENTIFIER) {
                 QualifiedName* name = (QualifiedName*) tokenVal.any;
+                name->span = getSpanStamp(&lspan); // TODO: make lexer do the job
                 token = Lex::nextToken(&lspan, &tokenVal);
 
                 if (loop->index.var) {
                     loop->index.var->name = *name;
+                    loop->index.var->base.scope = outerScope;
                 } else {
                     // Check if an explicit type is declared: `at i : Type :` or `at i : Type {`
                     bool hasExplicitType = false;
@@ -1737,11 +1751,18 @@ namespace Parser {
                         loop->index.def = def;
                     } else {
                         loop->index.def = Ast::Node::makeVariableDefinition();
+                        loop->index.def->base.scope = outerScope;
                         loop->index.def->var = makeVariable(loop->index.def);
                         loop->index.def->var->name = *name;
                         loop->index.def->type.baseType = Type::DT_U64;
                         loop->index.def->type.qualifier = Type::Q_NONE;
                         loop->index.def->type.decoratorCount = 0;
+                        loop->index.def->base.span = getSpanStamp(&lspan);
+
+                        loop->index.def->var->base.span = loop->index.def->base.span;
+
+                        DArray::push(&ctx->defStack, &loop->index.def);
+                        DArray::push(&ctx->nodeStack, &loop->index.def);
                     }
                 }
             }
@@ -2056,12 +2077,10 @@ namespace Parser {
 
             token = Lex::nextToken(&lspan);
             if (token.kind == Lex::TK_EQUAL) {
-
                 token = parseExpression(ctx, &lspan, newVar, INVALID_POS, End { Lex::TK_LIST_SEPARATOR, Lex::TK_SCOPE_END }, 0);
                 if (token.encoded < 0) return token;
 
-                newVarDef->var->value.hasValue = true;
-
+                // newVarDef->var->value.hasValue = true;
             }
 
             if (token.kind == Lex::TK_LIST_SEPARATOR) continue;
@@ -2152,7 +2171,6 @@ namespace Parser {
         def->var->base.span = getSpanStamp(span);
         def->base.scope = ctx->currentScope;
         def->type.baseType = Type::DT_ERROR;
-        setDefinitionIdx(ctx, (SyntaxNode*) def->var);
 
         DArray::push(&ctx->defStack, &def->var);
         assignId(def->var, &ctx->varId);
@@ -2320,23 +2338,23 @@ namespace Parser {
         return token;
     }
 
+    Lex::Token parseDirectiveTest(ParseContext* ctx, Span* const span) {
+        return Lex::nextToken(span);
+    }
+
     Lex::Token parseDirective(ParseContext* ctx, Span* const span, Lex::Directive directive, Flags param) {
-
         switch (directive) {
-
             case Lex::CD_TEST: {
-                return Lex::toToken(Lex::TK_STATEMENT_END);
+                return parseDirectiveTest(ctx, span);
             }
 
             default: {
                 Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, "Unsupported language directive processing code encountered!");
                 return Lex::toToken(Err::UNEXPECTED_SYMBOL);
             }
-
         }
 
         return Lex::toToken(Err::UNEXPECTED_SYMBOL);
-
     }
 
     Lex::Token parseList(ParseContext* ctx, Span* const span, Lex::TokenKind separator, Lex::TokenKind end) {
@@ -2450,7 +2468,6 @@ namespace Parser {
         errDef->var->base.scope = newScope;
         errDef->var->value.type = Type::basicTypes + Type::DT_ERROR;
         errDef->var->base.span = getSpanStamp(span);
-        errDef->var->base.definitionIdx = -1;
 
         errDef->var->name = *errName;
 
@@ -2518,14 +2535,12 @@ namespace Parser {
                 token = Lex::nextToken(span, NULL);
 
                 var->name = *((QualifiedName*) tokenVal.any);
+                var->name.span = var->base.span;
                 consumeToken = 0;
 
                 if (prevOp != OP_MEMBER_SELECTION) {
                     DArray::push(&ctx->unit->reg->variables, &var);
                 }
-
-                var->name.span = var->base.span;
-                var->base.definitionIdx = ctx->defStack.size;
 
                 break;
             }
@@ -2564,6 +2579,8 @@ namespace Parser {
                 } else if (token.detail == KW_NULL) {
                     var->value.type = Type::makePointer(Type::basicTypes + Type::DT_VOID);
                     var->value.u64 = 0;
+                } else if (Lex::isDtype(token)) {
+                    var->value.type = Type::getInfo(Lex::toDtype(token));
                 }
 
                 break;
@@ -2589,6 +2606,7 @@ namespace Parser {
             case Lex::TK_CHAR: {
                 var->value.type = Type::basicTypes + Type::DT_I64;
                 var->value.i64 = tokenVal.ival;
+                var->value.hasValue = true;
 
                 break;
             }
@@ -2650,13 +2668,17 @@ namespace Parser {
                 bex->base.opType = op;
                 bex->left = Ast::Node::copy(var); // The array/pointer being indexed
 
-                bex->right = Ast::Node::makeVariable();
-                token = parseExpression(ctx, span, bex->right, INVALID_POS, End { Lex::TK_ARRAY_END, Lex::TK_SLICE });
-
-                if (token.kind == Lex::TK_SLICE) {
-                    RangeExpression* range;
-                    parseRangeExpression(ctx, span, { Lex::TK_ARRAY_END }, &range, &bex->right);
+                // bex->right = Ast::Node::makeVariable();
+                
+                RangeExpression* range;
+                parseRangeExpression(ctx, span, { Lex::TK_ARRAY_END }, &range, &bex->right);
+                if (!bex->right) {
+                    bex->right = Ast::Node::makeVariable();
+                    bex->right->expression = (Expression*) range;
+                    bex->right->value.type = Type::getInfo(Type::DT_RANGE);
                 }
+
+                // token = parseExpression(ctx, span, bex->right, INVALID_POS, End { Lex::TK_ARRAY_END, Lex::TK_SLICE });
 
                 var->expression = (Expression*) bex;
             } else if (op == OP_CALL) {
@@ -2748,7 +2770,12 @@ namespace Parser {
         operand->base.scope = ctx->currentScope;
         token = parseExpressionRecursive(ctx, span, &operand, NULL, OP_NONE);
 
-        *var = operand;
+        // TODO: think of better way
+        if (operand->expression || operand->value.hasValue || operand->name.len != 0) {
+            *var = operand;
+        } else {
+            *var = NULL;
+        }
 
         if (Lex::isKeyword(token, KW_CATCH)) {
             if (operand->expression->type != EXT_FUNCTION_CALL) {

@@ -93,6 +93,20 @@ namespace Type {
         }
     };
 
+    TypeInfo varType {
+        .kind = DT_MULTIPLE_TYPES,
+        .rank = 0,
+        .align = 1,
+        .size = 0,
+    };
+
+    TypeInfo rangeType {
+        .kind = DT_RANGE,
+        .rank = 0,
+        .align = 1,
+        .size = 0,
+    };
+
     // TODO : to config
     constexpr uint64_t typeSetInitSize = 16 * 1024;
 
@@ -152,6 +166,15 @@ namespace Type {
         Arena::init(&tmpArena, 1024);
     }
 
+    void clear() {
+        Set::clear(&setPointer);
+        Set::clear(&setArray);
+        Set::clear(&setSlice);
+        setPointerLock.store(false);
+        setArrayLock.store(false);
+        setSliceLock.store(false);
+    }
+
     void release() {
         Set::release(&setPointer);
         Set::release(&setArray);
@@ -175,6 +198,7 @@ namespace Type {
     TypeInfo* tmpMakePointer(TypeInfo* element) {
         TypeInfoEx* type = (TypeInfoEx*) Arena::push(&tmpArena, sizeof(TypeInfoEx));
         type->base.kind   = DT_POINTER;
+        type->base.rank   = 9;
         type->base.size   = 8;
         type->base.align  = 8;
         type->ptr.element = element;
@@ -185,6 +209,7 @@ namespace Type {
     TypeInfo* tmpMakeArray(TypeInfo* element, int64_t len) {
         TypeInfoEx* type = (TypeInfoEx*) Arena::push(&tmpArena, sizeof(TypeInfoEx));
         type->base.kind        = DT_ARRAY;
+        type->base.rank        = 11;
         type->base.size        = 8;
         type->base.align       = 8;
         type->arr.element      = element;
@@ -196,6 +221,7 @@ namespace Type {
     TypeInfo* tmpMakeSlice(TypeInfo* element, uint64_t flags) {
         TypeInfoEx* type = (TypeInfoEx*) Arena::push(&tmpArena, sizeof(TypeInfoEx));
         type->base.kind   = DT_SLICE;
+        type->base.rank   = 10;
         type->base.size   = 16;
         type->base.align  = 8;
         type->slc.element = element;
@@ -222,6 +248,7 @@ namespace Type {
         if (!slot) {
             type = (PointerInfo*) alloc<TypeInfoEx>();
             type->base.kind = DT_POINTER;
+            type->base.rank = 9;
             type->base.size = 8;
             type->base.align = 8;
             type->element = element;
@@ -247,6 +274,7 @@ namespace Type {
         if (!slot) {
             type = (ArrayInfo*) alloc<TypeInfoEx>();
             type->base.kind = DT_ARRAY;
+            type->base.rank = 11;
             type->base.size = element->size * len;
             type->base.align = element->align;
             type->element = element;
@@ -273,6 +301,7 @@ namespace Type {
         if (!slot) {
             type = (SliceInfo*) alloc<TypeInfoEx>();
             type->base.kind = DT_SLICE;
+            type->base.rank = 10;
             type->base.size = 16;
             type->base.align = 8;
             type->element = element;
@@ -349,6 +378,143 @@ namespace Type {
         return findMember(type, *name);
     }
 
+    CastKind canConcat(
+        const TypeInfo* lType,
+        const TypeInfo* rType,
+        const TypeInfo** outFailedLeft,
+        const TypeInfo** outFailedRight
+    ) {
+        if (!lType || !rType) {
+            if (outFailedLeft)  *outFailedLeft  = lType;
+            if (outFailedRight) *outFailedRight = rType;
+            return CastKind::CK_INVALID;
+        }
+
+        if (!isArrayLike(lType->kind) || !isArrayLike(rType->kind)) {
+            if (outFailedLeft)  *outFailedLeft  = lType;
+            if (outFailedRight) *outFailedRight = rType;
+            return CastKind::CK_INVALID;
+        }
+
+        const TypeInfo* lElem = getElement(lType);
+        const TypeInfo* rElem = getElement(rType);
+
+        if (lElem->size > rElem->size) {
+            return CastKind::CK_INVALID;
+        }
+
+        CastKind ans = canImplicitCast(rElem, lElem, outFailedRight, outFailedLeft);
+        if (ans == CastKind::CK_INVALID) return ans;
+
+        // TODO:
+        return CastKind::CK_EXACT;
+    }
+
+    CastKind canImplicitCast(
+        const TypeInfo* source,
+        const TypeInfo* target,
+        const TypeInfo** outFailedSource,
+        const TypeInfo** outFailedTarget
+    ) {
+        if (!source || !target) {
+            if (outFailedSource) *outFailedSource = source;
+            if (outFailedTarget) *outFailedTarget = target;
+            return CastKind::CK_INVALID;
+        }
+
+        if (source == target) {
+            return CastKind::CK_EXACT;
+        }
+
+        // Array to pointer decay
+        if (target->kind == Type::DT_POINTER && isArrayLike(source)) {
+            Type::PointerInfo* tType = (PointerInfo*) target;
+            Type::TypeInfo*    sElem = getElement(source);
+
+            if (tType->element == sElem) {
+                return CastKind::CK_ARRAY_TO_POINTER;
+            }
+
+            if (outFailedSource) *outFailedSource = sElem;
+            if (outFailedTarget) *outFailedTarget = tType->element;
+            return CastKind::CK_INVALID;
+        }
+
+        // Primitive promotions
+        if (Type::isPrimitive(source) && Type::isPrimitive(target)) {
+            // TODO
+            if (source->kind == DT_POINTER && target->kind == DT_POINTER) {
+                return CastKind::CK_EXACT;
+            }
+
+            if (source->kind == DT_POINTER || target->kind == DT_POINTER) {
+                return CastKind::CK_INVALID;
+            }
+
+            return CastKind::CK_EXACT;
+            // if (source->size <= target->size) {
+            //    return CastKind::CK_PROMOTION;
+            //}
+
+            if (outFailedSource) *outFailedSource = source;
+            if (outFailedTarget) *outFailedTarget = target;
+            return CastKind::CK_INVALID;
+        }
+
+        // TODO
+        if (isIntegerOrEnum(source) && isIntegerOrEnum(target)) {
+            return CastKind::CK_EXACT;
+        }
+
+        // Array -> Array
+        if (target->kind == Type::DT_ARRAY && source->kind == Type::DT_ARRAY) {
+            Type::ArrayInfo* sType = (Type::ArrayInfo*) source;
+            Type::ArrayInfo* tType = (Type::ArrayInfo*) target;
+
+            if (sType->elementCount != tType->elementCount) {
+                return CastKind::CK_INVALID;
+            }
+
+            CastKind ans = canImplicitCast(sType->element, tType->element, outFailedSource, outFailedTarget);
+            if (ans == CastKind::CK_INVALID) {
+                return CastKind::CK_INVALID;
+            }
+
+            return ans == CastKind::CK_EXACT ? CastKind::CK_EXACT : CastKind::CK_PROMOTION;
+        }
+
+        // Array/Slice -> Array/Slice
+        if (Type::isArrayLike(target) && Type::isArrayLike(source)) {
+            Type::TypeInfo* sElem = Type::getElement(source);
+            Type::TypeInfo* tElem = Type::getElement(target);
+
+            CastKind ans = canImplicitCast(sElem, tElem, outFailedSource, outFailedTarget);
+            if (ans == CastKind::CK_INVALID) {
+                return CastKind::CK_INVALID;
+            }
+
+            return ans == CastKind::CK_EXACT ? CastKind::CK_EXACT : CastKind::CK_PROMOTION;
+        }
+
+        // Array/Slice and scalar
+        if (Type::isArrayLike(target)) {
+            Type::TypeInfo* tElem = Type::getElement(target);
+
+            if (tElem == source) return CastKind::CK_FROM_LOWER_LEVEL_EQUAL;
+
+            CastKind ans = canImplicitCast(source, tElem, outFailedSource, outFailedTarget);
+            if (ans == CastKind::CK_INVALID) {
+                return CastKind::CK_INVALID;
+            }
+
+            return CastKind::CK_FROM_LOWER_LEVEL;
+        }
+
+        if (outFailedSource) *outFailedSource = source;
+        if (outFailedTarget) *outFailedTarget = target;
+        return CastKind::CK_INVALID;
+    }
+
     const char* str(Kind kind) {
         switch (kind) {
             case Type::DT_VOID: return "void";
@@ -403,7 +569,7 @@ namespace Type {
 
         switch (typeKind) {
             case Type::DT_ARRAY: {
-                ArrayInfo* aType= (ArrayInfo*) type;
+                ArrayInfo* aType = (ArrayInfo*) type;
 
                 writeTypeName(stream, aType->element);
                 IO::writef(stream, "[%llu]", (unsigned long long) aType->elementCount);
@@ -412,7 +578,7 @@ namespace Type {
             }
 
             case Type::DT_SLICE: {
-                SliceInfo* sType= (SliceInfo*) type;
+                SliceInfo* sType = (SliceInfo*) type;
 
                 writeTypeName(stream, sType->element);
 
@@ -429,7 +595,7 @@ namespace Type {
             }
 
             case Type::DT_POINTER: {
-                PointerInfo* pType= (PointerInfo*) type;
+                PointerInfo* pType = (PointerInfo*) type;
 
                 writeTypeName(stream, pType->element);
                 IO::write(stream, '^');
@@ -438,7 +604,7 @@ namespace Type {
             }
 
             case Type::DT_FUNCTION: {
-                FunctionInfo* fType= (FunctionInfo*) type;
+                FunctionInfo* fType = (FunctionInfo*) type;
 
                 IO::write(stream, "fcn(");
                 for (uint64_t i = 0; i < fType->argCount; i++) {
@@ -460,7 +626,7 @@ namespace Type {
 
             case Type::DT_STRUCT:
             case Type::DT_UNION: {
-                StructInfo* sType= (StructInfo*) type;
+                StructInfo* sType = (StructInfo*) type;
 
                 if (sType->name.buff && sType->name.len > 0) {
                     IO::writef(stream, "%.*s", (int) sType->name.len, sType->name.buff);
@@ -472,7 +638,7 @@ namespace Type {
             }
 
             case Type::DT_ENUM: {
-                EnumInfo* eType= (EnumInfo*) type;
+                EnumInfo* eType = (EnumInfo*) type;
 
                 if (eType->name.buff && eType->name.len > 0) {
                     IO::writef(stream, "%.*s", (int) eType->name.len, eType->name.buff);
@@ -512,6 +678,30 @@ namespace Type {
                 IO::writef(stream, "<unknown_type:%u>", (unsigned int) typeKind);
                 break;
             }
+        }
+    }
+
+    TypeInfo* getInfo(Kind kind) {
+        switch (kind) {
+            case DT_VOID:
+            case DT_I8:
+            case DT_I16:
+            case DT_I32:
+            case DT_I64:
+            case DT_U8:
+            case DT_U16:
+            case DT_U32:
+            case DT_U64:
+            case DT_F32:
+            case DT_F64:
+                return basicTypes + kind;
+            case DT_MULTIPLE_TYPES:
+                return &varType;
+            case DT_RANGE:
+                return &rangeType;
+            default:
+                assert("Unexpected data-type requested.");
+                return NULL;
         }
     }
 

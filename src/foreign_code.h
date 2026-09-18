@@ -176,6 +176,8 @@ namespace Extern {
 
     // Inits globals, so has to be called only once
     void init();
+    void clear();
+    void release();
 
     Err::Err loadLibrary(AstContext* ast, String name, LibraryLoadLevel level, LibraryHandle* out);
 

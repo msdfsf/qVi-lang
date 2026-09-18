@@ -5,11 +5,20 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 
 
+
+thread_local IO::Stream gStream = {
+    .kind = IO::Stream::SK_C_STREAM,
+    .cstream = stdout
+};
+
+const char        gIndentString[] = "               ";
+constexpr uint8_t gMaxIndentLevel = sizeof(gIndentString);
 
 typedef SchubfachU128 u128;
-void printF64(double f);
+void printF64(Runtime::_PrintFormat* format, double f);
 
 
 
@@ -21,35 +30,84 @@ inline void printString(Runtime::_String str) {
     fwrite(str.buff, 1, str.len, stdout);
 }
 
-void printAsHex(uint64_t val) {
+void printRaw(const char* ptr, const uint64_t len) {
+    IO:write(&gStream, ptr, len);
+}
+
+void printHex(uint8_t val) {
     #define HEX_DIGIT(v) ((v) < 10 ? '0' + (v) : 'A' + (v) - 10)
 
-    fputs("0x", stdout);
+    IO::write(&gStream, (char) HEX_DIGIT(val >> 4));
+    IO::write(&gStream, (char) HEX_DIGIT(val & 0xF));
+}
 
-    fputc(HEX_DIGIT((val >> 60) & 0xF), stdout);
-    fputc(HEX_DIGIT((val >> 56) & 0xF), stdout);
+void printAsHex(Runtime::_PrintFormat* format, uint8_t val) {
+    IO::write(&gStream, "0x");
+    printHex(val);
+}
 
-    fputc(HEX_DIGIT((val >> 52) & 0xF), stdout);
-    fputc(HEX_DIGIT((val >> 48) & 0xF), stdout);
+void printAsHex(Runtime::_PrintFormat* format, uint16_t val) {
+    IO::write(&gStream, "0x");
+    printHex((uint8_t) (val >> 8));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) val);
+}
 
-    fputc(HEX_DIGIT((val >> 44) & 0xF), stdout);
-    fputc(HEX_DIGIT((val >> 40) & 0xF), stdout);
+void printAsHex(Runtime::_PrintFormat* format, uint32_t val) {
+    IO::write(&gStream, "0x");
+    printHex((uint8_t) (val >> 24));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) (val >> 16));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) (val >> 8));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) val);
+}
 
-    fputc(HEX_DIGIT((val >> 36) & 0xF), stdout);
-    fputc(HEX_DIGIT((val >> 32) & 0xF), stdout);
+void printAsHex(Runtime::_PrintFormat* format, uint64_t val) {
+    IO::write(&gStream, "0x");
+    printHex((uint8_t) (val >> 56));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) (val >> 48));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) (val >> 40));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) (val >> 32));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) (val >> 24));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) (val >> 16));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) (val >> 8));
+    if (format->pretty) IO::write(&gStream, '_');
+    printHex((uint8_t) val);
+}
 
-    fputc(HEX_DIGIT((val >> 28) & 0xF), stdout);
-    fputc(HEX_DIGIT((val >> 24) & 0xF), stdout);
+void printAsBin(Runtime::_PrintFormat* format, uint8_t val) {
+    char buffer[8];
+    for (int i = 7; i >= 0; i--) {
+        buffer[8 - i - 1] = '0' + ((val >> i) & 0x01);
+    }
 
-    fputc(HEX_DIGIT((val >> 20) & 0xF), stdout);
-    fputc(HEX_DIGIT((val >> 16) & 0xF), stdout);
+    IO::write(&gStream, buffer, 8);
+}
 
-    fputc(HEX_DIGIT((val >> 12) & 0xF), stdout);
-    fputc(HEX_DIGIT((val >> 8)  & 0xF), stdout);
+void printAsBin(Runtime::_PrintFormat* format, uint16_t val) {
+    printAsBin(format, (uint8_t) (val >> 8));
+    if (format->pretty) IO::write(&gStream, '_');
+    printAsBin(format, (uint8_t) val);
+}
 
-    fputc(HEX_DIGIT((val >> 4)  & 0xF), stdout);
-    fputc(HEX_DIGIT((val >> 0)  & 0xF), stdout);
+void printAsBin(Runtime::_PrintFormat* format, uint32_t val) {
+    printAsBin(format, (uint16_t) (val >> 16));
+    if (format->pretty) IO::write(&gStream, '_');
+    printAsBin(format, (uint16_t) val);
+}
 
+void printAsBin(Runtime::_PrintFormat* format, uint64_t val) {
+    printAsBin(format, (uint32_t) (val >> 32));
+    if (format->pretty) IO::write(&gStream, '_');
+    printAsBin(format, (uint32_t) val);
 }
 
 void printI64(uint64_t val, int sign) {
@@ -58,7 +116,7 @@ void printI64(uint64_t val, int sign) {
     uint8_t idx = 19;
 
     do {
-        int64_t tmp = val;
+        uint64_t tmp = val;
         val /= 10;
         buff[idx] = (tmp - val * 10) + '0';
         idx--;
@@ -73,12 +131,13 @@ void printI64(uint64_t val, int sign) {
 
 }
 
-void printI64(int64_t val) {
-    printI64(val, val < 0);
-}
-
-void printU64(uint64_t val) {
-    printI64(val, 0);
+void printI64(Runtime::_PrintFormat* format, int64_t val) {
+    if (val < 0) {
+        printI64(-val, true);
+    } else {
+        if (format->showSign) IO::write(&gStream, '+');
+        printI64(val, false);
+    }
 }
 
 // TODO
@@ -88,10 +147,13 @@ struct FloatFormat {
 };
 
 void printFloat(bool sign, uint64_t mantissa, int64_t exp, FloatFormat format) {
-    uint8_t buff[64];
+    uint8_t buff[64 + 3];
     uint8_t idx = 63;
 
     uint64_t val = mantissa;
+
+    // TODO: compare later speed of this and target size loops
+    memset(buff, '0', 64);
 
     // remove trailing zeros
     while (val > 0) {
@@ -100,21 +162,29 @@ void printFloat(bool sign, uint64_t mantissa, int64_t exp, FloatFormat format) {
         exp++;
     }
 
+    if (exp > 0) {
+        idx -= exp;
+        exp = 0;
+    }
+
     do {
         buff[idx] = (val % 10) + '0';
         val /= 10;
         idx--;
     } while (val > 0);
-
-    idx++;
+    buff[idx++] = sign ? '-' : ' ';
 
     const int valLen = 64 - idx;
-    const bool expSign = exp < 0;
 
     const int intLen = valLen + exp;
     const int decLen = valLen - intLen;
 
-    fwrite(buff + idx, 1, intLen, stdout);
+    if (intLen < 0) {
+        fputc('0', stdout);
+    }else {
+        fwrite(buff + idx, 1, intLen, stdout);
+    }
+
     if (decLen > 0) {
         buff[idx + intLen - 1] = '.';
         fwrite(buff + idx + intLen - 1, 1, decLen + 1, stdout);
@@ -277,12 +347,14 @@ uint64_t u128MultHigh(u128 a, uint64_t b) {
 // of u64 mantissa, int exponent, bool sign. Which allows us to easily
 // print it as we can treat it as integer printing...
 //
-void printF32(float f) {
+void printF32(Runtime::_PrintFormat* format, float f) {
     // TODO
-    printF64((double) f);
+    printF64(format, (double) f);
 }
 
-void printF64(double f) {
+void printF64(Runtime::_PrintFormat* format, double f) {
+    const FloatFormat floatFormat = { .preDotDigits = 6, .postDotDigits = 6 };
+
     constexpr uint64_t SIGN_MASK     = 0x8000000000000000;
     constexpr uint64_t EXPONENT_MASK = 0x7FF0000000000000;
     constexpr uint64_t MANTISSA_MASK = 0x000FFFFFFFFFFFFF;
@@ -298,6 +370,7 @@ void printF64(double f) {
 
     if ((e == 0x00) && (m == 0)) {
         // Null
+        printFloat(sign, 0, 0, floatFormat);
         //fwrite({ '0' }, 1, 1, stdout);
         return;
     } else if ((e == 0xFF) && (m == 0)) {
@@ -365,7 +438,6 @@ void printF64(double f) {
     // Geting the answer
     //
     const uint64_t eIsEven = e & 1;
-    const FloatFormat format = { .preDotDigits = 6, .postDotDigits = 6 };
 
     // magic 10 is the base of the result
     if (ms10 >= 10) {
@@ -373,12 +445,12 @@ void printF64(double f) {
         const uint64_t mt1010 = ms1010 + 10;
 
         if (ml10 + eIsEven <= 4 * ms1010) {
-            printFloat(sign, ms1010, e10, format);
+            printFloat(sign, ms1010, e10, floatFormat);
             return;
         }
 
         if (4 * mt1010 + eIsEven <= mr10) {
-            printFloat(sign, mt1010, e10, format);
+            printFloat(sign, mt1010, e10, floatFormat);
             return;
         }
     }
@@ -388,12 +460,12 @@ void printF64(double f) {
     bool rightIsIn = 4 * mt10 + eIsEven <= mr10;
 
     if (leftIsIn && !rightIsIn) {
-        printFloat(sign, ml10, e10, format);
+        printFloat(sign, ml10, e10, floatFormat);
         return;
     }
 
     if (!leftIsIn && rightIsIn) {
-        printFloat(sign, mr10, e10, format);
+        printFloat(sign, mr10, e10, floatFormat);
         return;
     }
 
@@ -401,13 +473,13 @@ void printF64(double f) {
     bool leftIsCloser = ms10 < 2 * (ms10 + mt10);
     bool rightIsCloser = ms10 > 2 * (ms10 + mt10);
     if (leftIsCloser || (!rightIsCloser && ms10 & 1)) {
-        printFloat(sign, ml10, e10, format);
+        printFloat(sign, ml10, e10, floatFormat);
     } else {
-        printFloat(sign, mr10, e10, format);
+        printFloat(sign, mr10, e10, floatFormat);
     }
 }
 
-void printString(Runtime::_ArrayInfo* str, Runtime::_Slice* slice) {
+void printString(Runtime::_PrintFormat* format, Runtime::_ArrayInfo* str, Runtime::_Slice* slice) {
 
     if (str->element->kind == Type::DT_U8) {
         fwrite(slice->ptr, 1, slice->len, stdout);
@@ -417,42 +489,66 @@ void printString(Runtime::_ArrayInfo* str, Runtime::_Slice* slice) {
 
 }
 
-void printArray(Runtime::_ArrayInfo* arr, Runtime::_Slice* slice) {
+void printGenericArray(Runtime::_PrintFormat* format, Runtime::_PointerInfo* type, const uint64_t count, Runtime::_Buffer buffer) {
+    const uint64_t stride = type->element->size;
 
-    const uint64_t count = slice->len;
-    const uint64_t stride = arr->element->size;
+    if (format->raw) {
+        printRaw((char*) buffer, stride * count);
+        return;
+    }
 
     printf("[");
 
     for (uint64_t i = 0; i < count; i++) {
-
         Runtime::_Any element;
-        element.info = arr->element;
+        element.info = type->element;
 
-        uint8_t* elementAddr = (uint8_t*) slice->ptr + (i * stride);
+        uint8_t* elementAddr = buffer + (i * stride);
 
         if (isPrimitive(element.info->kind)) {
             element.u = 0;
             memcpy(&element.u, elementAddr, stride);
-        } else {
+        }
+        else {
             element.p = elementAddr;
         }
 
-        Runtime::printValue(element);
+        Runtime::printValue(format, element);
 
         if (i < count - 1) printf(", ");
-
     }
 
     printf("]");
-
 }
 
-void printStruct(Runtime::_StructInfo* info, uint8_t* data) {
+void printArray(Runtime::_PrintFormat* format, Runtime::_ArrayInfo* type, Runtime::_Buffer buffer) {
+    printGenericArray(format, (Runtime::_PointerInfo*) type, type->elementCount, buffer);
+}
+
+void printSlice(Runtime::_PrintFormat* format, Runtime::_SliceInfo* type, Runtime::_Slice* slice) {
+    // TODO:
+    printGenericArray(format, (Runtime::_PointerInfo*) type, slice->len, (Runtime::_Buffer) slice->ptr);
+}
+
+// returns next indent level
+void printIndent(uint64_t level) {
+    level = level > gMaxIndentLevel ? gMaxIndentLevel : level;
+    IO::write(&gStream, gIndentString, level);
+}
+
+void printStruct(Runtime::_PrintFormat* format, Runtime::_StructInfo* info, uint8_t* data, uint64_t indentLevel) {
     const uint64_t count = info->memberCount;
 
-    printString(info->name);
-    printf("{\n");
+    if (format->raw) {
+        printRaw((char*) data, info->base.size);
+        return;
+    }
+
+    if (format->pretty) {
+        IO::write(&gStream, "{\n");
+    } else {
+        IO::write(&gStream, "{");
+    }
 
     uint8_t* basePtr = data;
 
@@ -462,82 +558,122 @@ void printStruct(Runtime::_StructInfo* info, uint8_t* data) {
         Runtime::_Any member;
         member.info = memberInfo->type;
 
-        // TODO : we need a way to distinguish in typeinfo
-        //        between fixed size array and runtime-array
-        if (Type::isPrimitive(memberInfo->type->kind)) {
+        if (Type::isPrimitive(memberInfo->type)) {
             memcpy(&member.u, basePtr + memberInfo->offset, memberInfo->type->size);
         } else {
             member.p = (basePtr + memberInfo->offset);
         }
 
-        printf("  ");
-        Runtime::printValue(member);
+        if (format->pretty) printIndent(indentLevel);
 
-        if (i < count - 1) printf(",\n");
-        else { printf("\n"); }
+        IO::write(&gStream, memberInfo->name.buff, memberInfo->name.len);
+        IO::write(&gStream, ": ");
+
+        if (Type::isStructLike(memberInfo->type)) {
+            printStruct(format, (Runtime::_StructInfo*) memberInfo->type, member.b, indentLevel + 1);
+        } else {
+            Runtime::printValue(format, member);
+        }
+
+        if (i < count - 1) IO::write(&gStream, ", ");
+        if (format->pretty) IO::write(&gStream, "\n");
     }
 
-    printf("}\n");
+    IO::write(&gStream, '}');
+    if (format->pretty) IO::write(&gStream, '\n');
 }
 
-void Runtime::printValue(_Any val) {
-    switch (val.info->kind) {
-        case Type::DT_I8: {
-            printI64((int64_t) (int8_t) val.i);
-            break;
-        }
-        case Type::DT_I16: {
-            printI64((int64_t) (int16_t) val.i);
-            break;
-        }
-        case Type::DT_I32: {
-            printI64((int64_t) (int32_t) val.i);
-            break;
-        }
-        case Type::DT_I64: {
-            printI64(val.i);
-            break;
-        }
+template<typename T>
+void printInt(Runtime::_PrintFormat* format, T val) {
+    static_assert(std::is_integral_v<T>);
+    using U = std::make_unsigned_t<T>;
 
-        case Type::DT_U8: {
-            printI64((uint64_t) (uint8_t) val.u);
-            break;
+    if (format->binary)   printAsBin(format, (U) val);
+    else if (format->hex) printAsHex(format, (U) val);
+    else if (format->raw) printRaw((char*) &val, sizeof(T));
+    else                  printI64(format, val);
+}
+
+// TODO: we may want to generate lookup table for each decently dense enum
+//       and use binary search as fallback. Also we can use offset for consecutive
+//       enums with non-zero start.
+void printEnum(Runtime::_PrintFormat* format, Runtime::_EnumInfo* type, int64_t val) {
+    Runtime::_String* name = NULL;
+    if (val >= 0 && val < type->memberCount && type->members[val].value == val) {
+        name = &type->members[val].name;
+    } else {
+        // TODO: binary search
+        for (uint32_t i = 0; i < type->memberCount; i++) {
+            if (type->members[i].value == val) {
+                name = &type->members[i].name;
+                break;
+            }
         }
-        case Type::DT_U16: {
-            printI64((uint64_t) (uint16_t) val.u);
-            break;
+    }
+
+    if (name) {
+        IO::write(&gStream, name->buff, name->len);
+
+        if (format->pretty) {
+            IO::write(&gStream, '(');
+            printInt(format, val);
+            IO::write(&gStream, ')');
         }
-        case Type::DT_U32: {
-            printI64((uint64_t) (uint32_t) val.u);
-            break;
-        }
-        case Type::DT_U64: {
-            printI64(val.u);
-            break;
-        }
+    } else {
+        printInt(format, val);
+    }
+}
+
+void Runtime::printValue(_PrintFormat* format, _Any val) {
+    switch (val.info->kind) {
+        case Type::DT_I8:  printInt(format, (int8_t) val.i);  break;
+        case Type::DT_I16: printInt(format, (int16_t) val.i); break;
+        case Type::DT_I32: printInt(format, (int32_t) val.i); break;
+        case Type::DT_I64: printInt(format, (int64_t) val.i); break;
+
+        case Type::DT_U8:  printInt(format, (uint8_t) val.i);  break;
+        case Type::DT_U16: printInt(format, (uint16_t) val.i); break;
+        case Type::DT_U32: printInt(format, (uint32_t) val.i); break;
+        case Type::DT_U64: printInt(format, (uint64_t) val.i); break;
 
         case Type::DT_F32: {
-            printF32(*(float*) ((void*) &val.f));
+            if (format->binary)   printAsBin(format, *(uint32_t*) &val.f);
+            else if (format->hex) printAsHex(format, *(uint32_t*) &val.f);
+            else if (format->raw) printRaw((char*) &val.f, sizeof(float));
+            else                  printF32(format, *(float*) &val.f);
             break;
         }
 
         case Type::DT_F64: {
-            printF64(val.f);
+            if (format->binary)   printAsBin(format, *(uint64_t*) &val.f);
+            else if (format->hex) printAsHex(format, *(uint64_t*) &val.f);
+            else if (format->raw) printRaw((char*) &val.f, sizeof(double));
+            else                  printF64(format, val.f);
             break;
         }
 
         case Type::DT_STRUCT: {
-            printStruct((_StructInfo*) val.info, val.bp);
+            printStruct(format, (_StructInfo*) val.info, val.b, 1);
             break;
         }
 
         case Type::DT_POINTER: {
-            printAsHex(val.u);
+            printAsHex(format, val.u);
             break;
         }
 
         case Type::DT_ARRAY: {
-            printArray((_ArrayInfo*) val.info, val.s);
+            printArray(format, (_ArrayInfo*) val.info, val.b);
+            break;
+        }
+
+        case Type::DT_SLICE: {
+            printSlice(format, (_SliceInfo*) val.info, val.s);
+            break;
+        }
+
+        case Type::DT_ENUM: {
+            printEnum(format, (_EnumInfo*) val.info, val.i);
             break;
         }
 
@@ -548,24 +684,38 @@ void Runtime::printValue(_Any val) {
     }
 }
 
-void Runtime::print(char* fmt, int fmtLen, int argsCnt, _Any* args) {
+void Runtime::printArg(_PrintFormat* format, _Any val) {
+    if (format->crop || format->width) {
+        // TODO: prepare IO buffer to hold result
+    }
 
+    if (format->printValue) {
+        printValue(format, val);
+    }
+
+    if (format->printType) {
+        if (format->printValue) {
+            IO::write(&gStream, ':');
+        }
+        Type::writeTypeName(&gStream, val.info);
+    }
+}
+
+void Runtime::print(char* fmt, int fmtLen, int argsCnt, _Any* args) {
     int idx = 0;
     int argIdx = 0;
     int beginIdx = 0;
     for (; idx < fmtLen; idx++) {
-
         const char ch = fmt[idx];
         if (ch == '%') {
             fwrite(fmt + beginIdx, 1, idx - beginIdx, stdout);
-            printValue(args[argIdx]);
+            // TODO: we need to receive format descriptor
+            printArg(NULL, args[argIdx]);
 
             argIdx++;
             beginIdx = idx + 1;
         }
-
     }
 
     fwrite(fmt + beginIdx, 1, idx - beginIdx, stdout);
-
 }

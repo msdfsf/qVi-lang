@@ -121,5 +121,13 @@ inline int isMemberSelection(OperatorEnum op) {
     return op == OP_MEMBER_SELECTION || op == OP_DEREFERENCE_MEMBER_SELECTION;
 }
 
+inline int isRangeSlicing(OperatorEnum op) {
+    return op == OP_SLICE;
+}
+
+inline int isCast(OperatorEnum op) {
+    return op == OP_CAST_STATIC || op == OP_CAST_BIT;
+}
+
 // TODO : to namespace
 const char* OperatorToStr(OperatorEnum op);

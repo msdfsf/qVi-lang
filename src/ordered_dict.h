@@ -27,6 +27,7 @@ namespace OrderedDict {
     };
 
     void init(Container* dict, size_t initialSize);
+    void release(Container* dict);
 
     void* get(Container* dict, String key);
     void* get(Container* dict, uint64_t key);

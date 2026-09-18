@@ -130,7 +130,7 @@ for %%d in (%SRC_DIRS%) do (
 
                 if defined IS_TARGET (
                     if /i "%%~nxf"=="main.cpp"     set "SKIP=true"
-                    if /i "%%~nxf"=="compiler.cpp" set "SKIP=true"
+                    :: if /i "%%~nxf"=="compiler.cpp" set "SKIP=true"
                     set "IS_TARGET="
                 )
             )

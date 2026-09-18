@@ -4,6 +4,7 @@
 #include "foreign_code.h"
 #include "interpreter.h"
 #include "io.h"
+#include "ordered_dict.h"
 #include "registry.h"
 #include "supplement/runtime.h"
 
@@ -43,6 +44,10 @@ namespace Interpreter {
 
 
 
+    void _debugPrintOpcode(IO::Stream* stream, ExeBlock* exe, uint8_t* ip);
+
+
+
     // TODO : refactor to getVM and create struct
     vmword* getFreeStack() {
         // TODO for now no concurrency
@@ -65,6 +70,10 @@ namespace Interpreter {
         Arena::init(&vecContext.arena, stackSize);
     }
 
+    void releaseExec(CompilerState *state) {
+        Arena::release(&heap);
+        Arena::release(&vecContext.arena);
+    }
     /*
     Err::Err StackToVariable(AstContext* ast, uint8_t* buff, int64_t buffSize, Variable* var) {
         Value* val = &var->value;
@@ -279,12 +288,43 @@ namespace Interpreter {
     #define PUSH(stack, word) (_push(stack, word))
     #define POP(stack) (*(stack -= 1))
 
-    #define BINARY_EXP(dtype, op) BINARY_EXP_EX(dtype, dtype, op)
-    #define BINARY_EXP_EX(dtype, resultCast, op) \
-        dtype right = (dtype) POP(sp); \
-        dtype left = (dtype) POP(sp); \
-        dtype ans = left op right; \
-        PUSH(sp, (resultCast) ans);
+
+
+    // TODO:
+    // Helper to pop and safely reinterpret float/double bits or integers
+    template <typename T>
+    inline T popValue(vmword*& sp) {
+        vmword word = POP(sp);
+        if constexpr (std::is_floating_point_v<T>) {
+            T val;
+            std::memcpy(&val, &word, sizeof(T));
+            return val;
+        }
+        else {
+            return (T)word;
+        }
+    }
+
+    // Helper to push and preserve float/double bits on a 64-bit stack slot
+    template <typename T>
+    inline void pushValue(vmword*& sp, T val) {
+        if constexpr (std::is_floating_point_v<T>) {
+            vmword word = 0;
+            std::memcpy(&word, &val, sizeof(T));
+            PUSH(sp, word);
+        }
+        else {
+            PUSH(sp, (vmword)val);
+        }
+    }
+
+#define BINARY_EXP(dtype, op) BINARY_EXP_EX(dtype, dtype, op)
+
+#define BINARY_EXP_EX(dtype, resultCast, op) \
+    dtype right = popValue<dtype>(sp); \
+    dtype left  = popValue<dtype>(sp); \
+    resultCast ans = (resultCast)(left op right); \
+    pushValue<resultCast>(sp, ans);
 
     // Ext allows to dictate how extended we want result to be...
     template<typename Src, typename Dest, typename Ext = Dest>
@@ -295,22 +335,29 @@ namespace Interpreter {
     }
 
     // TODO : add Err::RUNTIME_ERROR
-    static Err::Err reportUninitializedGlobal(AstContext* ast, uint8_t* ip, VariableDefinition* def, uint64_t offset) {
-        Diag::report(ast, def->base.span, Err::UNEXPECTED_ERROR,
-            Diag::Format{
-                "Attempted to take the address of non-local symbol '%.*s', but its owning block is not currently executing.",
-            },
-            def->var->name.len, def->var->name.buff
-        );
+    static Err::Err reportUninitializedGlobal(AstContext* ast, uint8_t* ip, VariableDefinition* def, uint8_t* fp) {
+        Logger::logNoFlush(Logger::Type { .level = Logger::ERROR }, "Attempted to take the address of non-local symbol '%.*s', but its owning block is not currently executing.",
+            def->base.span, def->var->name.len, def->var->name.buff);
+
+        IO::Stream* stream = Logger::getInternalStream();
+
+        ExeBlock* exe = (ExeBlock*) (((vmword*) fp)[-1]);
+        String name = Ast::Node::getName(exe->node);
+        IO::writef(stream, "Triggered from:\n", name.len, name.buff);
+
+        _debugPrintOpcode(stream, exe, ip);
+
+        Diag::commit(ast, def->base.span, Err::UNEXPECTED_ERROR);
+        return Err::UNEXPECTED_ERROR;
     }
 
     template<typename T>
-    inline static Err::Err execGetGlobal(AstContext* ast, uint8_t*& ip, vmword*& sp) {
+    inline static Err::Err execGetGlobal(AstContext* ast, uint8_t*& ip, vmword*& sp, uint8_t* fp) {
         VariableDefinition* def = FETCH(ip, VariableDefinition*);
         uint64_t offset = FETCH(ip, uint64_t);
 
         if (!def->vmOwnerExe || !def->vmOwnerExe->liveFp) {
-            return reportUninitializedGlobal(ast, ip, def, offset);
+            return reportUninitializedGlobal(ast, ip, def, fp);
         }
 
         T val = *(T*) ((uint8_t*) def->vmOwnerExe->liveFp + def->vmOffset + offset);
@@ -320,12 +367,12 @@ namespace Interpreter {
     }
 
     template<typename T>
-    inline static Err::Err execSetGlobal(AstContext* ast, uint8_t*& ip, vmword*& sp) {
+    inline static Err::Err execSetGlobal(AstContext* ast, uint8_t*& ip, vmword*& sp, uint8_t* fp) {
         VariableDefinition* def = FETCH(ip, VariableDefinition*);
         uint64_t offset = FETCH(ip, uint64_t);
 
         if (!def->vmOwnerExe || !def->vmOwnerExe->liveFp) {
-            return reportUninitializedGlobal(ast, ip, def, offset);
+            return reportUninitializedGlobal(ast, ip, def, fp);
         }
 
         vmword word = POP(sp);
@@ -335,83 +382,52 @@ namespace Interpreter {
     }
 
     int execPrint(ExeBlock* exe, uint8_t* fp, vmword* sp) {
-
         uint64_t argsCnt = POP(sp);
         DROP(sp, argsCnt * 2 * sizeof(vmword));
 
         uint64_t fmtLen = POP(sp);
         char* fmt = (char*) POP(sp);// (char*) (exe->rawData + POP(sp));
+        FormatStringDescriptor* fmtDesc = (FormatStringDescriptor*) POP(sp);
 
-        int idx = 0;
-        int argIdx = 1;
-        int beginIdx = 0;
-        for (; idx < fmtLen; idx++) {
-
-            const char ch = fmt[idx];
-            if (ch == '%') {
-
-                if (argIdx >= argsCnt + 1) {
-                    printf("<MISSING ARG>");
-                    beginIdx = idx + 1;
-                    continue;
-                }
-
-                Runtime::_Any arg;
-                arg.info = (Runtime::_TypeInfo*) sp[2 * argIdx];
-                arg.u = sp[2 * argIdx + 1];
-
-                // TODO: for now hardcoded formatting option
-                if (fmt[idx + 1] == 'r') {
-                    idx++;
-                    fwrite(fmt + beginIdx, 1, idx - beginIdx, stdout);
-
-                    if (arg.info->kind == Type::DT_ARRAY) {
-                        // TODO: to a function in Type?
-                        Type::ArrayInfo* aInfo = (Type::ArrayInfo*) arg.info;
-                        aInfo->base.kind;
-                        aInfo->base.size = aInfo->element->size * aInfo->elementCount;
-                        arg.s->len = aInfo->base.size;
-                    } else {
-                        // TODO : error
-                    }
-
-                    printValue(arg);
-                } else {
-                    fwrite(fmt + beginIdx, 1, idx - beginIdx, stdout);
-                    printValue(arg);
-                }
-
-                argIdx++;
-                beginIdx = idx + 1;
-
+        uint32_t idx = 0;
+        uint32_t argIdx = 0;
+        for (uint32_t i = 0; i < fmtDesc->chunkCount; i++) {
+            FormatStringDescriptor::Chunk* chunk = fmtDesc->chunks + i;
+            if (chunk->format.kind == FormatStringDescriptor::ESCAPE) {
+                fwrite(fmt + idx, 1, chunk->escape.offset - idx, stdout);
+                idx = chunk->escape.offset + 1;
+                continue;
             }
 
+            Runtime::_Any arg;
+            arg.info = (Runtime::_TypeInfo*) sp[3 + 2 * argIdx];
+            arg.u = sp[3 + 2 * argIdx + 1];
+            argIdx++;
+
+            fwrite(fmt + idx, 1, chunk->format.offset - idx, stdout);
+            printArg(&chunk->format.format, arg);
+
+            idx = chunk->format.offset + chunk->format.length;
         }
 
-        //printf("\x1b[2J\x1b[H");
-        fwrite(fmt + beginIdx, 1, idx - beginIdx, stdout);
-        //fflush(stdout);
+        fwrite(fmt + idx, 1, fmtLen - idx, stdout);
+        fflush(stdout);
 
-        return 2 + argsCnt * 2 + 1;
-
+        return 2 + argsCnt * 2 + 1 + 1;
     }
 
     int execAlloc(ExeBlock* exe, uint8_t* fp, vmword* sp) {
-
         uint64_t bytes = POP(sp);
 
         void* ptr = Arena::push(&heap, bytes);
         PUSH(sp, (vmword) ptr);
 
         return 2 + 1;
-
     }
 
     // returns the size of the stack frame in words
     int internalCall(ExeBlock* exe, uint8_t* fp, vmword* sp, Ast::Internal::FunctionType ft) {
-
         switch (ft) {
-
             case Ast::Internal::IF_PRINTF: {
                 return execPrint(exe, fp, sp);
             }
@@ -423,9 +439,7 @@ namespace Interpreter {
             default: {
                 printf("<UNIMPLEMENTED>");
             }
-
         }
-
     }
 
 
@@ -435,20 +449,17 @@ namespace Interpreter {
 
     VecInfo vecFetchInfo(uint8_t** ip) {
         uint64_t desc = FETCH(*ip, uint64_t);
-        uint64_t dest = FETCH(*ip, uint64_t);
         return {
-            .dest = dest,
             .desc = decodeVecDescriptor(desc)
         };
     }
 
-    void* vecGetPtr(VecInfo info, uint64_t len, uint8_t* fp, vmword*& sp) {
-        if (info.desc.flags & DE_F_IS_DEST_STACK) {
-            return (void*) POP(sp);
-        } else if (info.desc.flags & DE_F_DEST) {
-            return fp + info.dest;
+    void* vecGetPtr(VecDescriptor desc, uint64_t len, uint8_t* fp, vmword*& sp) {
+        if (desc.flags & DE_F_DEST) {
+            size_t totalBytes = len * desc.dstElemSize;
+            return Arena::push(&vecContext.arena, totalBytes, alignof(vmword));
         } else {
-            return Arena::push(&vecContext.arena, len, sizeof(vmword));
+            return (void*) POP(sp);
         }
     }
 
@@ -499,6 +510,118 @@ namespace Interpreter {
 
 
 
+    void _debugPrintValue(IO::Stream* stream, uint8_t* ptr, Type::TypeInfo* type) {
+        if (!type) {
+            IO::write(stream, "<unknown>");
+            return;
+        }
+
+        switch (type->kind) {
+            case Type::DT_I8:  IO::writef(stream, "%d",   *(int8_t*)   ptr); break;
+            case Type::DT_U8:  IO::writef(stream, "%u",   *(uint8_t*)  ptr); break;
+            case Type::DT_I16: IO::writef(stream, "%d",   *(int16_t*)  ptr); break;
+            case Type::DT_U16: IO::writef(stream, "%u",   *(uint16_t*) ptr); break;
+            case Type::DT_I32: IO::writef(stream, "%d",   *(int32_t*)  ptr); break;
+            case Type::DT_U32: IO::writef(stream, "%u",   *(uint32_t*) ptr); break;
+            case Type::DT_I64: IO::writef(stream, "%lld", *(int64_t*)  ptr); break;
+            case Type::DT_U64: IO::writef(stream, "%llu", *(uint64_t*) ptr); break;
+
+            case Type::DT_F32: IO::writef(stream, "%f",  *(float*)  ptr); break;
+            case Type::DT_F64: IO::writef(stream, "%lf", *(double*) ptr); break;
+
+            case Type::DT_POINTER:
+                IO::writef(stream, "0x%p", *(void**) ptr);
+                break;
+
+            case Type::DT_SLICE: {
+                void* dataPtr = *(void**) ptr;
+                uint64_t length = *(uint64_t*) (ptr + 8);
+
+                IO::writef(stream, "[ptr: 0x%p, len: %llu]", dataPtr, length);
+                break;
+            }
+
+            case Type::DT_ARRAY:
+            case Type::DT_STRUCT:
+            case Type::DT_UNION:
+                IO::writef(stream, "{ struct @ 0x%p }", ptr);
+                break;
+
+            default:
+                IO::writef(stream, "[mem @ 0x%p]", ptr);
+                break;
+        }
+    }
+
+    void _debugPrintOpcode(IO::Stream* stream, ExeBlock* exe, uint8_t* ip) {
+        String name = Ast::Node::getName(exe->node);
+        Opcode opcode = (Opcode) *ip;
+        IO::writef(stream, "%.*s: [%04ld] %s\n", name.len, name.buff, ip - exe->bytecode, Interpreter::toStr(opcode));
+    }
+
+    void _debugPrintLocals(IO::Stream* stream, uint8_t* fp, uint8_t* ip) {
+        ExeBlock* exe = (ExeBlock*) ((vmword*) fp)[-1];
+
+        _debugPrintOpcode(stream, exe, ip);
+
+        OrderedDict::Container* dict = exe->localsInfoMap;
+        if (dict->pairs.size <= 0) {
+            return;
+        }
+
+        IO::writef(stream, "  %-6s | %-6s | %-20s | %s\n", "Offset", "Size", "Name", "Type: Value");
+        IO::write(stream, "  -------+--------+----------------------+--------------+------------\n");
+
+        OrderedDict::Pair* first = OrderedDict::getNext(dict);
+        OrderedDict::Pair* ptr = first;
+
+        const int maxNameSize = 20;
+
+        do {
+            if (!ptr) break;
+
+            uint64_t offset = ptr->key.idx;
+
+            // offset
+            IO::writef(stream, "  " AC_DIM "%-6llu" AC_RESET, offset);
+
+            if (!ptr->data) {
+                IO::write(stream, " | Internal Variable\n");
+                ptr = OrderedDict::getNext(dict);
+                continue;
+            }
+
+            LocalVarInfo* info = (LocalVarInfo*) ptr->data;
+            Type::TypeInfo* type = info->type ? info->type : info->var->value.type;
+
+            IO::writef(stream, " | %-6llu | ", type->size);
+
+            if (info->var->name.len > maxNameSize) {
+                IO::writef(stream, AC_BOLD_GREEN "%.*s.. " AC_RESET "| ",
+                    (int)maxNameSize - 2,
+                    info->var->name.buff);
+            } else {
+                IO::writef(stream, AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
+                    (int)maxNameSize,
+                    (int)info->var->name.len,
+                    info->var->name.buff);
+            }
+
+            Type::writeTypeName(stream, type);
+
+            IO::write(stream, ": ");
+
+            uint8_t* memAddr = fp + offset;
+            _debugPrintValue(stream, memAddr, type);
+
+            IO::write(stream, '\n');
+
+            ptr = OrderedDict::getNext(dict);
+        } while (ptr && ptr != first);
+
+        OrderedDict::resetIterator(dict);
+    }
+
     // TODO : we use fp - 1 to store current exe ptr, this has to be propagated to docs
     Err::Err exec(AstContext* ast, Function* fcn, Variable** args, uint64_t argCount, Variable* out) {
         Arena::clear(&heap);
@@ -548,9 +671,9 @@ namespace Interpreter {
             ip += sizeof(Opcode);
 
             // DEBUG:
-            ExeBlock* exe = (ExeBlock*) ((vmword*) fp) [-1];
-            // String name = Ast::Node::getName(exe->node);
-            // printf("%.*s: [%04ld] %s\n", name.len, name.buff, ip - exe->bytecode, Interpreter::toStr(opcode));
+            //_debugPrintLocals(&DebugHelper::stream, fp, ip);
+            //ExeBlock* exe = (ExeBlock*) ((vmword*) fp)[-1];
+            //_debugPrintOpcode(&DebugHelper::stream, exe, ip - sizeof(Opcode));
 
             switch(opcode) {
                 case OC_PUSH_I8: {
@@ -607,7 +730,7 @@ namespace Interpreter {
                     const uint64_t offset = FETCH(ip, uint64_t);
 
                     vmword word = POP(sp);
-                    memcpy(fp + offset, &word, sizeof(uint8_t));
+                    *(uint8_t*) (fp + offset) = (uint8_t) word;
 
                     break;
                 }
@@ -716,14 +839,14 @@ namespace Interpreter {
 
                 case OC_SET_GLOBAL_I8:
                 case OC_SET_GLOBAL_U8: {
-                    Err::Err err = execSetGlobal<uint8_t>(ast, ip, sp);
+                    Err::Err err = execSetGlobal<uint8_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_SET_GLOBAL_I16:
                 case OC_SET_GLOBAL_U16: {
-                    Err::Err err = execSetGlobal<uint16_t>(ast, ip, sp);
+                    Err::Err err = execSetGlobal<uint16_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
@@ -731,7 +854,7 @@ namespace Interpreter {
                 case OC_SET_GLOBAL_I32:
                 case OC_SET_GLOBAL_U32:
                 case OC_SET_GLOBAL_F32: {
-                    Err::Err err = execSetGlobal<float>(ast, ip, sp);
+                    Err::Err err = execSetGlobal<float>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
@@ -740,7 +863,7 @@ namespace Interpreter {
                 case OC_SET_GLOBAL_U64:
                 case OC_SET_GLOBAL_F64:
                 case OC_SET_GLOBAL_PTR: {
-                    Err::Err err = execSetGlobal<uintptr_t>(ast, ip, sp);
+                    Err::Err err = execSetGlobal<uintptr_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
@@ -752,7 +875,7 @@ namespace Interpreter {
 
                     // TODO : add runtime error to Err
                     if (!def->vmOwnerExe || !def->vmOwnerExe->liveFp) {
-                        return reportUninitializedGlobal(ast, ip, def, offset);
+                        return reportUninitializedGlobal(ast, ip, def, fp);
                     }
 
                     sp -= BYTES_TO_WORDS(size);
@@ -765,43 +888,43 @@ namespace Interpreter {
 
 
                 case OC_GET_GLOBAL_I8: {
-                    Err::Err err = execGetGlobal<int8_t>(ast, ip, sp);
+                    Err::Err err = execGetGlobal<int8_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_GET_GLOBAL_U8: {
-                    Err::Err err = execGetGlobal<uint8_t>(ast, ip, sp);
+                    Err::Err err = execGetGlobal<uint8_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_GET_GLOBAL_I16: {
-                    Err::Err err = execGetGlobal<int16_t>(ast, ip, sp);
+                    Err::Err err = execGetGlobal<int16_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_GET_GLOBAL_U16: {
-                    Err::Err err = execGetGlobal<uint16_t>(ast, ip, sp);
+                    Err::Err err = execGetGlobal<uint16_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_GET_GLOBAL_I32: {
-                    Err::Err err = execGetGlobal<int32_t>(ast, ip, sp);
+                    Err::Err err = execGetGlobal<int32_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_GET_GLOBAL_U32: {
-                    Err::Err err = execGetGlobal<uint32_t>(ast, ip, sp);
+                    Err::Err err = execGetGlobal<uint32_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_GET_GLOBAL_F32: {
-                    Err::Err err = execGetGlobal<float>(ast, ip, sp);
+                    Err::Err err = execGetGlobal<float>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
@@ -810,7 +933,7 @@ namespace Interpreter {
                 case OC_GET_GLOBAL_U64:
                 case OC_GET_GLOBAL_F64:
                 case OC_GET_GLOBAL_PTR: {
-                    Err::Err err = execGetGlobal<uintptr_t>(ast, ip, sp);
+                    Err::Err err = execGetGlobal<uintptr_t>(ast, ip, sp, fp);
                     if (err != Err::OK) return err;
                     break;
                 }
@@ -822,7 +945,7 @@ namespace Interpreter {
 
                     // TODO : add runtime error to Err
                     if (!def->vmOwnerExe || !def->vmOwnerExe->liveFp) {
-                        return reportUninitializedGlobal(ast, ip, def, offset);
+                        return reportUninitializedGlobal(ast, ip, def, fp);
                     }
 
                     void* src = (uint8_t*) def->vmOwnerExe->liveFp + offset;
@@ -855,7 +978,7 @@ namespace Interpreter {
 
                     // TODO : add runtime error to Err
                     if (!def->vmOwnerExe || !def->vmOwnerExe->liveFp) {
-                        return reportUninitializedGlobal(ast, ip, def, offset);
+                        return reportUninitializedGlobal(ast, ip, def, fp);
                     }
 
                     PUSH(sp, (vmword) (def->vmOwnerExe->liveFp + def->vmOffset + offset));
@@ -1042,12 +1165,12 @@ namespace Interpreter {
                 }
 
                 case OC_ADD_F32: {
-                    BINARY_EXP_EX(float, uint32_t, +);
+                    BINARY_EXP(float, +);
                     break;
                 }
 
                 case OC_ADD_F64: {
-                    BINARY_EXP_EX(double, uint64_t, +)
+                    BINARY_EXP(double, +)
                     break;
                 }
 
@@ -1074,12 +1197,12 @@ namespace Interpreter {
                 }
 
                 case OC_SUB_F32: {
-                    BINARY_EXP_EX(float, uint32_t, -);
+                    BINARY_EXP(float, -);
                     break;
                 }
 
                 case OC_SUB_F64: {
-                    BINARY_EXP_EX(double, uint64_t, -);
+                    BINARY_EXP(double, -);
                     break;
                 }
 
@@ -1106,12 +1229,12 @@ namespace Interpreter {
                 }
 
                 case OC_MUL_F32: {
-                    BINARY_EXP_EX(float, uint32_t, *);
+                    BINARY_EXP(float, *);
                     break;
                 }
 
                 case OC_MUL_F64: {
-                    BINARY_EXP_EX(double, uint64_t, *);
+                    BINARY_EXP(double, *);
                     break;
                 }
 
@@ -1138,12 +1261,12 @@ namespace Interpreter {
                 }
 
                 case OC_DIV_F32: {
-                    BINARY_EXP_EX(float, uint32_t, /);
+                    BINARY_EXP(float, /);
                     break;
                 }
 
                 case OC_DIV_F64: {
-                    BINARY_EXP_EX(double, uint64_t, /);
+                    BINARY_EXP(double, /);
                     break;
                 }
 
@@ -1460,22 +1583,22 @@ namespace Interpreter {
                 }
 
                 case OC_BOOL_I32: {
-                    cast<bool, uint32_t>(sp - 1);
+                    cast<uint32_t, bool>(sp - 1);
                     break;
                 }
 
                 case OC_BOOL_F32: {
-                    cast<bool, float>(sp - 1);
+                    cast<float, bool>(sp - 1);
                     break;
                 }
 
                 case OC_BOOL_I64: {
-                    cast<bool, uint64_t>(sp - 1);
+                    cast<uint64_t, bool>(sp - 1);
                     break;
                 }
 
                 case OC_BOOL_F64: {
-                    cast<bool, double>(sp - 1);
+                    cast<double, bool>(sp - 1);
                     break;
                 }
 
@@ -1621,13 +1744,39 @@ namespace Interpreter {
 
                 case OC_JUMP_IF_TRUE: {
                     int64_t offset = (*(int64_t*) ip) - 1;
-                    ip += POP(sp) ? offset : sizeof(int64_t);
+                    POP(sp);
+                    ip += *sp ? offset : sizeof(int64_t);
                     break;
                 }
 
                 case OC_JUMP_IF_FALSE: {
                     int64_t offset = (*(int64_t*) ip) - 1;
-                    ip += POP(sp) == 0 ? offset: sizeof(int64_t);
+                    POP(sp);
+                    ip += *sp == 0 ? offset: sizeof(int64_t);
+                    break;
+                }
+
+                case OC_JUMP_TABLE: {
+                    uint8_t* tableBaseIp = ip - 1;
+
+                    int64_t minVal = FETCH(ip, uint64_t);
+                    int64_t maxVal = FETCH(ip, uint64_t);
+                    uint64_t count  = (maxVal - minVal) + 1;
+
+                    int64_t val = POP(sp);
+                    int64_t offset = 0;
+
+                    if (val >= minVal && val <= maxVal) {
+                        uint64_t idx = (uint64_t) (val - minVal);
+                        const uint64_t* table = (const uint64_t*) ip;
+                        offset = (int64_t) table[idx];
+                    }
+                    else {
+                        const uint64_t* table = (const uint64_t*) ip;
+                        offset = (int64_t) table[count];
+                    }
+
+                    ip = tableBaseIp + offset;
                     break;
                 }
 
@@ -1646,6 +1795,15 @@ namespace Interpreter {
 
                 case OC_DUP: {
                     PUSH(sp, sp[-1]);
+                    break;
+                }
+
+                case OC_DUP_N: {
+                    uint64_t n = FETCH(ip, uint64_t);
+
+                    GROW_IN_WORDS(sp, n);
+                    memcpy(&sp[-n], &sp[-2 * n], n * sizeof(vmword));
+
                     break;
                 }
 
@@ -1675,9 +1833,9 @@ namespace Interpreter {
                         break;
                     }
 
-                    const vmword tmp = *sp;
-                    *sp = *(sp - 1);
-                    *(sp - 1) = tmp;
+                    const vmword tmp = *(sp - 1);
+                    *(sp - 1) = *(sp - 2);
+                    *(sp - 2) = tmp;
 
                     break;
                 }
@@ -1708,7 +1866,7 @@ namespace Interpreter {
                         break;
                     }
 
-                    if (isValidFunctionIdx(fcn->internalIdx)) {
+                    if (Ast::Internal::isInternal(fcn->internalIdx)) {
                         int fSize = internalCall(exe, fp, sp, (Ast::Internal::FunctionType) fcn->internalIdx);
                         DROP_IN_WORDS(sp, 3 + fSize);
                         break;
@@ -1745,6 +1903,9 @@ namespace Interpreter {
 
                     gFramePointer = fp;
 
+                    // DEBUG:
+                    //_debugPrintLocals(&DebugHelper::stream, fp, ip);
+
                     break;
                 }
 
@@ -1769,6 +1930,24 @@ namespace Interpreter {
                     break;
                 }
 
+                case OC_MEMSET: {
+                    uint64_t size = POP(sp);
+                    uint64_t val  = POP(sp);
+                    uint64_t dest = POP(sp);
+
+                    memset((void*) dest, val, size);
+                    break;
+                }
+
+                case OC_MEMCPY: {
+                    uint64_t size = POP(sp);
+                    uint64_t src  = POP(sp);
+                    uint64_t dest = POP(sp);
+
+                    memcpy((void*) dest, (void*) src, size);
+                    break;
+                }
+
 
 
                 case OC_GROW: {
@@ -1784,19 +1963,20 @@ namespace Interpreter {
 
 
                 case OC_VEC_VV: {
+                    VecDescriptor desc = decodeVecDescriptor(FETCH(ip, uint64_t));
+
                     uint64_t lenB = POP(sp);
                     uint64_t ptrB = POP(sp);
                     uint64_t lenA = POP(sp);
                     uint64_t ptrA = POP(sp);
 
                     if (lenA != lenB) {
-                        // TODO
+                        // TODO: Error handling
                     }
 
-                    VecInfo info = vecFetchInfo(&ip);
-                    void* out = vecGetPtr(info, lenA, fp, sp);
+                    void* out = vecGetPtr(desc, lenA, fp, sp);
 
-                    VecFunctionBinary fcn = vecGetBinary(info.desc.dtype, info.desc.oper);
+                    VecFunctionBinary fcn = vecGetBinary(desc.type, desc.oper);
                     fcn(out, (void*) ptrA, (void*) ptrB, lenA);
 
                     PUSH(sp, (vmword) out);
@@ -1805,30 +1985,32 @@ namespace Interpreter {
                 }
 
                 case OC_VEC_VS: {
+                    VecDescriptor desc = decodeVecDescriptor(FETCH(ip, uint64_t));
+
                     uint64_t val = POP(sp);
                     uint64_t len = POP(sp);
                     uint64_t ptr = POP(sp);
 
-                    VecInfo info = vecFetchInfo(&ip);
-                    void* out = vecGetPtr(info, len, fp, sp);
+                    void* out = vecGetPtr(desc, len, fp, sp);
 
-                    VecFunctionScalar fcn = vecGetScalarR(info.desc.dtype, info.desc.oper);
-                    fcn(out, (void*)ptr, val, len);
+                    VecFunctionScalar fcn = vecGetScalarR(desc.type, desc.oper);
+                    fcn(out, (void*) ptr, val, len);
 
-                    PUSH(sp, (vmword)out);
+                    PUSH(sp, (vmword) out);
                     PUSH(sp, len);
                     break;
                 }
 
                 case OC_VEC_SV: {
+                    VecDescriptor desc = decodeVecDescriptor(FETCH(ip, uint64_t));
+
                     uint64_t len = POP(sp);
                     uint64_t ptr = POP(sp);
                     uint64_t val = POP(sp);
 
-                    VecInfo info = vecFetchInfo(&ip);
-                    void* out = vecGetPtr(info, len, fp, sp);
+                    void* out = vecGetPtr(desc, len, fp, sp);
 
-                    VecFunctionScalar fcn = vecGetScalarL(info.desc.dtype, info.desc.oper);
+                    VecFunctionScalar fcn = vecGetScalarL(desc.type, desc.oper);
                     fcn(out, (void*) ptr, val, len);
 
                     PUSH(sp, (vmword) out);
@@ -1837,14 +2019,14 @@ namespace Interpreter {
                 }
 
                 case OC_VEC_UNARY: {
+                    VecDescriptor desc = decodeVecDescriptor(FETCH(ip, uint64_t));
+
                     uint64_t len = POP(sp);
                     uint64_t ptr = POP(sp);
+                    void*    out = vecGetPtr(desc, len, fp, sp);
 
-                    VecInfo info = vecFetchInfo(&ip);
-                    void* out = vecGetPtr(info, len, fp, sp);
-
-                    VecFunctionUnary fcn = vecGetUnary(info.desc.dtype, info.desc.oper);
-                    fcn(out, (void*) ptr, len);
+                    VecFunctionUnary fcn = vecGetUnary(desc.type, desc.oper);
+                    fcn((void*) out, (void*) ptr, len);
 
                     PUSH(sp, (vmword) out);
                     PUSH(sp, len);
@@ -1852,18 +2034,13 @@ namespace Interpreter {
                 }
 
                 case OC_VEC_CAST: {
+                    VecDescriptor desc = decodeVecDescriptor(FETCH(ip, uint64_t));
+
                     uint64_t len = POP(sp);
                     uint64_t ptr = POP(sp);
+                    void*    out = vecGetPtr(desc, len, fp, sp);
 
-                    VecInfo info = vecFetchInfo(&ip);
-                    void* out = vecGetPtr(info, len, fp, sp);
-
-                    if (info.desc.flags & DE_F_IS_DEST_STACK) {
-                        int x = 0;
-                        int y = x + 1;
-                    }
-
-                    VecFunctionCast fcn = vecGetCast(info.desc.dtype, info.desc.srcDtype);
+                    VecFunctionCast fcn = vecGetCast(desc.type, desc.srcType);
                     fcn(out, (void*) ptr, len);
 
                     PUSH(sp, (vmword) out);
@@ -1882,31 +2059,36 @@ namespace Interpreter {
                 }
 
                 case OC_VEC_CAT: {
+                    VecDescriptor desc = decodeVecDescriptor(FETCH(ip, uint64_t));
+
                     uint64_t lenB = POP(sp);
                     uint64_t ptrB = POP(sp);
                     uint64_t lenA = POP(sp);
                     uint64_t ptrA = POP(sp);
 
-                    VecInfo info = vecFetchInfo(&ip);
-                    void* out = vecGetPtr(info, lenA + lenB, fp, sp);
+                    uint64_t totalLen = lenA + lenB;
+                    void* out = vecGetPtr(desc, totalLen, fp, sp);
 
-                    memcpy(out, (void*) ptrA, lenA);
-                    memcpy(((uint8_t*) out) + lenA, (void*) ptrB, lenB);
+                    size_t bytesA = lenA * desc.dstElemSize;
+                    size_t bytesB = lenB * desc.dstElemSize;
+
+                    memcpy(out, (const void*) ptrA, bytesA);
+                    memcpy(((uint8_t*) out) + bytesA, (const void*) ptrB, bytesB);
 
                     PUSH(sp, (vmword) out);
-                    PUSH(sp, lenA + lenB);
+                    PUSH(sp, totalLen);
                     break;
                 }
 
                 case OC_VEC_COPY: {
+                    VecDescriptor desc = decodeVecDescriptor(FETCH(ip, uint64_t));
+
                     uint64_t len = POP(sp);
                     uint64_t ptr = POP(sp);
 
-                    VecInfo info = vecFetchInfo(&ip);
-                    void* out = vecGetPtr(info, len, fp, sp);
+                    void* out = vecGetPtr(desc, len, fp, sp);
 
-                    int dtypeSize = Type::basicTypes[info.desc.dtype].size;
-                    memcpy(out, (void*) ptr, len * dtypeSize);
+                    memcpy(out, (const void*) ptr, len * desc.dstElemSize);
 
                     PUSH(sp, (vmword) out);
                     PUSH(sp, len);
@@ -1914,13 +2096,14 @@ namespace Interpreter {
                 }
 
                 case OC_VEC_FILL: {
+                    VecDescriptor desc = decodeVecDescriptor(FETCH(ip, uint64_t));
+
                     uint64_t len = POP(sp);
                     uint64_t val = POP(sp);
 
-                    VecInfo info = vecFetchInfo(&ip);
-                    void* out = vecGetPtr(info, len, fp, sp);
+                    void* out = vecGetPtr(desc, len, fp, sp);
 
-                    VecFunctionFill fcn = vecGetFill(info.desc.dtype);
+                    VecFunctionFill fcn = vecGetFill(desc.type);
                     fcn(out, val, len);
 
                     PUSH(sp, (vmword) out);
@@ -1972,7 +2155,7 @@ namespace Interpreter {
         }
         loopEnd:
 
-        ExeBlock* exe = (ExeBlock*) ((vmword*) fp)[-1];
+        ExeBlock* exe = rootBlock; //(ExeBlock*) ((vmword*) fp)[-1];
         ip = exe->bytecode + exe->bytecodeSize - sizeof(uint64_t);
 
         uint64_t ansSize = FETCH(ip, uint64_t);

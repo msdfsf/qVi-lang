@@ -9,6 +9,12 @@
 thread_local bool compilerStateInitilized = false;
 thread_local Interpreter::CompilerState compilerState;
 
+
+
+bool shouldEmitStage(Backend::BuildContext* ctx, Compiler::BuildCommand command) {
+    return (ctx->command == command) || (ctx->cascade && ctx->command >= command);
+};
+
 static bool runVMPipline(Backend::BuildContext* ctx, Reg::Unit* unit) {
     Err::Err err = Err::OK;
 
@@ -27,20 +33,21 @@ static bool runVMPipline(Backend::BuildContext* ctx, Reg::Unit* unit) {
     };
 
     if (compilerStateInitilized) {
-        // Interpreter::clear(&compilerState);
+        Interpreter::clear(&compilerState);
     } else {
         Interpreter::init(&compilerState);
+        compilerStateInitilized = true;
     }
 
     err = Interpreter::compile(&compilerState, unit);
     if (err != Err::OK) return false;
 
 
-    if (ctx->command >= Compiler::BC_TRANSLATE) {
+    if (shouldEmitStage(ctx, Compiler::BC_TRANSLATE)) {
         Emitter::driverVM.emitUnit(&ectx, unit, &stream);
     }
 
-    if (true || ctx->command == Compiler::BC_BUILD) {
+    if (shouldEmitStage(ctx, Compiler::BC_BUILD)) {
         // TODO
         FILE* file = std::fopen("PUK.ansi", "wb");//FileDriver::openFile(ctx->outFile, "w");
         if (!file) {
@@ -55,10 +62,10 @@ static bool runVMPipline(Backend::BuildContext* ctx, Reg::Unit* unit) {
         // Interpreter::serialize(unit, );
     }
 
-    if (ctx->command >= Compiler::BC_RUN) {
-        IO::write(&stream, "\n" AC_BOLD AC_BRIGHT_CYAN "Output:\n" AC_RESET);
+    if (shouldEmitStage(ctx, Compiler::BC_RUN)) {
+        // IO::write(&stream, "\n" AC_BOLD AC_BRIGHT_CYAN "Output:\n" AC_RESET);
         err = Interpreter::exec(unit);
-        IO::write(&stream, '\n');
+        // IO::write(&stream, '\n');
         if (err != Err::OK) return false;
     }
 

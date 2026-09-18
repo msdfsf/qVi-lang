@@ -28,8 +28,11 @@ namespace Interpreter {
 
     thread_local IO::Stream* stream = NULL;
 
-    Set::Container functionsSet;
-    DArray::Container functionsArray;
+    // TODO: we need to separate debug from Interpreter itself, or add this
+    //       to its context later...
+    thread_local bool gInitialized = false;
+    thread_local Set::Container functionsSet;
+    thread_local DArray::Container functionsArray;
 
     Logger::SpanStyle gSpanStyle = {
         .colorText      = AC_BRIGHT_CYAN,
@@ -59,8 +62,19 @@ namespace Interpreter {
     };
 
     void initDebug(CompilerState* state) {
+        if (gInitialized) return;
+        gInitialized = true;
+
         Set::init(&functionsSet, 256);
         DArray::init(&functionsArray, 128, sizeof(Function*));
+    }
+
+    void releaseDebug(CompilerState* state) {
+        if (!gInitialized) return;
+        gInitialized = false;
+
+        Set::release(&functionsSet);
+        DArray::release(&functionsArray);
     }
 
     // lets assume designated initialization was used ;)
@@ -166,6 +180,7 @@ namespace Interpreter {
             case OC_POP:    return 1;
             case OC_POP_N:  return 9;
             case OC_DUP:    return 1;
+            case OC_DUP_N:  return 1 + 8;
             case OC_CROP:   return 3 * 8 + 1;
 
             case OC_NEG_I32: return 1;
@@ -307,6 +322,10 @@ namespace Interpreter {
             case OC_JUMP:           return 9;
             case OC_JUMP_IF_TRUE:   return 9;
             case OC_JUMP_IF_FALSE:  return 9;
+            case OC_JUMP_TABLE:     return 1 + 8 + 8;
+
+            case OC_MEMCPY:
+            case OC_MEMSET: return (1);
 
             case OC_GROW:   return (1 + 8);
 
@@ -324,8 +343,8 @@ namespace Interpreter {
             case OC_VEC_COPY:
             case OC_VEC_FILL:
             case OC_VEC_STORE_INDIRECT:
-            case OC_VEC_LOAD_INDIRECT: return (1 + 8 * 2);
-            case OC_VEC_CAST: return (1 + 8 * 2);
+            case OC_VEC_LOAD_INDIRECT: return (1 + 8);
+            case OC_VEC_CAST: return (1 + 8);
             case OC_VEC_ALLOC: return (1 + 8);
             case OC_VEC_TO_REF: return 1;
             case OC_VEC_MEM_RESET: return 1;
@@ -336,9 +355,7 @@ namespace Interpreter {
     }
 
     const char* toStr(Opcode opcode) {
-
         switch (opcode) {
-
             case OC_PUSH_I8:   return "push_i8";
             case OC_PUSH_U8:   return "push_u8";
             case OC_PUSH_I16:  return "push_i16";
@@ -409,9 +426,6 @@ namespace Interpreter {
             case OC_LEA_GLOBAL: return "lea_global";
 
             case OC_PTR_IDX: return "ptr_idx";
-
-            case OC_POP_N: return "pop_n";
-            case OC_SWAP:  return "swap";
 
             case OC_LOAD_I8:   return "load_i8";
             case OC_LOAD_U8:   return "load_u8";
@@ -584,10 +598,17 @@ namespace Interpreter {
             case OC_JUMP:          return "jump";
             case OC_JUMP_IF_TRUE:  return "jump_if_true";
             case OC_JUMP_IF_FALSE: return "jump_if_false";
+            case OC_JUMP_TABLE:    return "jump_table";
 
-            case OC_POP:  return "pop";
-            case OC_DUP:  return "dup";
-            case OC_CROP: return "crop";
+            case OC_POP:   return "pop";
+            case OC_POP_N: return "pop_n";
+            case OC_DUP:   return "dup";
+            case OC_DUP_N: return "dup_n";
+            case OC_SWAP:  return "swap";
+            case OC_CROP:  return "crop";
+
+            case OC_MEMCPY: return "memcpy";
+            case OC_MEMSET: return "memset";
 
             case OC_GROW: return "grow";
 
@@ -614,9 +635,7 @@ namespace Interpreter {
             case OC_NOP:  return "no_operation";
 
             default: return "unknown";
-
         }
-
     }
 
     const char* toStr(Type::Kind dtype) {
@@ -766,8 +785,12 @@ namespace Interpreter {
 
         IO::write(stream, "-> ");
 
-        Value* outVal = &fp->outArg->var->value;
-        printDtype(outVal->type);
+        if (fp->outArg) {
+            Value* outVal = &fp->outArg->var->value;
+            printDtype(outVal->type);
+        } else {
+            printDtype(Type::getInfo(Type::DT_VOID));
+        }
     }
 
     // TODO : to a generic file
@@ -825,7 +848,7 @@ namespace Interpreter {
 
     int printVecDescriptor(uint64_t slot, char* const str, const int strLen) {
         VecDescriptor info = decodeVecDescriptor(slot);
-        return snprintf(str, strLen, "%s | %s | %s ", toStr(info.dtype), toStr(info.oper), info.flags & DE_F_DEST ? "tmp" : "loc");
+        return snprintf(str, strLen, "%s | %s | %s ", toStr(info.type), toStr(info.oper), info.flags & DE_F_DEST ? "tmp" : "loc");
     }
 
     // TOOD : descriptor to a type
@@ -902,6 +925,7 @@ namespace Interpreter {
                 // TODO: maybe safety size check?
                 LineInfo* line = block->lines + lineIdx;
                 Logger::printSpan(stream, &line->span, &gSpanStyleMain);
+                IO::write(stream, '\n');
                 //Logger::printSpanStrict(stream, &line->span);
                 lineEnd = line->ocOffsetEnd;
                 lineIdx++;
@@ -1154,8 +1178,7 @@ namespace Interpreter {
                 case OC_JUMP_IF_FALSE: {
                     pop(&typeStack);
                 }
-                case OC_JUMP:{
-
+                case OC_JUMP: {
                     int64_t target;
                     memcpy(&target, buffer, 8);
                     buffer += 8;
@@ -1164,6 +1187,32 @@ namespace Interpreter {
                     targetJump = findLineForOffset(block, absOffset);
 
                     idealLen = snprintf(operandStr, operandStrSize, "%lli[%llu]", target, absOffset);
+                    break;
+                }
+                case OC_JUMP_TABLE: {
+                    int64_t minVal;
+                    memcpy(&minVal, buffer, 8);
+                    buffer += 8;
+
+                    int64_t maxVal;
+                    memcpy(&maxVal, buffer, 8);
+                    buffer += 8;
+
+                    int64_t count = maxVal - minVal + 1;
+
+                    int64_t offset;
+                    for (int i = 0; i < count; i++) {
+                        memcpy(&offset, buffer + i * 8, 8);
+                        IO::writef(stream, "\n           %i:%lli", i, offset);
+                    }
+
+                    memcpy(&offset, buffer + count * 8, 8);
+                    IO::writef(stream, "\n           e:%lli", offset);
+
+                    buffer += 8 * count + 8;
+
+
+                    // idealLen = snprintf(operandStr, operandStrSize, "%lli:%lli", minVal, maxVal);
                     break;
                 }
 
@@ -1244,6 +1293,16 @@ namespace Interpreter {
                     break;
                 }
 
+                case OC_POP_N:
+                case OC_DUP_N: {
+                    uint64_t n;
+                    memcpy(&n, buffer, 8);
+                    buffer += 8;
+
+                    idealLen = snprintf(operandStr, operandStrSize, "%llu", n);
+                    break;
+                }
+
                 case OC_CROP: {
                     uint64_t blobSize;
                     memcpy(&blobSize, buffer, 8);
@@ -1272,6 +1331,14 @@ namespace Interpreter {
                     break;
                 }
 
+                case OC_MEMCPY: {
+                    break;
+                }
+
+                case OC_MEMSET: {
+                    break;
+                }
+
                 case OC_VEC_CAT:
                 case OC_VEC_VV:
                 case OC_VEC_VS:
@@ -1280,16 +1347,12 @@ namespace Interpreter {
                     memcpy(&descriptor, buffer, 8);
                     buffer += 8;
 
-                    uint64_t dest;
-                    memcpy(&dest, buffer, 8);
-                    buffer += 8;
-
                     pop(&typeStack, 8 * 4);
                     push(&typeStack, Type::DT_POINTER);
                     push(&typeStack, Type::DT_U64);
 
                     idealLen = printVecDescriptor(descriptor, operandStr, operandStrSize);
-                    idealLen += printLocalName(block, dest, operandStr + idealLen, operandStrSize - idealLen, isDestinationLocal(descriptor));
+                    // idealLen += printLocalName(block, dest, operandStr + idealLen, operandStrSize - idealLen, isDestinationLocal(descriptor));
 
                     break;
                 }
@@ -1301,27 +1364,16 @@ namespace Interpreter {
                     memcpy(&descriptor, buffer, 8);
                     buffer += 8;
 
-                    uint64_t dest;
-                    memcpy(&dest, buffer, 8);
-                    buffer += 8;
-
-                    pop(&typeStack, 8 * 2);
-                    push(&typeStack, Type::DT_POINTER);
+                    pop(&typeStack, 8);
                     push(&typeStack, Type::DT_U64);
 
                     idealLen = printVecDescriptor(descriptor, operandStr, operandStrSize);
-                    idealLen += printLocalName(block, dest, operandStr + idealLen, operandStrSize - idealLen, isDestinationLocal(descriptor));
-
                     break;
                 }
 
                 case OC_VEC_CAST: {
                     uint64_t descriptor;
                     memcpy(&descriptor, buffer, 8);
-                    buffer += 8;
-
-                    uint64_t dest;
-                    memcpy(&dest, buffer, 8);
                     buffer += 8;
 
                     pop(&typeStack, 8 * 2);
@@ -1331,8 +1383,8 @@ namespace Interpreter {
                     VecDescriptor desc = decodeVecDescriptor(descriptor);
 
                     // idealLen = printVecDescriptor(descriptor, operandStr, operandStrSize);
-                    idealLen += printLocalName(block, dest, operandStr + idealLen, operandStrSize - idealLen, isDestinationLocal(descriptor));
-                    idealLen += snprintf(operandStr + idealLen, operandStrSize - idealLen, " %s -> %s", toStr((Type::Kind) desc.srcDtype), toStr((Type::Kind) desc.dtype));
+                    //idealLen += printLocalName(block, dest, operandStr + idealLen, operandStrSize - idealLen, isDestinationLocal(descriptor));
+                    idealLen = snprintf(operandStr + idealLen, operandStrSize - idealLen, "%s -> %s", toStr((Type::Kind) desc.srcType), toStr((Type::Kind) desc.type));
 
                     break;
                 }
@@ -1399,9 +1451,20 @@ namespace Interpreter {
             if (targetJump) {
                 IO::write(stream, "          " AC_BRIGHT_MAGENTA "-> " AC_RESET);
                 Logger::printSpan(stream, &targetJump->span, &gSpanStyleSub);
-                //IO::write(stream, '\n');
+                IO::write(stream, '\n');
                 targetJump = NULL;
             }
+        }
+    }
+
+    void printLocalName(IO::Stream* stream, String name, String prefix, int align) {
+        align -= prefix.len;
+        if (name.len > align) {
+            IO::writef(stream, AC_BOLD_GREEN "%.*s%*.*s.." AC_RESET,
+                prefix.len, prefix.buff, align - 2, name.len, name.buff);
+        } else {
+            IO::writef(stream, AC_BOLD_GREEN "%.*s%*.*s" AC_RESET,
+                prefix.len, prefix.buff, align, name.len, name.buff);
         }
     }
 
@@ -1445,34 +1508,21 @@ namespace Interpreter {
             }
 
             LocalVarInfo* info = (LocalVarInfo*) ptr->data;
+            Type::TypeInfo* type = info->type ? info->type : info->var->value.type;
 
             // size
-            IO::writef(stream, " | %-6llu | ", info->size);
+            IO::writef(stream, " | %-6llu | ", type->size);
 
             // align
-            IO::writef(stream, "%-6llu | ", info->align);
+            IO::writef(stream, "%-6llu | ", type->align);
 
             // name
-            if (printFullNames) {
-                IO::writef(stream, AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
-                    (int) (maxNameSize - info->var->name.len),
-                    (int) info->var->name.len,
-                    info->var->name.buff);
-            } else {
-                if (info->var->name.len > maxNameSize) {
-                    IO::writef(stream, AC_BOLD_GREEN "%.*s.. " AC_RESET "| ",
-                        (int) maxNameSize - 2,
-                        info->var->name.buff);
-                } else {
-                    IO::writef(stream, AC_BOLD_GREEN "%*.*s " AC_RESET "| ",
-                        (int) maxNameSize,
-                        (int) info->var->name.len,
-                        info->var->name.buff);
-                }
-            }
+            String name = { info->var->name.buff, info->var->name.len };
+            printLocalName(stream, name, String(info->type ? "$" : ""), maxNameSize);
+            IO::write(stream, " | ");
 
             // type
-            printDtype(info->var->value.type);
+            printDtype(type);
             IO::write(stream, '\n');
 
             ptr = OrderedDict::getNext(dict);
@@ -1509,20 +1559,25 @@ namespace Interpreter {
     }
 
     void collectFunctions(ExeBlock* block, int maxDepth, int depth) {
-
         if (!block || depth > maxDepth) return;
 
         uint8_t* ip = block->bytecode;
         uint8_t* endPtr = ip + block->bytecodeSize;
 
         while (ip < endPtr) {
-
             Opcode opcode;
             memcpy(&opcode, ip, sizeof(Opcode));
             ip += getOpcodeSize(opcode);
 
-            if (opcode == OC_CALL) {
+            if (opcode == OC_JUMP_TABLE) {
+                int64_t minVal;
+                memcpy(&minVal, ip, 8);
 
+                int64_t maxVal;
+                memcpy(&minVal, ip + 8, 8);
+
+                ip += (maxVal - minVal + 1) * 8 + 8;
+            } else if (opcode == OC_CALL) {
                 uint64_t target;
                 memcpy(&target, ip - 16, 8);
 
@@ -1536,11 +1591,8 @@ namespace Interpreter {
                 }
 
                 collectFunctions(fcn->exe, maxDepth, depth + 1);
-
             }
-
         }
-
     }
 
     void printFullFunctionName(Function* fcn) {
@@ -1629,4 +1681,14 @@ namespace Interpreter {
         }
     }
 
+
+
+
+    struct VerificationInfo {
+
+    };
+
+    bool verify(ExeBlock* exe, VerificationInfo* outInfo) {
+
+    }
 }

@@ -1,6 +1,7 @@
 // interpreter related code that focusing
 // on building the bytecode
 
+#include "allocator.h"
 #include "array_list.h"
 #include "data_types.h"
 #include "dynamic_arena.h"
@@ -15,6 +16,7 @@
 #include "task_system.h"
 
 
+#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <float.h>
@@ -52,20 +54,15 @@ namespace Interpreter {
         state->vecResult.isTmp = false;
     }
 
+    void releaseBuild(CompilerState* state) {
+        Arena::release(&state->locals);
+        Arena::release(&state->bytecode);
+        Arena::release(&state->rawData);
 
-
-    void patchList(CompilerState* state, uint64_t listHead, uint64_t offset) {
-        while (listHead != patchListHeadNull) {
-            uint8_t* ptr = Arena::getPointerToLogicalOffset(&state->bytecode, listHead);
-
-            const uint64_t nextListHead = *(uint64_t*) ptr;
-            const uint64_t relativeOffset = offset - (listHead - 1);
-
-            *(uint64_t*) ptr = relativeOffset;
-
-            listHead = nextListHead;
-        }
+        OrderedDict::release(&state->localsInfoMap);
+        DArray::release(&state->lines);
     }
+
 
 
 
@@ -220,8 +217,16 @@ namespace Interpreter {
         return offset;
     }
 
-    inline Err::Err pushLocal(CompilerState* state, Variable* var, uint64_t* offset) {
-        Type::TypeInfo* type = var->value.type;
+    inline void recordLocalInfo(CompilerState* state, Variable* var, Type::TypeInfo* type, const uint64_t offset) {
+        LocalVarInfo* header = alloc<LocalVarInfo>();
+        header->var = var;
+        header->type = type;
+
+        // String key = String((char*) offset, sizeof(uint64_t));
+        OrderedDict::set(&state->localsInfoMap, offset, header);
+    }
+
+    inline void pushLocal(CompilerState* state, Type::TypeInfo* type, uint64_t* offset) {
         const uint64_t vmwordsCount = BYTES_TO_WORDS(type->size);
 
         *offset = state->locals.logicalPos + state->fixedSize;
@@ -233,17 +238,16 @@ namespace Interpreter {
         } else {
             state->locals.logicalPos += vmwordsCount * sizeof(vmword);
         }
+    }
 
-        // store debug info
-        LocalVarInfo* header = alloc<LocalVarInfo>();
-        header->var = var;
-        header->size = type->size;
-        header->align = type->align;
+    inline void pushAndRecordLocal(CompilerState* state, Variable* var, uint64_t* offset) {
+        pushLocal(state, var->value.type, offset);
+        recordLocalInfo(state, var, NULL, *offset);
+    }
 
-        // String key = String((char*) offset, sizeof(uint64_t));
-        OrderedDict::set(&state->localsInfoMap, *offset, header);
-
-        return Err::OK;
+    inline void pushAndRecordLocal(CompilerState* state, Variable* var, Type::TypeInfo* type, uint64_t* offset) {
+        pushLocal(state, type, offset);
+        recordLocalInfo(state, var, type, *offset);
     }
 
     inline uint8_t* pushOpcode(CompilerState* state, Opcode opcode) {
@@ -259,15 +263,17 @@ namespace Interpreter {
         return ptr;
     }
 
-    void pushBoolCast(CompilerState* state, Type::Kind dtype) {
-        if (isI32(dtype)) {
+    void pushBoolCast(CompilerState* state, Type::Kind type) {
+        if (isI32(type)) {
             pushOpcode(state, OC_BOOL_I32);
-        } else if (isI64(dtype)) {
+        } else if (isI64(type)) {
             pushOpcode(state, OC_BOOL_I64);
-        } else if (isF32(dtype)) {
+        } else if (isF32(type)) {
             pushOpcode(state, OC_BOOL_F32);
-        } else if (isF64(dtype)) {
+        } else if (isF64(type)) {
             pushOpcode(state, OC_BOOL_F64);
+        } else if (type == Type::DT_POINTER) {
+            pushOpcode(state, OC_BOOL_I64);
         }
     }
 
@@ -289,8 +295,8 @@ namespace Interpreter {
             case Type::DT_U8: {
                 pushOpcode(state, OC_PUSH_U32);
 
-                int32_t val = (int32_t) value->i8;
-                int32_t* ptr = (int32_t*) Arena::push(bytecode, 4, 1);
+                uint32_t val = (uint32_t) value->u8;
+                uint32_t* ptr = (uint32_t*) Arena::push(bytecode, 4, 1);
                 *ptr = val;
 
                 break;
@@ -319,8 +325,8 @@ namespace Interpreter {
             case Type::DT_U16: {
                 pushOpcode(state, OC_PUSH_U32);
 
-                int32_t val = (int32_t) value->i16;
-                int32_t* ptr = (int32_t*) Arena::push(bytecode, 4, 1);
+                uint32_t val = (uint32_t) value->i16;
+                uint32_t* ptr = (uint32_t*) Arena::push(bytecode, 4, 1);
                 *ptr = val;
 
                 break;
@@ -339,7 +345,7 @@ namespace Interpreter {
             case Type::DT_U32: {
                 pushOpcode(state, OC_PUSH_U32);
 
-                int32_t* ptr = (int32_t*) Arena::push(bytecode, 4, 1);
+                uint32_t* ptr = (uint32_t*) Arena::push(bytecode, 4, 1);
                 *ptr = value->i32;
 
                 break;
@@ -357,8 +363,8 @@ namespace Interpreter {
             case Type::DT_U64: {
                 pushOpcode(state, OC_PUSH_U64);
 
-                int64_t* ptr = (int64_t*) Arena::push(bytecode, 8, 1);
-                memcpy(ptr, &value->i64, sizeof(int64_t));
+                uint64_t* ptr = (uint64_t*) Arena::push(bytecode, 8, 1);
+                memcpy(ptr, &value->i64, sizeof(uint64_t));
 
                 break;
             }
@@ -379,6 +385,13 @@ namespace Interpreter {
                 *ptr = value->f64;
 
                 break;
+            }
+
+            case Type::DT_POINTER: {
+                pushOpcode(state, OC_PUSH_PTR);
+
+                int64_t* ptr = (int64_t*) Arena::push(bytecode, 8, 1);
+                memcpy(ptr, &value->i64, sizeof(int64_t));
             }
 
             //case Type::DT_STRING: {
@@ -509,43 +522,6 @@ namespace Interpreter {
         return OC_NOP;
     }
 
-    Opcode selectOperatorOpcode(UnaryExpression* uex) {
-        OperatorEnum op = uex->base.opType;
-
-        switch (op) {
-            case OP_UNARY_PLUS: {
-                return OC_NOP;
-            }
-
-            case OP_UNARY_MINUS: {
-                int offset = getDtypeOffsetNoCast(uex->operand->value.type->kind);
-                return (Opcode) (OC_NEG_I32 + offset);
-            }
-
-            case OP_GET_ADDRESS: {
-                return (Opcode) (OC_LEA);
-            }
-
-            case OP_GET_VALUE: {
-                return selectLoadOpcode(uex->operand->value.type->kind);
-            }
-
-            case OP_NEGATION: {
-                return OC_NOT_BOOL;
-            }
-
-            case OP_NONE: {
-                return OC_NOP;
-            }
-
-            default: {
-                // TODO
-            }
-        }
-
-        return OC_NOP;
-    }
-
     Opcode selectOperatorOpcode(BinaryExpression* bex) {
         const Type::Kind typeKind = bex->left->value.type->kind;
 
@@ -642,122 +618,20 @@ namespace Interpreter {
         return OC_NOP;
     }
 
-
-
-    // TODO : move in meaningful place
-    enum {
-        IS_LVALUE = 1,
-        IS_ROOT = (1 << 1),
-        FORCE_ARRAY_LENGTH = (1 << 2),
-        FORCE_VEC_OPCODES = (1 << 3), // TODO : ? include FORCE_ARRAY_LENGTH ?
-    };
-
-    Err::Err compile(CompilerState* state, SyntaxNode* node);
-    Err::Err compile(CompilerState* state, Expression* node, Variable* target = NULL, Flags flags = 0);
-    Err::Err compile(CompilerState* state, Variable* node, Variable* target = NULL, Flags flags = 0);
-    Err::Err compile(CompilerState* state, Function* node);
-    Err::Err compile(CompilerState* state, VariableAssignment* node);
-
-    Err::Err compileAsAny(CompilerState* state, Variable* var) {
-        Err::Err err = Err::OK;
-
-        Runtime::_TypeInfo* runtimeInfo = Runtime::toRuntimeType(var->value.type);
-        if (!runtimeInfo) {
-            return Err::NOT_YET_IMPLEMENTED;
+    void pushStoreOpcode(CompilerState* state, Type::TypeInfo* type) {
+        Opcode opcode = selectStoreOpcode(type->kind);
+        pushOpcode(state, opcode);
+        if (opcode == OC_STORE_BLOB) {
+            pushOperand(state, type->size);
         }
-
-        pushOpcode(state, OC_PUSH_PTR);
-        pushOperand(state, (uint64_t) runtimeInfo);
-
-        if (isStructLike(var->value.type->kind)) {
-            // TODO : move to a function?
-            Type::TypeInfo* dtype = var->value.type;
-
-            uint64_t offset = state->locals.logicalPos;
-            push(&state->locals, dtype->size, dtype->align);
-
-            err = compile(state,var);
-            if (err != Err::OK) return err;
-
-            pushOpcode(state, OC_SET_BLOB);
-            pushOperand(state, dtype->size);
-            pushOperand(state, offset);
-
-            pushOpcode(state, OC_LEA);
-            pushOperand(state, offset);
-        } else if (var->value.type->kind == Type::DT_ARRAY) {
-            // TODO : adjust to any
-            err = compile(state, var, NULL, FORCE_ARRAY_LENGTH | FORCE_VEC_OPCODES);
-            if (err != Err::OK) return err;
-
-            if (var->value.type->kind == Type::DT_ARRAY) {
-                pushOpcode(state, OC_VEC_TO_REF);
-            }
-        } else {
-            err = compile(state, var);
-            if (err != Err::OK) return err;
-        }
-
-        return err;
     }
 
-    Err::Err compile(CompilerState* state, Scope* node) {
-        for (int i = 0; i < node->childrenCount; i++) {
-            compile(state, node->children[i]);
+    void pushLoadOpcode(CompilerState* state, Type::TypeInfo* type) {
+        Opcode opcode = selectLoadOpcode(type->kind);
+        pushOpcode(state, opcode);
+        if (opcode == OC_LOAD_BLOB) {
+            pushOperand(state, type->size);
         }
-
-        return Err::OK;
-    }
-
-    Err::Err compile(CompilerState* state, VariableDefinition* node) {
-        updateSourceLocation(state, node->base.span);
-
-        Err::Err err;
-        uint64_t offset;
-
-        err = pushLocal(state, node->var, &offset);
-        if (err != Err::OK) return err;
-
-        if (!isOffsetValid(offset)) {
-            return Err::COMPILE_TIME_KNOWN_EXPRESSION_REQUIRED;
-        }
-
-        node->vmOffset = offset;
-        node->vmOwnerExe = state->exe;
-
-        // do we qualify for initialization?
-        if (!node->var ||
-            (!node->var->expression && !node->var->value.hasValue)
-        ) {
-            return Err::OK;
-        }
-
-        // ? will it alwyas work ?
-        VariableAssignment ass;
-        ass.base.span = node->base.span;
-        ass.lvar = node->var;
-        ass.rvar = node->var;
-
-        err = compile(state, &ass);
-        if (err != Err::OK) return err;
-
-        /*
-        compile(state, node->var, node->var);
-        if (node->var->cvalue.dtypeEnum == DT_ARRAY) {
-            // arrays are assigned by value
-            return Err::OK;
-        }
-
-        Opcode setOpcode = selectSetOpcode(node->var->cvalue.dtypeEnum);
-        pushOpcode(state, setOpcode);
-        if (setOpcode == OC_SET_BLOB) {
-            DataType* dtype = getDtype(&node->var->cvalue); // TODO : to wasteful for size?
-            pushOperand(state, dtype->size);
-        }
-
-        pushOperand(state, offset);
-        */
-        return Err::OK;
     }
 
     // offset is relative offset to target specific part of variable/blob
@@ -768,10 +642,11 @@ namespace Interpreter {
             op = selectSetOpcode(typeInfo->kind);
             pushOpcode(state, op);
             offset = def->vmOffset + offset;
-        } else {
+        }
+        else {
             op = selectSetGlobalOpcode(typeInfo->kind);
             pushOpcode(state, op);
-            pushOperand(state, (uint64_t) def);
+            pushOperand(state, (uint64_t)def);
         }
 
         if (op == OC_SET_BLOB || op == OC_SET_GLOBAL_BLOB) {
@@ -790,10 +665,11 @@ namespace Interpreter {
             op = selectGetOpcode(typeInfo->kind);
             pushOpcode(state, op);
             offset = def->vmOffset + offset;
-        } else {
+        }
+        else {
             op = selectGetGlobalOpcode(typeInfo->kind);
             pushOpcode(state, op);
-            pushOperand(state, (uint64_t) def);
+            pushOperand(state, (uint64_t)def);
         }
 
         if (op == OC_GET_BLOB || op == OC_GET_GLOBAL_BLOB) {
@@ -804,104 +680,583 @@ namespace Interpreter {
         pushOperand(state, offset);
     }
 
+    inline void pushLeaOpcode(CompilerState* state, VariableDefinition* def, uint64_t offset = 0) {
+        if (def->vmOwnerExe == state->exe) {
+            pushOpcode(state, OC_LEA);
+            pushOperand(state, def->vmOffset + offset);
+        } else {
+            pushOpcode(state, OC_LEA_GLOBAL);
+            pushOperand(state, (uint64_t) def);
+            pushOperand(state, offset);
+        }
+    }
+
+    void pushOperator(CompilerState* state, UnaryExpression* uex) {
+        OperatorEnum op = uex->base.opType;
+
+        switch (op) {
+            case OP_UNARY_PLUS: {
+                break;
+            }
+
+            case OP_UNARY_MINUS: {
+                int offset = getDtypeOffsetNoCast(uex->operand->value.type->kind);
+                pushOpcode(state, (Opcode)(OC_NEG_I32 + offset));
+                break;
+            }
+
+            case OP_GET_ADDRESS: {
+                // pushLeaOpcode(state, uex->operand->def, 0);
+                break;
+            }
+
+            case OP_GET_VALUE: {
+                // TODO: consider passing owning var, so we can read directly a type that was resolved
+                //       may eliminate some future bugs
+                Type::PointerInfo* pType = (Type::PointerInfo*) uex->operand->value.type;
+                pushLoadOpcode(state, pType->element);
+                break;
+            }
+
+            case OP_NEGATION: {
+                pushBoolCast(state, uex->operand->value.type->kind);
+                pushOpcode(state, OC_NOT_BOOL);
+                break;
+            }
+
+            case OP_NONE: {
+                break;
+            }
+
+            default: {
+                // TODO
+            }
+        }
+    }
+
+    // Pass unwrapped variable
+    bool isConstantPoolCandidate(Variable* var) {
+        if (!var || !var->expression) {
+            return false;
+        }
+
+        if (var->expression->type == EXT_STRING_INITIALIZATION) {
+            return true;
+        }
+
+        if (var->expression->type == EXT_ARRAY_INITIALIZATION) {
+            ArrayInitialization* init = (ArrayInitialization*) var->expression;
+            return init->flags & IS_CMP_TIME;
+        }
+
+        return false;
+    }
+
+    struct JumpPatch {
+        uint64_t instructionOffset;
+        uint8_t* operandPointer;
+    };
+
+    JumpPatch pushJumpPlaceholder(CompilerState* state, Opcode opcode) {
+        pushOpcode(state, opcode);
+
+        JumpPatch patch;
+        patch.instructionOffset = state->bytecode.logicalPos - 1;
+        patch.operandPointer = pushOperand(state, (uint64_t) 0);
+
+        return patch;
+    }
+
+    void patchJumpToHere(CompilerState* state, JumpPatch patch) {
+        uint64_t relativeOffset = state->bytecode.logicalPos - patch.instructionOffset;
+        std::memcpy(patch.operandPointer, &relativeOffset, sizeof(uint64_t));
+    }
+
+    void pushJumpBack(CompilerState* state, uint64_t targetOffset) {
+        pushOpcode(state, OC_JUMP);
+        uint64_t relativeOffset = targetOffset - (state->bytecode.logicalPos - 1);
+        pushOperand(state, relativeOffset);
+    }
+
+    uint64_t addJumpToList(CompilerState* state, uint64_t listHead) {
+        pushOpcode(state, OC_JUMP);
+
+        uint64_t operandOffset = state->bytecode.logicalPos;
+        pushOperand(state, listHead);
+
+        return operandOffset;
+    }
+
+    void patchList(CompilerState* state, uint64_t listHead, uint64_t offset) {
+        while (listHead != patchListHeadNull) {
+            uint8_t* ptr = Arena::getPointerToLogicalOffset(&state->bytecode, listHead);
+
+            const uint64_t nextListHead = *(uint64_t*) ptr;
+            const uint64_t relativeOffset = offset - (listHead - 1);
+
+            *(uint64_t*) ptr = relativeOffset;
+
+            listHead = nextListHead;
+        }
+    }
+
+    void patchOperand(CompilerState* state, uint64_t offset, uint64_t value) {
+        vmword* ptr = (vmword*) Arena::getPointerToLogicalOffset(
+            &state->bytecode,
+            offset
+        );
+
+        *ptr = (vmword) value;
+    }
+
+    void patchOperandIfZero(CompilerState* state, uint64_t offset, uint64_t value) {
+        vmword* ptr = (vmword*) Arena::getPointerToLogicalOffset(
+            &state->bytecode,
+            offset
+        );
+
+        if (*ptr == 0) *ptr = (vmword) value;
+    }
+
+    // TODO : move in meaningful place
+    enum {
+        IS_LVALUE = 1,
+        IS_BARE_STATEMENT = (1 << 1),
+        IS_ROOT = (1 << 2),
+
+        FORCE_ARRAY_LENGTH = (1 << 3),
+        FORCE_VEC_OPCODES = (1 << 4), // TODO : ? include FORCE_ARRAY_LENGTH ?
+        FORCE_STACK_VALUE = (1 << 5),
+    };
+
+    Err::Err compile(CompilerState* state, SyntaxNode* node);
+    Err::Err compile(CompilerState* state, Variable* node, Type::TypeInfo* target = NULL, Flags flags = 0);
+    Err::Err compile(CompilerState* state, Function* node);
+    Err::Err compile(CompilerState* state, VariableAssignment* node);
+    Err::Err compileExpression(CompilerState* state, Variable* node, Type::TypeInfo* target, Flags flags = 0);
+
+    void pushDescriptor(CompilerState* state, VecDescriptor desc);
+
+    // Pass only Type::isArrayLike types
+    Err::Err compileLength(CompilerState* state, Variable* var) {
+        Type::TypeInfoEx* typeEx = (Type::TypeInfoEx*)var->value.type;
+
+        if (typeEx->base.kind == Type::DT_ARRAY) {
+            pushOpcode(state, OC_PUSH_U64);
+            pushOperand(state, typeEx->arr.elementCount);
+        } else {
+            Variable* tmp = unwrapWithCasts(var);
+            if (tmp->def) {
+                pushGetOpcode(state, &typeEx->base, tmp->def, sizeof(vmword));
+            } else {
+                Err::Err err = compile(state, var, NULL, FORCE_ARRAY_LENGTH);
+                if (err != Err::OK) return err;
+
+                pushOpcode(state, OC_SWAP);
+                pushOpcode(state, OC_POP);
+            }
+        }
+
+        return Err::OK;
+    }
+
+    // Pass only Type::isArrayLike types
+    Err::Err compileSize(CompilerState* state, Variable* var) {
+        Type::TypeInfoEx* typeEx = (Type::TypeInfoEx*)var->value.type;
+
+        if (typeEx->base.kind == Type::DT_ARRAY) {
+            pushOpcode(state, OC_PUSH_U64);
+            pushOperand(state, typeEx->arr.elementCount * typeEx->arr.element->size);
+        } else {
+            Variable* tmp = unwrapWithCasts(var);
+            if (tmp->def) {
+                pushGetOpcode(state, &typeEx->base, tmp->def, sizeof(vmword));
+            } else {
+                Err::Err err = compile(state, var, NULL, FORCE_ARRAY_LENGTH);
+                if (err != Err::OK) return err;
+
+                pushOpcode(state, OC_SWAP);
+                pushOpcode(state, OC_POP);
+            }
+
+            pushOpcode(state, OC_PUSH_I64);
+            pushOperand(state, typeEx->ptr.element->size);
+            pushOpcode(state, OC_MUL_I64);
+        }
+
+        return Err::OK;
+    }
+
+    Err::Err compileAsAny(CompilerState* state, Variable* var) {
+        Err::Err err = Err::OK;
+
+        Type::TypeInfo* type = var->value.type;
+
+        Runtime::_TypeInfo* runtimeInfo = Runtime::toRuntimeType(var->value.type);
+        if (!runtimeInfo) {
+            return Err::NOT_YET_IMPLEMENTED;
+        }
+
+        pushOpcode(state, OC_PUSH_PTR);
+        pushOperand(state, (uint64_t) runtimeInfo);
+
+        if (Type::isPrimitive(type)) {
+            err = compile(state, var);
+            if (err != Err::OK) return err;
+
+            return Err::OK;
+        }
+
+        {
+            Variable* tmp = unwrap(var);
+            if (tmp->def) {
+                pushLeaOpcode(state, tmp->def);
+                return Err::OK;
+            }
+        }
+
+        if (Type::isStructLike(type)) {
+            // TODO : move to a function?
+            uint64_t offset = state->locals.logicalPos;
+            push(&state->locals, type->size, type->align);
+
+            err = compile(state,var);
+            if (err != Err::OK) return err;
+
+            pushOpcode(state, OC_SET_BLOB);
+            pushOperand(state, type->size);
+            pushOperand(state, offset);
+
+            pushOpcode(state, OC_LEA);
+            pushOperand(state, offset);
+        } else if (type->kind == Type::DT_ARRAY) {
+            // TODO
+            err = compile(state, var);
+            if (err != Err::OK) return err;
+        } else if (Type::isArrayLike(type)) {
+            err = compile(state, var, NULL, FORCE_ARRAY_LENGTH | FORCE_VEC_OPCODES);
+            if (err != Err::OK) return err;
+
+            pushOpcode(state, OC_VEC_TO_REF);
+        } else {
+            err = compile(state, var);
+            if (err != Err::OK) return err;
+        }
+
+        return err;
+    }
+
+    Err::Err compile(CompilerState* state, Scope* node) {
+        for (int i = 0; i < node->childrenCount; i++) {
+            compile(state, node->children[i]);
+
+            // TODO: generalize either concept of statements or
+            //       expressions, so we can call it in ex. compile:statement
+            if (state->vecTmpMemUsed) {
+                state->vecTmpMemUsed = false;
+                pushOpcode(state, OC_VEC_MEM_RESET);
+            }
+        }
+
+        return Err::OK;
+    }
+
+    Err::Err compileInitialization(CompilerState* state, Variable* source, VariableDefinition* target) {
+        if (!source || (!source->expression && !source->value.hasValue)) {
+            return Err::OK;
+        }
+
+        Type::TypeInfo* type = target->var->value.type;
+        if (type->kind == Type::DT_ARRAY) {
+            Type::TypeInfo* eType = ((Type::PointerInfo*) type)->element;
+
+            // We use vec opcodes, we have to prepare dest pointer on stack.
+            // Arrays have its own data-place in locals, we have to 'lea'
+            pushLeaOpcode(state, target);
+
+            Err::Err err = compile(state, source, target->var->value.type,
+                FORCE_ARRAY_LENGTH | FORCE_VEC_OPCODES | IS_ROOT);
+            if (err != Err::OK) return err;
+
+            // TODO: unite with ass ignment
+            if (state->vecResult.isTmp) {
+                VecDescriptor copyDesc = {
+                    .type = eType->kind,
+                    .oper = OP_NONE,
+                    .flags = 0,
+                    .dstElemSize = (uint16_t) eType->size,
+                };
+
+                pushOpcode(state, OC_VEC_COPY);
+                pushOperand(state, encodeVecDescriptor(copyDesc));
+                pushOpcode(state, OC_VEC_RESET);
+
+                state->vecLhsWritten = false;
+            } else if (state->vecResult.isScalar) {
+                // TODO: we need to refactor this to return a type compile function left on stack
+                //       so we dont have any ambiguity or guessing. And all our pre-guessing to optimize
+                //       then can be validated and clened up if mispredicted.
+                compileLength(state, target->var);
+                pushOpcode(state, OC_VEC_FILL);
+                VecDescriptor desc = { .type = eType->kind };
+                pushDescriptor(state, desc);
+            }
+
+            if (state->vecTmpMemUsed) {
+                state->vecTmpMemUsed = false;
+                pushOpcode(state, OC_VEC_RESET);
+            }
+        } else if (type->kind == Type::DT_SLICE) {
+            // Slices are stored as pointer + length, they have to receive
+            // pointer + length from rvalue. So we have to either allocate
+            // slot on stack for the rvalue or assign it directly via pointer
+            // if value is array-like variable
+
+            Variable* var = unwrapWithCasts(source);
+            if (var->def) {
+                // TODO:
+                // pushGetOpcode(state, type, target, 0);
+            } else if (isConstantPoolCandidate(var)) {
+                // TODO:
+            } else if (var->expression->type == EXT_BINARY &&
+                ((BinaryExpression*) var->expression)->right->value.type->kind == Type::DT_RANGE) {
+                // TODO: think about this...
+            } else {
+                // TODO: think if we need to strip all casts, or just Slice ones...
+                uint64_t offset;
+                pushAndRecordLocal(state, target->var, var->value.type, &offset);
+                if (!isOffsetValid(offset)) {
+                    return Err::COMPILE_TIME_KNOWN_EXPRESSION_REQUIRED;
+                }
+
+                pushOpcode(state, OC_LEA);
+                pushOperand(state, offset);
+            }
+
+            Err::Err err = compile(state, source, target->var->value.type,
+                FORCE_ARRAY_LENGTH | FORCE_VEC_OPCODES | IS_ROOT);
+            if (err != Err::OK) return err;
+
+            pushSetOpcode(state, type, target, 8);
+            pushSetOpcode(state, type, target, 0);
+
+            if (state->vecTmpMemUsed) {
+                state->vecTmpMemUsed = false;
+                pushOpcode(state, OC_VEC_MEM_RESET);
+            }
+        } else if (Type::isStructLike(type)) {
+            // TODO
+            Variable* var = unwrap(source);
+            if (var->expression && var->expression->type == EXT_TYPE_INITIALIZATION) {
+                pushLeaOpcode(state, target);
+
+                Err::Err err = compile(state, source, NULL, IS_ROOT);
+                if (err != Err::OK) return err;
+            } else {
+                Err::Err err = compile(state, source);
+                if (err != Err::OK) return err;
+
+                pushSetOpcode(state, type, target, 0);
+                return Err::OK;
+            }
+        } else {
+            Err::Err err = compile(state, source);
+            if (err != Err::OK) return err;
+
+            pushSetOpcode(state, type, target, 0);
+            return Err::OK;
+        }
+
+        return Err::OK;
+    }
+
+    Err::Err compile(CompilerState* state, VariableDefinition* node) {
+        updateSourceLocation(state, node->base.span);
+
+        Err::Err err;
+        uint64_t offset;
+
+        pushAndRecordLocal(state, node->var, &offset);
+        if (!isOffsetValid(offset)) {
+            return Err::COMPILE_TIME_KNOWN_EXPRESSION_REQUIRED;
+        }
+
+        node->vmOffset = offset;
+        node->vmOwnerExe = state->exe;
+
+        return compileInitialization(state, node->var, node);
+    }
+
     Err::Err compile(CompilerState* state, VariableAssignment* node) {
         updateSourceLocation(state, node->base.span);
 
         Err::Err err;
 
-        // as we may be from VariableDefinition
-        Variable* lvar = (node->lvar->def) ? node->lvar : unwrap(node->lvar);
-        Variable* rvar = node->rvar;//unwrap(node->rvar);
+        Variable* lvar = unwrap(node->lvar);
+        Variable* rvar = node->rvar; // unwrap(node->rvar);
 
-        if (lvar->value.type->kind == Type::DT_ARRAY) {
-            // we want to assign by value -> use of vec ops
-            if (!lvar->def) {
-                err = compile(state, lvar, NULL, IS_LVALUE | FORCE_ARRAY_LENGTH);
-                if (err != Err::OK) return err;
+        Type::TypeInfo* lType = lvar->value.type;
+
+        // Direct varibale assignment
+        if (lvar->def) {
+            // TODO TODO TODO
+            if (Type::isStructLike(lType)) {
+                rvar = unwrap(node->rvar);
+                if (rvar->expression && rvar->expression->type == EXT_TYPE_INITIALIZATION) {
+                    pushLeaOpcode(state, lvar->def);
+
+                    Err::Err err = compile(state, rvar, NULL, IS_ROOT);
+                    if (err != Err::OK) return err;
+                } else {
+                    Err::Err err = compile(state, rvar);
+                    if (err != Err::OK) return err;
+
+                    pushSetOpcode(state, lType, lvar->def, 0);
+                }
+                return Err::OK;
             }
 
-            err = compile(state, rvar, lvar, FORCE_ARRAY_LENGTH | FORCE_VEC_OPCODES | IS_ROOT);
-            if (err != Err::OK) return err;
-
-            pushOpcode(state, OC_VEC_RESET);
-
-            return Err::OK;
-        }
-
-        if (lvar->def) {
             err = compile(state, node->rvar);
             if (err != Err::OK) return err;
 
-            pushSetOpcode(state, lvar->value.type, lvar->def, 0);
+            if (lType->kind == Type::DT_SLICE) {
+                pushSetOpcode(state, lType, lvar->def, sizeof(vmword));
+                pushSetOpcode(state, lType, lvar->def, 0);
+            } else {
+                pushSetOpcode(state, lType, lvar->def, 0);
+            }
+
             return Err::OK;
         }
 
-        // here we ecpect lvalue to be a 'random'
-        // epression which should result into pointer
-        // on stack if normaly compiled.
+        // Shall produce pointer on stack
         err = compile(state, lvar, NULL, IS_LVALUE);
         if (err != Err::OK) return err;
 
-        err = compile(state, node->rvar, lvar);
-        if (err != Err::OK) return err;
+        if (Type::isArrayLike(lType)) {
+            Type::TypeInfo* eType = ((Type::PointerInfo*) lType)->element;
 
-        Opcode op = selectStoreOpcode(lvar->value.type->kind);
-        pushOpcode(state, op);
+            err = compile(state, rvar, lType,
+                FORCE_ARRAY_LENGTH | FORCE_VEC_OPCODES | IS_ROOT);
+            if (err != Err::OK) return err;
+
+            if (state->vecResult.isTmp) {
+                VecDescriptor copyDesc = {
+                    .type = eType->kind,
+                    .oper = OP_NONE,
+                    .flags = 0,
+                    .dstElemSize = (uint16_t) eType->size,
+                };
+
+                pushOpcode(state, OC_VEC_COPY);
+                pushOperand(state, encodeVecDescriptor(copyDesc));
+                pushOpcode(state, OC_VEC_RESET);
+
+                state->vecLhsWritten = false;
+            } else if (state->vecResult.isScalar) {
+                compileLength(state, lvar);
+                pushOpcode(state, OC_VEC_FILL);
+                VecDescriptor desc = { .type = eType->kind };
+                pushDescriptor(state, desc);
+            }
+
+            if (state->vecTmpMemUsed) {
+                // TODO: we shouldnt use this falg for vec_reset
+                state->vecTmpMemUsed = false;
+                pushOpcode(state, OC_VEC_RESET);
+            }
+
+            return Err::OK;
+        } else if (Type::isStructLike(lType)) {
+            // TODO
+            pushLeaOpcode(state, lvar->def);
+
+            Err::Err err = compile(state, rvar, NULL, IS_ROOT);
+            if (err != Err::OK) return err;
+        } else {
+            err = compile(state, node->rvar, lType);
+            if (err != Err::OK) return err;
+
+            pushStoreOpcode(state, lType);
+        }
 
         return Err::OK;
     }
 
-    Err::Err compile(CompilerState* state, Variable* node, Variable* target, Flags flags) {
+    // Pushes variable definition on stack as a consumable.
+    // Ex. Arrays are pushed as either pointer or slice, instead of stack dump.
+    void pushDefinition(CompilerState* state, VariableDefinition* def, uint64_t flags) {
+
+    }
+
+    // By default suppose leave the value on stack
+    Err::Err compile(CompilerState* state, Variable* node, Type::TypeInfo* target, Flags flags) {
         // TODO : kinda wasteful, maybe we create either flag or
         //  force each line-like statement to be parsed as Statement
         updateSourceLocation(state, node->base.span);
 
-        if (Type::isPrimitive(node->value.type->kind) && node->value.hasValue) {
+        if (node->value.hasValue && (Type::isPrimitive(node->value.type))) {
             pushPushInstruction(state, &node->value);
             return Err::OK;
         }
 
         if (node->expression) {
-            return compile(state, node->expression, target, flags);
+            return compileExpression(state, node, target, flags);
         }
 
-        // TODO: messy? additional checks if embeded primitive
         if (node->def) {
-            Value* val = &node->def->var->value;
+            VariableDefinition* def = node->def;
+            Type::TypeInfo* type = def->var->value.type;
 
-            uint64_t offset = node->def->vmOffset;
-            uint64_t dtypeSize = 0;
-
-            const Type::Kind dtypeEnum = val->type->kind;
-            if (dtypeEnum == Type::DT_ARRAY) {
-                Type::TypeInfoEx* info = (Type::TypeInfoEx*) val->type;
-
-                // TODO: to a function
-                if (state->exe == node->def->vmOwnerExe) {
-                    pushOpcode(state, OC_LEA);
-                    pushOperand(state, offset);
-                } else {
-                    pushOpcode(state, OC_LEA_GLOBAL);
-                    pushOperand(state, (uint64_t) node->def);
-                    pushOperand(state, 0);
-                }
-
-                if (flags & FORCE_ARRAY_LENGTH) {
-                    pushOpcode(state, OC_PUSH_U64);
-                    pushOperand(state, info->arr.elementCount);
-                }
-
-                return Err::OK;
+            // TODO: think more...
+            if (target && target->kind == Type::DT_SLICE) {
+                flags |= FORCE_ARRAY_LENGTH;
             }
 
-            pushGetOpcode(state, val->type, node->def, 0);
+            if (type->kind == Type::DT_ARRAY) {
+                Type::ArrayInfo* aType = (Type::ArrayInfo*) type;
+
+                pushLeaOpcode(state, def);
+
+                if (flags & FORCE_STACK_VALUE) {
+                    pushOpcode(state, OC_LOAD_BLOB);
+                    pushOperand(state, aType->base.size);
+                } else {
+                    // TODO: use function for this check, so we can also check for IS_LVALUE
+                    if (flags & FORCE_ARRAY_LENGTH) {
+                        pushOpcode(state, OC_PUSH_U64);
+                        pushOperand(state, aType->elementCount);
+                    }
+                }
+
+                // TODO: Dunno, if we gonna keep it this way, change at least to enum
+                //       with on_stack value...
+                state->vecResult.isTmp = true;
+            } else if (type->kind == Type::DT_SLICE) {
+                Type::SliceInfo* sType = (Type::SliceInfo*) type;
+                pushGetOpcode(state, type, def, 0);
+
+                if (flags & FORCE_ARRAY_LENGTH) {
+                    pushGetOpcode(state, type, def, sizeof(vmword));
+                }
+
+                state->vecResult.isTmp = true;
+            } else {
+                if (flags & IS_LVALUE) {
+                    pushLeaOpcode(state, node->def);
+                } else {
+                    pushGetOpcode(state, type, node->def, 0);
+                }
+            }
 
             return Err::OK;
         }
 
-        pushPushInstruction(state, &node->value);
+        // TODO:
+        //Diag::report(state->ast, node->base.span, Err::COMPILE_TIME_KNOWN_EXPRESSION_REQUIRED,
+        //        Diag::Format { "Unresolved variable or missing value" });
 
-        return Err::OK;
+        return Err::COMPILE_TIME_KNOWN_EXPRESSION_REQUIRED;
     }
 
     Err::Err compile(CompilerState* state, TypeDefinition* scope) {
@@ -961,47 +1316,303 @@ namespace Interpreter {
 
     Err::Err compileMemberSelection(CompilerState* state, BinaryExpression* bex, uint64_t flags) {
         Variable* parent = unwrap(bex->left);
+        Type::TypeInfoEx* pType = (Type::TypeInfoEx*) parent->value.type;
 
-        Variable* member = bex->right;
-        Type::StructMemberInfo* mInfo = (Type::StructMemberInfo*) member->value.type;
+        if (pType->base.kind == Type::DT_ENUM) {
+            Type::EnumMemberInfo* mType =
+                (Type::EnumMemberInfo*) bex->right->value.type;
 
-        if (bex->base.opType == OP_DEREFERENCE_MEMBER_SELECTION) {
+            pushOpcode(state, OC_PUSH_U64);
+            pushOperand(state, mType->value);
+        } else if (pType->base.kind == Type::DT_POINTER) {
+            Type::StructMemberInfo* mType =
+                (Type::StructMemberInfo*) bex->right->value.type;
+
             // Calculate the absolute address on the stack
-            const Err::Err err = compile(state, parent, NULL, flags);
+            const Err::Err err = compile(state, parent, NULL, flags & (~IS_LVALUE));
             if (err != Err::OK) return err;
 
-            // TODO : edit for lvalue
             pushOpcode(state, OC_PUSH_U64);
-            pushOperand(state, mInfo->offset);
+            pushOperand(state, mType->offset);
             pushOpcode(state, OC_ADD_U64);
 
-            pushOpcode(state, selectLoadOpcode(mInfo->type->kind));
-            if (mInfo->type->kind == Type::DT_STRUCT) {
-                pushOperand(state, mInfo->type->size);
+            if (flags ^ IS_LVALUE) {
+                pushLoadOpcode(state, mType->type);
+            }
+        } else if (Type::isStructLike(pType->base.kind)) {
+            Type::StructMemberInfo* mType =
+                (Type::StructMemberInfo*) bex->right->value.type;
+
+            if (parent->def) {
+                // TODO: not sure about array check here
+                if (flags & IS_LVALUE || mType->type->kind == Type::DT_ARRAY) {
+                    pushLeaOpcode(state, parent->def, 0);
+                    pushOpcode(state, OC_PUSH_U64);
+                    pushOperand(state, mType->offset);
+                    pushOpcode(state, OC_PTR_IDX);
+                    pushOperand(state, 1);
+                } else {
+                    pushGetOpcode(state, mType->type, parent->def, mType->offset);
+                }
+            } else {
+                // Arbitrary expression on stack
+                const Err::Err err = compile(state, parent, NULL, (flags & IS_LVALUE) ? IS_LVALUE : 0);
+                if (err != Err::OK) return err;
+
+                if (flags & IS_LVALUE) {
+                    pushOpcode(state, OC_PUSH_U64);
+                    pushOperand(state, mType->offset);
+                    pushOpcode(state, OC_ADD_U64);
+                } else {
+                    pushOpcode(state, OC_CROP);
+                    pushOperand(state, BYTES_TO_WORDS(parent->value.type->size));
+                    pushOperand(state, mType->offset);
+                    pushOperand(state, mType->type->size);
+                }
+            }
+
+            // TODO: If we are gonna keep this, try to compute length with parent and swap the
+            //       value here
+            if (flags ^ IS_LVALUE && Type::isArrayLike(mType->type->kind) && flags & FORCE_ARRAY_LENGTH) {
+                if (mType->type->kind == Type::DT_ARRAY) {
+                    Type::ArrayInfo* aType = (Type::ArrayInfo*) mType->type;
+                    pushOpcode(state, OC_PUSH_U64);
+                    pushOperand(state, aType->elementCount);
+                } else {
+                    // TODO: we may be on stack already?
+                }
+            }
+        } else {
+            // TODO: error
+        }
+
+        return Err::OK;
+    }
+
+    Err::Err compileRangeSlicing(CompilerState* state, BinaryExpression* bex, Type::TypeInfo* target, uint64_t flags) {
+        Err::Err err;
+
+        RangeExpression* range = (RangeExpression*)bex->right->expression;
+
+        Type::TypeInfoEx* tType = (Type::TypeInfoEx*) target;
+        Type::TypeInfoEx* lType = (Type::TypeInfoEx*) bex->left->value.type;
+        Type::TypeInfo*   eType = lType->ptr.element;
+
+        if (!range->step || (range->step->value.hasValue && range->step->value.i64 == 1)) {
+            // If we are slice, we want to prepare length on stack now,
+            // So we can reuse computed index
+            if (flags & FORCE_ARRAY_LENGTH && tType->base.kind != Type::DT_ARRAY) {
+                if (range->bidx) {
+                    err = compile(state, range->bidx);
+                    if (err != Err::OK) return err;
+                } else {
+                    pushOpcode(state, OC_PUSH_I64);
+                    pushOperand(state, 0);
+                }
+
+                pushOpcode(state, OC_DUP);
+
+                if (range->eidx) {
+                    err = compile(state, range->eidx);
+                    if (err != Err::OK) return err;
+                } else {
+                    compileLength(state, bex->left);
+                }
+
+                // [begin begin len]
+                pushOpcode(state, OC_SWAP);
+                pushOpcode(state, OC_SUB_I64);
+                if (range->eidx) {
+                    pushOpcode(state, OC_PUSH_I64);
+                    pushOperand(state, 1);
+                    pushOpcode(state, OC_ADD_I64);
+                }
+                pushOpcode(state, OC_SWAP);
+
+                // [len begin]
+                err = compile(state, bex->left);
+                if (err != Err::OK) return err;
+
+                pushOpcode(state, OC_SWAP);
+            } else {
+                err = compile(state, bex->left, NULL, (flags & IS_LVALUE) ? IS_LVALUE : 0);
+                if (err != Err::OK) return err;
+
+                if (range->bidx) {
+                    err = compile(state, range->bidx);
+                    if (err != Err::OK) return err;
+                } else {
+                    pushOpcode(state, OC_PUSH_I64);
+                    pushOperand(state, 0);
+                }
+            }
+
+            pushOpcode(state, OC_PTR_IDX);
+            pushOperand(state, eType->size);
+
+            if (flags & FORCE_ARRAY_LENGTH) {
+                if (tType->base.kind == Type::DT_ARRAY) {
+                    pushOpcode(state, OC_PUSH_U64);
+                    pushOperand(state, tType->arr.elementCount);
+                } else {
+                    pushOpcode(state, OC_SWAP);
+                }
             }
 
             return Err::OK;
         }
 
-        if (parent->def) {
-            // TODO : edit for lvalue
-            pushGetOpcode(state, mInfo->type, parent->def, mInfo->offset);
-        } else {
-            // Arbitrary expression on stack
-            const Err::Err err = compile(state, parent, NULL, flags);
+        if (lType->base.kind == Type::DT_ARRAY) {
+            if (flags ^ IS_ROOT) {
+                pushOpcode(state, OC_PUSH_U64);
+                pushOperand(state, lType->arr.elementCount);
+                pushOpcode(state, OC_VEC_ALLOC);
+                pushOperand(state, eType->size);
+            }
+
+            // dest[i] = src[start + i * step]
+            for (uint64_t i = 0; i < lType->arr.elementCount; i++) {
+                pushOpcode(state, OC_DUP);
+
+                int64_t startIdx = range->bidx ? range->bidx->value.i64 : 0;
+                int64_t stepVal  = range->step->value.i64;
+                int64_t srcIdx   = startIdx + (i * stepVal);
+
+                pushOpcode(state, OC_SWAP);
+                pushOpcode(state, OC_DUP);
+
+                pushOpcode(state, OC_PUSH_I64);
+                pushOperand(state, srcIdx);
+                pushOpcode(state, OC_PTR_IDX);
+                pushOperand(state, eType->size);
+
+                pushLoadOpcode(state, eType);
+
+                pushOpcode(state, OC_SWAP);
+
+                pushOpcode(state, OC_PUSH_I64);
+                pushOperand(state, i);
+                pushOpcode(state, OC_PTR_IDX);
+                pushOperand(state, eType->size);
+
+                pushOpcode(state, OC_SWAP);
+
+                pushStoreOpcode(state, eType);
+            }
+
+            pushOpcode(state, OC_SWAP);
+            pushOpcode(state, OC_POP);
+
+            if (flags & FORCE_ARRAY_LENGTH) {
+                pushOpcode(state, OC_PUSH_U64);
+                pushOperand(state, lType->arr.elementCount);
+            }
+
+            state->vecTmpMemUsed = true;
+            return Err::OK;
+        }
+
+        // We end up here if we are runtime thing
+        // So we just emulate loop
+
+        if (flags & IS_ROOT) {
+            // (end - start) / step + 1
+            err = compile(state, range->eidx);
             if (err != Err::OK) return err;
 
-            if (flags & IS_LVALUE) {
-                pushOpcode(state, OC_PUSH_U64);
-                pushOperand(state, mInfo->offset);
-                pushOpcode(state, OC_ADD_U64);
-            } else {
-                pushOpcode(state, OC_CROP);
-                pushOperand(state, BYTES_TO_WORDS(parent->value.type->size));
-                pushOperand(state, mInfo->offset);
-                pushOperand(state, mInfo->type->size);
-            }
+            err = compile(state, range->bidx);
+            if (err != Err::OK) return err;
+
+            pushOpcode(state, OC_SUB_I64);
+
+            err = compile(state, range->step);
+            if (err != Err::OK) return err;
+
+            pushOpcode(state, OC_DIV_I64);
+            pushOpcode(state, OC_PUSH_I64);
+            pushOperand(state, 1);
+            pushOpcode(state, OC_ADD_I64);
+
+            pushOpcode(state, OC_DUP);
+
+            pushOpcode(state, OC_VEC_ALLOC);
+            pushOperand(state, eType->size);
         }
+
+        uint64_t destOffset;
+        pushAndRecordLocal(state, bex->left, Type::getInfo(Type::DT_U64), &destOffset);
+
+        pushOpcode(state, OC_SET_PTR);
+        pushOperand(state, destOffset);
+
+        pushOpcode(state, OC_DUP_N);
+        pushOperand(state, 2);
+
+        // Step direction check (step < 0)
+        compile(state, range->step);
+        pushOpcode(state, OC_PUSH_I64);
+        pushOperand(state, 0);
+        pushOpcode(state, OC_LT_I64);
+        JumpPatch negStepBranch = pushJumpPlaceholder(state, OC_JUMP_IF_TRUE);
+
+        // Positive step (end >= idx)
+        pushOpcode(state, OC_GE_I64);
+        JumpPatch exitPos = pushJumpPlaceholder(state, OC_JUMP_IF_FALSE);
+        JumpPatch enterBody = pushJumpPlaceholder(state, OC_JUMP);
+
+        // Negative step (end <= idx)
+        patchJumpToHere(state, negStepBranch);
+        pushOpcode(state, OC_LE_I64);
+        JumpPatch exitNeg = pushJumpPlaceholder(state, OC_JUMP_IF_FALSE);
+
+        // stack: [end, idx]
+        // dest[dest_idx] = src[src_idx]
+        patchJumpToHere(state, enterBody);
+
+        compile(state, bex->left, NULL, IS_LVALUE);
+        pushOpcode(state, OC_DUP);
+        pushOpcode(state, OC_PTR_IDX);
+        pushOperand(state, eType->size);
+        pushLoadOpcode(state, eType);
+
+        pushOpcode(state, OC_DUP);
+        pushOpcode(state, OC_GET_PTR);
+        pushOperand(state, destOffset);
+        pushOpcode(state, OC_SWAP);
+        pushOpcode(state, OC_PTR_IDX);
+        pushOperand(state, eType->size);
+
+        // TODO:::!!!
+        //pushStoreOpcode(state, eType);
+
+        // idx++
+        pushOpcode(state, OC_DUP);
+        //pushOperand(state, destIdxOffset);
+        //pushPushInteger(state, 1);
+        pushOpcode(state, OC_ADD_I64);
+        pushOpcode(state, OC_SET_U64);
+        //pushOperand(state, destIdxOffset);
+
+        // 5. Increment src_idx = src_idx + step:
+        compile(state, range->step);
+        pushOpcode(state, OC_ADD_I64);
+
+        // Loop back-edge
+        //pushJumpBack(state, loopHeaderOffset);
+
+        patchJumpToHere(state, exitPos);
+        patchJumpToHere(state, exitNeg);
+
+        // Pop [end, src_idx] invariant from stack
+        pushOpcode(state, OC_POP);
+        pushOpcode(state, OC_POP); // Stack: [count]
+
+        // =========================================================================
+        // 4. Push Resulting Slice: [dest_ptr, count]
+        // =========================================================================
+        pushOpcode(state, OC_GET_PTR);
+        //pushOperand(state, destPtrOffset); // Stack: [count, dest_ptr]
+        pushOpcode(state, OC_SWAP);        // Stack: [dest_ptr, count]
 
         return Err::OK;
     }
@@ -1089,27 +1700,26 @@ namespace Interpreter {
         pushOperand(state, encodeVecDescriptor(desc));
     }
 
-    void pushVecOperands(CompilerState* state, Variable* target, VecDescriptor desc, const bool isRoot) {
+    void pushVecOperands(CompilerState* state, Type::TypeInfo* target, VecDescriptor desc, const bool isRoot) {
         uint64_t dest;
         if (isRoot) {
-            if (target->def) {
-                dest = target->def->vmOffset;
-            } else {
-                dest = 0;
+            if (!target) {
                 desc.flags |= DE_F_IS_DEST_STACK;
+            } else {
+                state->vecLhsWritten = true;
             }
             state->vecResult.isTmp = false;
         } else {
-            dest = 0; // TODO
             desc.flags |= DE_F_DEST;
             state->vecResult.isTmp = true;
+            state->vecTmpMemUsed = true;
         }
+        desc.dstElemSize = Type::getElement(target)->size; // TODO: type size check
 
         pushDescriptor(state, desc);
-        pushOperand(state, dest);
     }
 
-    inline bool tryVectorization(CompilerState* state, BinaryExpression* bex, VecResult lRes, VecResult rRes, Variable* target, const bool isRoot) {
+    inline bool tryVectorization(CompilerState* state, BinaryExpression* bex, VecResult lRes, VecResult rRes, Type::TypeInfo* target, const bool isRoot) {
         if (!Type::isArrayLike(bex->left->value.type->kind) &&
             !Type::isArrayLike(bex->right->value.type->kind)) {
             return false;
@@ -1117,44 +1727,47 @@ namespace Interpreter {
 
         VecDescriptor desc = {
             .oper = bex->base.opType,
-            .flags =
-                (((uint32_t) lRes.isTmp) << DE_F_LEFT_SHIFT) |
-                (((uint32_t) rRes.isTmp) << DE_F_RIGHT_SHIFT)
+            .flags = (uint8_t) ((lRes.isTmp ? DE_F_LEFT : 0) |
+                                (rRes.isTmp ? DE_F_RIGHT : 0))
         };
 
         Type::TypeInfoEx* leftInfo  = (Type::TypeInfoEx*) bex->left->value.type;
         Type::TypeInfoEx* rightInfo = (Type::TypeInfoEx*) bex->right->value.type;
 
-        if (Type::isArrayLike(bex->left->value.type->kind)) {
-            desc.dtype = leftInfo->arr.element->kind;
+        Type::TypeInfoEx* mainType;
+        if (Type::isArrayLike(bex->left->value.type->kind) &&
+            Type::isArrayLike(bex->right->value.type->kind)) {
+            mainType = leftInfo;
             if (bex->base.opType == OP_CONCATENATION) {
                 pushOpcode(state, OC_VEC_CAT);
             } else {
                 pushOpcode(state, OC_VEC_VV);
             }
-        } else if (bex->left->value.type->kind == Type::DT_ARRAY) {
-            desc.dtype = leftInfo->arr.element->kind;
+        } else if (Type::isArrayLike(bex->left->value.type)) {
+            mainType = leftInfo;
             pushOpcode(state, OC_VEC_VS);
         } else {
-            desc.dtype = rightInfo->arr.element->kind;
+            mainType = rightInfo;
             pushOpcode(state, OC_VEC_SV);
         }
 
-        pushVecOperands(state, target, desc, isRoot);
+        // TODO: think of just passign mainType alongside target
+        desc.type = mainType->ptr.element->kind;
+        pushVecOperands(state, isRoot ? target : &mainType->base, desc, isRoot);
 
         return true;
     }
 
     // Unary Version
-    bool tryVectorization(CompilerState* state, UnaryExpression* uex, Variable* target, const bool isRoot) {
+    bool tryVectorization(CompilerState* state, UnaryExpression* uex, Type::TypeInfo* target, const bool isRoot) {
         if (!Type::isArrayLike(uex->operand->value.type->kind)) return false;
 
         pushOpcode(state, OC_VEC_UNARY);
 
         VecDescriptor desc = {
-            .dtype = ((Type::ArrayInfo*) uex->operand->value.type)->element->kind,
+            .type = ((Type::ArrayInfo*) uex->operand->value.type)->element->kind,
             .oper = uex->base.opType,
-            .flags = ((uint32_t) state->vecResult.isTmp) << DE_F_DEST_SHIFT
+            .flags = (uint8_t) (state->vecResult.isTmp ? DE_F_DEST : 0)
         };
 
         pushVecOperands(state, target, desc, isRoot);
@@ -1166,25 +1779,42 @@ namespace Interpreter {
         pushGetOpcode(state, var->value.type, var->def, 8);
     }
 
-    Err::Err compile(CompilerState* state, Expression* node, Variable* target, Flags flags) {
+    Err::Err compileExpression(CompilerState* state, Variable* node, Type::TypeInfo* target, Flags flags) {
         Err::Err err;
 
         const bool isRoot = flags & IS_ROOT;
         flags &= ~IS_ROOT;
 
-        switch (node->type) {
+        const bool isLval = flags & IS_LVALUE;
+        flags &= ~IS_LVALUE;
+
+        state->vecResult.isTmp    = false;
+        state->vecResult.isScalar = false;
+
+        Expression* exp = node->expression;
+        switch (exp->type) {
 
             case EXT_UNARY: {
-
-                UnaryExpression* uex = (UnaryExpression*) node;
+                UnaryExpression* uex = (UnaryExpression*) exp;
                 const bool areWeNothingburger = uex->base.opType == OP_NONE;
 
                 if (areWeNothingburger && isRoot) flags |= IS_ROOT;
+                if (areWeNothingburger && isLval) flags |= IS_LVALUE;
+
+                if (uex->base.opType == OP_GET_ADDRESS) flags |= IS_LVALUE;
 
                 err = compile(state, uex->operand, target, flags);
                 if (err != Err::OK) return err;
 
-                if (areWeNothingburger) break;
+                if (areWeNothingburger || uex->base.opType == OP_GET_ADDRESS) {
+                    // NOTE: for now we assume, '&' cannot occure on left side and
+                    //       cannot be used tiwce in a multiple times on right side
+                    break;
+                }
+
+                if (isLval && uex->base.opType == OP_GET_VALUE) {
+                    break;
+                }
 
                 if (flags & FORCE_VEC_OPCODES &&
                     tryVectorization(state, uex, target, isRoot)
@@ -1192,30 +1822,13 @@ namespace Interpreter {
                     break;
                 }
 
-                if (uex->base.opType == OP_GET_VALUE && (flags & IS_LVALUE)) {
-                    break;
-                }
-
-                Opcode oc = selectOperatorOpcode(uex);
-                if (oc == OC_NOP) break;
-
-                if (oc == OC_NOT_BOOL) {
-                    pushBoolCast(state, uex->operand->value.type->kind);
-                }
-
-                pushOpcode(state, oc);
-
-                if (oc == OC_LEA) {
-                    pushOperand(state, uex->operand->def->vmOffset);
-                }
-
+                pushOperator(state, uex);
                 break;
-
             }
 
             case EXT_BINARY: {
 
-                BinaryExpression* bex = (BinaryExpression*) node;
+                BinaryExpression* bex = (BinaryExpression*) exp;
 
                 if (bex->base.opType == OP_BOOL_AND ||
                     bex->base.opType == OP_BOOL_OR) {
@@ -1223,12 +1836,27 @@ namespace Interpreter {
                 }
 
                 if (isMemberSelection(bex->base.opType)) {
-                    return compileMemberSelection(state, bex, flags);
+                    return compileMemberSelection(state, bex, flags | (isLval ? IS_LVALUE : 0));
+                }
+
+                if (isRangeSlicing(bex->base.opType)) {
+                    uint64_t newFlags = flags | (isRoot ? IS_ROOT : 0) | (isLval ? IS_LVALUE : 0);
+                    return compileRangeSlicing(state, bex, node->value.type, newFlags);
                 }
 
                 err = compile(state, bex->left, target, flags);
                 if (err != Err::OK) return err;
                 VecResult lResult = state->vecResult;
+
+                // TODO: why do we have this as binary with cast exp as left?
+                //       unite under one thing...
+                if (isCast(bex->base.opType)) {
+                    Opcode op = selectCastOpcode(bex->left->value.type->kind, node->value.type->kind);
+                    if (op == OC_NOP) break;
+
+                    pushOpcode(state, op);
+                    break;
+                }
 
                 // TODO :
                 // If left side is an array, it may have length
@@ -1247,6 +1875,20 @@ namespace Interpreter {
                 if (err != Err::OK) return err;
                 VecResult rResult = state->vecResult;
 
+                if (bex->base.opType == OP_SUBSCRIPT) {
+                    Type::PointerInfo* pInfo = (Type::PointerInfo*) bex->left->value.type;
+                    Type::TypeInfo* eInfo = pInfo->element;
+
+                    pushOpcode(state, OC_PTR_IDX);
+                    pushOperand(state, eInfo->size);
+
+                    if (!isLval) {
+                        pushLoadOpcode(state, eInfo);
+                    }
+
+                    break;
+                }
+
                 // if either side is an array - switch to vec opcodes
                 if (flags & FORCE_VEC_OPCODES &&
                     tryVectorization(state, bex, lResult, rResult, target, isRoot)
@@ -1258,26 +1900,10 @@ namespace Interpreter {
                     break;
                 }
 
+                // TODO: To a function pushOperand
                 Opcode oc = selectOperatorOpcode(bex);
                 if (oc == OC_NOP) break;
-
                 pushOpcode(state, oc);
-
-                if (oc == OC_PTR_IDX) {
-                    Type::PointerInfo* pInfo = (Type::PointerInfo*) bex->left->value.type;
-                    Type::TypeInfo* eInfo = pInfo->element;
-
-                    pushOperand(state, eInfo->size);
-
-                    if (!(flags & IS_LVALUE)) {
-                        // TODO : to a function
-                        oc = selectLoadOpcode(eInfo->kind);
-                        pushOpcode(state, oc);
-                        if (oc == OC_LOAD_BLOB) {
-                            pushOperand(state, eInfo->size);
-                        }
-                    }
-                }
 
                 break;
 
@@ -1285,7 +1911,7 @@ namespace Interpreter {
 
             case EXT_FUNCTION_CALL: {
 
-                FunctionCall* call = (FunctionCall*) node;
+                FunctionCall* call = (FunctionCall*) exp;
                 Function* fcn = call->fcn;
 
                 if (!isValidFunctionIdx(call->fcn->internalIdx) && !fcn->exe) {
@@ -1315,17 +1941,29 @@ namespace Interpreter {
 
                 VariableDefinition** fcnInArgs = fcn->prototype.inArgs;
 
+                // TODO: for now we push format-string descriptor like this...
+                if (fcn->internalIdx == Ast::Internal::IF_PRINTF) {
+                    Expression* ex = unwrapWithCasts(call->inArgs[0])->expression;
+                    pushOpcode(state, OC_PUSH_PTR);
+                    pushOperand(state, (uint64_t) ((StringInitialization*) ex)->format);
+                }
+
                 for (int i = 0; i < fixedCount; i++) {
-                    Variable* arg = call->inArgs[i];
-                    if (fcnInArgs[i]->var->value.type->kind == Type::DT_ARRAY) {
-                        err = compile(state, arg, NULL, FORCE_ARRAY_LENGTH);
-                    } else {
-                        err = compile(state, arg, NULL);
-                    }
+                    Type::TypeInfo* callType = call->inArgs[i]->value.type;
+                    Type::TypeInfo* fcnType = fcnInArgs[i]->var->value.type;
+
+                    // TODO
+                    const uint64_t flags =
+                        (fcnType->kind == Type::DT_ARRAY ? FORCE_STACK_VALUE : 0) |
+                        (fcnType->kind == Type::DT_SLICE ? FORCE_ARRAY_LENGTH : 0) |
+                        (fcnType->kind == Type::DT_SLICE ? FORCE_ARRAY_LENGTH : 0) |
+                        (callType->kind == Type::DT_SLICE ? FORCE_ARRAY_LENGTH : 0);
+
+                    err = compile(state, call->inArgs[i], fcnType, flags);
                     if (err != Err::OK) return err;
                 }
 
-                bool anyVarargIsArray = false;
+                bool anyVarargIsArray = false; // TODO: deprecate -> status->vecMemUsed shall be used instead
                 if (isVariadic) {
                     for (int i = fixedCount; i < call->inArgCount; i++) {
                         Variable* arg = call->inArgs[i];
@@ -1357,43 +1995,60 @@ namespace Interpreter {
             }
 
             case EXT_CAST: {
-                Cast* cast = (Cast*) node;
+                Cast* cast = (Cast*) exp;
 
-                if (flags & FORCE_VEC_OPCODES) {
-                    compile(state, cast->operand, target, flags);
+                Type::TypeInfo* sType = cast->operand->value.type;
+                Type::TypeInfo* tType = cast->target;
+
+                // Discard cast in case of same underlying types
+                if (Type::areElementsTheSame(sType, tType)) {
+                    compile(state, cast->operand, target, flags | (isRoot ? IS_ROOT : 0));
+                    break;
+                }
+
+                compile(state, cast->operand, target, flags);
+
+                if (Type::isArrayLike(tType)) {
+                    if (cast->kind == Type::CK_FROM_LOWER_LEVEL) {
+                        Opcode op = selectCastOpcode(sType->kind, ((Type::PointerInfo*) tType)->element->kind);
+                        if (op == OC_NOP) break;
+
+                        pushOpcode(state, op);
+                        break;
+                    }
 
                     pushOpcode(state, OC_VEC_CAST);
 
                     VecDescriptor desc;
-                    desc.dtype = cast->target->kind;
-                    desc.flags = isRoot ? 0 : DE_F_DEST | DE_F_LEFT;
+                    desc.type = ((Type::PointerInfo*) tType)->element->kind;
+                    desc.flags = isRoot && flags ^ IS_BARE_STATEMENT ?
+                        0 : DE_F_DEST | DE_F_LEFT;
 
-                    // Source can be element type
-                    if (cast->kind == Cast::Kind::FROM_LOWER_LEVEL) {
-                        desc.srcDtype = cast->operand->value.type->kind;
-                        desc.flags = IS_CASTED_FROM_LOWER_LEVEL;
+                    if (cast->kind == Type::CK_FROM_LOWER_LEVEL) {
+                        desc.srcType = Type::getUnderlyingKind(sType);
+                        desc.flags = 0; // TODO
                     } else {
-                        desc.srcDtype = ((Type::TypeInfoEx*) (cast->operand->value.type))->ptr.element->kind;
+                        desc.srcType = ((Type::TypeInfoEx*) (sType))->ptr.element->kind;
                         desc.flags = 0;
                     }
 
                     // even in root target can be general expression,
                     // ex. assignment x.y[i] = arr ...;
-                    pushVecOperands(state, target, desc, isRoot);
+                    pushVecOperands(state, cast->target, desc, isRoot && flags ^ IS_BARE_STATEMENT);
                 } else {
-                    compile(state, cast->operand, target, flags);
-
-                    Opcode op = selectCastOpcode(cast->operand->value.type->kind, cast->target->kind);
+                    Opcode op = selectCastOpcode(sType->kind, tType->kind);
                     if (op == OC_NOP) break;
 
                     pushOpcode(state, op);
+
+                    if (isRoot) state->vecResult.isScalar = true;
                 }
 
                 break;
             }
 
             case EXT_ALLOC: {
-                Alloc* alc = (Alloc*) node;
+                Alloc* alc = (Alloc*) exp;
 
                 Type::TypeInfo* dtype = alc->def->var->value.type;
 
@@ -1413,7 +2068,7 @@ namespace Interpreter {
 
                 // init part
                 pushOpcode(state, OC_DUP); // as we expect pointer on stack
-                compile(state, alc->def->var->expression);
+                compileExpression(state, alc->def->var, alc->def->var->value.type);
 
                 Opcode oc = selectStoreOpcode(dtype->kind);
                 pushOpcode(state, oc);
@@ -1430,7 +2085,7 @@ namespace Interpreter {
             }
 
             case EXT_GET_LENGTH: {
-                GetLength* ex = (GetLength*) node;
+                GetLength* ex = (GetLength*) exp;
 
                 if (ex->arr->value.type->kind == Type::DT_ARRAY) {
                     Type::ArrayInfo* aType = (Type::ArrayInfo*) ex->arr->value.type;
@@ -1444,7 +2099,7 @@ namespace Interpreter {
             }
 
             case EXT_GET_SIZE: {
-                GetSize* ex = (GetSize*) node;
+                GetSize* ex = (GetSize*) exp;
 
                 if (ex->arr->value.type->kind == Type::DT_ARRAY) {
                     Type::ArrayInfo* type = (Type::ArrayInfo*) ex->arr->value.type;
@@ -1461,101 +2116,144 @@ namespace Interpreter {
             }
 
             case EXT_STRING_INITIALIZATION: {
-                pushString(state, (StringInitialization*) node);
+                StringInitialization* init = (StringInitialization*) exp;
+
+                pushString(state, init);
+                if (isRoot) {
+                    pushOpcode(state, OC_VEC_COPY);
+                    VecDescriptor desc = {
+                        .type = init->charType->kind,
+                    };
+
+                    pushVecOperands(state, target, desc, isRoot);
+                }
+
                 break;
             }
 
             case EXT_ARRAY_INITIALIZATION: {
-                ArrayInitialization* init = (ArrayInitialization*) node;
+                ArrayInitialization* init = (ArrayInitialization*) exp;
 
-                const uint64_t elementCount = init->attributeCount;
-                if (elementCount < 0) {
-                    // TODO : can we even be there if not error in compiler
-                    return Err::UNEXPECTED_ERROR;
-                }
-
-                Type::TypeInfo* elementInfo = NULL;
-                if (elementCount > 0) {
-                    elementInfo = init->attributes[0]->value.type;
-                }
+                Type::ArrayInfo* aType = (Type::ArrayInfo*) node->value.type;
+                Type::TypeInfo*  eType = (Type::TypeInfo*) aType->element;
 
                 if (init->flags & IS_CMP_TIME) {
-                    Variable* first = init->attributes[0];
+                    const uint64_t startOffset = state->rawData.logicalPos;
+                    uint8_t* rawDataPtr = (uint8_t*) Arena::push(&state->rawData, aType->base.size, 1);
 
-                    uint64_t offset = state->rawData.logicalPos;
-                    uint64_t elementSize = first->value.type->size;
-
-                    uint8_t* rawDataPtr = (uint8_t*) Arena::push(&state->rawData, elementCount * elementSize, 1);
-                    for (int i = 0; i < elementCount; i++) {
+                    int64_t offset = 0;
+                    for (int i = 0; i < aType->elementCount; i++) {
                         Variable* arg = init->attributes[i];
-                        memcpy(rawDataPtr + (i * elementSize), &arg->value.u64, elementSize);
+                        // TODO: we need a way to either pass and ast or create alternate diagnostics
+                        return Err::NOT_YET_IMPLEMENTED;
+                        // Extern::Abi::marshal(state->ast, arg->value.type, arg, rawDataPtr + offset, Extern::Abi::MarshalMode::TYPE_DEFAULT);
+                        offset += arg->value.type->size;
                     }
 
                     pushOpcode(state, OC_LEA_CONST);
-                    pushOperand(state, offset);
+                    pushOperand(state, startOffset);
                     state->vecResult.isTmp = false;
 
                     if (flags & FORCE_ARRAY_LENGTH) {
                         pushOpcode(state, OC_PUSH_U64);
-                        pushOperand(state, elementCount);
+                        pushOperand(state, aType->elementCount);
                     }
 
                     pushOpcode(state, OC_VEC_COPY);
                     VecDescriptor desc = {
-                        .dtype = first->value.type->kind,
+                        .type = eType->kind,
                     };
 
                     pushVecOperands(state, target, desc, isRoot);
                 } else {
-                    if (isRoot) {
-                        if (target->def) {
-                            pushOpcode(state, OC_LEA);
-                            pushOperand(state, target->def->vmOffset);
-                        } else {
-                            // TODO : pointer should already be on stack, right? ... right?
-                        }
-                    } else {
+                    // NOTE: in case of root, pointer should already be on stack
+                    if (!isRoot) {
                         pushOpcode(state, OC_PUSH_U64);
-                        pushOperand(state, elementCount);
+                        pushOperand(state, aType->elementCount);
 
                         pushOpcode(state, OC_VEC_ALLOC);
-                        pushOperand(state, elementInfo->size);
+                        pushOperand(state, eType->size);
 
                         state->vecResult.isTmp = true;
                     }
 
-                    for (int i = 0; i < elementCount; i++) {
+                    for (int i = 0; i < aType->elementCount; i++) {
                         Variable* arg = init->attributes[i];
 
                         pushOpcode(state, OC_DUP);
                         pushOpcode(state, OC_PUSH_U64);
                         pushOperand(state, i);
                         pushOpcode(state, OC_PTR_IDX);
-                        pushOperand(state, elementInfo->size);
+                        pushOperand(state, eType->size);
 
                         compile(state, arg);
 
-                        Opcode op = selectStoreOpcode(elementInfo->kind);
+                        Opcode op = selectStoreOpcode(eType->kind);
                         pushOpcode(state, op);
                     }
 
-                    pushOpcode(state, OC_PUSH_U64);
-                    pushOperand(state, elementCount);
+                    if (isRoot && target->kind == Type::DT_ARRAY) {
+                        // If we assign to root array we have to leave
+                        // 'empty' stack
+                        pushOpcode(state, OC_POP);
+                    }else {
+                        pushOpcode(state, OC_PUSH_U64);
+                        pushOperand(state, aType->elementCount);
+                    }
                 }
 
                 break;
             }
 
             case EXT_TYPE_INITIALIZATION: {
-                TypeInitialization* init = (TypeInitialization*) node;
+                TypeInitialization* init = (TypeInitialization*) exp;
+                Type::StructInfo* type = (Type::StructInfo*) node->value.type;
+
+                if (!isRoot) {
+                    return Err::UNEXPECTED_ERROR;
+                }
 
                 for (int i = 0; i < init->attributeCount; i++) {
-                    compile(state, init->attributes[i]);
+                    Variable* arg = init->attributes[i];
+                    Type::StructMemberInfo* mType = type->members + i;
+
+                    pushOpcode(state, OC_DUP);
+                    pushOpcode(state, OC_PUSH_U64);
+                    pushOperand(state, mType->offset);
+                    pushOpcode(state, OC_PTR_IDX);
+                    pushOperand(state, 1);
+
+                    compile(state, arg, NULL, IS_ROOT);
+                    // TODO
+                    if (Type::isStructLike(mType->type)) {
+                        // pushOpcode(state, OC_POP);
+                        continue;
+                    }
+
+                    Opcode op = selectStoreOpcode(mType->type->kind);
+                    pushOpcode(state, op);
+                }
+
+                if (isRoot) {
+                    pushOpcode(state, OC_POP);
                 }
 
                 // TODO : fill var
 
                 break;
+            }
+
+            case EXT_RANGE: {
+                RangeExpression* range = (RangeExpression*) exp;
+                Type::PointerInfo* type = (Type::PointerInfo*) node->value.type;
+
+                if (!range->step) {
+                    compile(state, range->bidx);
+                    pushOpcode(state, OC_PTR_IDX);
+                    pushOperand(state, type->element->size);
+                } else {
+                    return Err::NOT_YET_IMPLEMENTED;
+                }
             }
 
             default: {
@@ -1577,6 +2275,7 @@ namespace Interpreter {
         return Err::OK;
     }
 
+    // TODO: apply new patch functions
     Err::Err compile(CompilerState* state, Branch* node) {
         Err::Err err;
 
@@ -1615,132 +2314,409 @@ namespace Interpreter {
         return Err::OK;
     }
 
-    Err::Err compile(CompilerState* state, SwitchCase* scope) {
-        // TODO
-        return Err::OK;
-    }
-
-    /*
-    Err::Err compile(CompilerState* state, WhileLoop* node) {
-        // TODO : kinda wasteful, maybe we create either flag or
-        //  force each line-like statement to be parsed as Statement
-        Span tmpSpan = *node->base.span;
-        tmpSpan.end = node->bodyScope->base.span->start;
-        updateSourceLocation(state, &tmpSpan);
-
+    Err::Err compile(CompilerState* state, SwitchCase* node) {
         Err::Err err;
 
-        const uint64_t startOffset = state->bytecode.logicalPos;
-        const uint64_t prevCurrentLoopAddress = state->currentLoopAddress;
-        state->currentLoopAddress = startOffset;
+        const int typeOffset = getDtypeOffsetSizeBased(node->switchExp->value.type->kind);
 
-        SyntaxNode* prevLoop = state->currentLoop;
-        state->currentLoop = (SyntaxNode*) node;
+        if (node->strategy == CaseStrategy::CS_LINEAR) {
+            uint64_t patchListHead = patchListHeadNull;
 
-        err = compile(state, node->expression);
+            err = compile(state, node->switchExp);
+            if (err != Err::OK) return err;
+
+            for (uint32_t i = 0; i < node->caseCount; i++) {
+                pushOpcode(state, OC_DUP);
+
+                err = compile(state, node->casesExp[i]);
+                if (err != Err::OK) return err;
+
+                pushOpcode(state, (Opcode) (OC_EQ_I32 + typeOffset));
+
+                JumpPatch endJumpPatch = pushJumpPlaceholder(state, OC_JUMP_IF_FALSE);
+                pushOpcode(state, OC_POP);
+
+                err = compile(state, node->cases[i]);
+                if (err != Err::OK) return err;
+
+                patchListHead = addJumpToList(state, patchListHead);
+                patchJumpToHere(state, endJumpPatch);
+            }
+
+            if (node->caseCount > 0) {
+                pushOpcode(state, OC_POP);
+            }
+
+            if (node->elseCase) {
+                err = compile(state, node->elseCase);
+                if (err != Err::OK) return err;
+            }
+
+            const uint64_t jumpVeryEndOffset = state->bytecode.logicalPos;
+            patchList(state, patchListHead, jumpVeryEndOffset);
+
+            return Err::OK;
+        }
+
+        if (node->strategy == CaseStrategy::CS_BINARY) {
+            // TODO
+            return Err::NOT_YET_IMPLEMENTED;
+        }
+
+        if (node->strategy == CaseStrategy::CS_JUMP_TABLE) {
+            const int64_t minValue = node->sorted[0].val;
+            const int64_t maxValue = node->sorted[node->sortedCount - 1].val;
+
+            err = compile(state, node->switchExp);
+            if (err != Err::OK) return err;
+
+            const uint64_t jumpTableBaseOffset = state->bytecode.logicalPos;
+
+            pushOpcode(state, OC_JUMP_TABLE);
+            pushOperand(state, (uint64_t) minValue);
+            pushOperand(state, (uint64_t) maxValue);
+
+            const uint64_t tableCount  = (uint64_t) (maxValue - minValue) + 1;
+            const uint64_t tableOffset = state->bytecode.logicalPos;
+
+            for (uint32_t i = 0; i < tableCount; i++) {
+                pushOperand(state, 0);
+            }
+            pushOperand(state, 0); // Either else case or return addr
+
+            uint64_t patchListHead = patchListHeadNull;
+
+            for (uint32_t i = 0; i < node->sortedCount; i++) {
+                SwitchCase::Sorted entry = node->sorted[i];
+
+                const uint64_t tableIndex    = entry.val - minValue;
+                const uint64_t operandOffset = tableOffset + sizeof(vmword) * tableIndex;
+
+                const int64_t relativeDelta = (int64_t) state->bytecode.logicalPos - (int64_t) jumpTableBaseOffset;
+                patchOperand(state, operandOffset, (uint64_t) relativeDelta);
+
+                err = compile(state, node->cases[entry.idx]);
+                if (err != Err::OK) return err;
+
+                patchListHead = addJumpToList(state, patchListHead);
+            }
+
+            const uint64_t defaultOffset = state->bytecode.logicalPos;
+            const int64_t defaultRelativeDelta = (int64_t) defaultOffset - (int64_t) jumpTableBaseOffset;
+
+            for (uint32_t i = 0; i < tableCount; i++) {
+                patchOperandIfZero(state, tableOffset + i * sizeof(vmword), (uint64_t) defaultRelativeDelta);
+            }
+
+            patchOperand(state, tableOffset + tableCount * sizeof(vmword), (uint64_t) defaultRelativeDelta);
+
+            if (node->elseCase) {
+                err = compile(state, node->elseCase);
+                if (err != Err::OK) return err;
+            }
+
+            const uint64_t jumpVeryEndOffset = state->bytecode.logicalPos;
+            patchList(state, patchListHead, jumpVeryEndOffset);
+
+            return Err::OK;
+        }
+
+        return Err::UNEXPECTED_ERROR;
+    }
+
+    Variable* getLoopIndexVariable(Loop* node) {
+        if (!node->index.var) return NULL;
+        return node->index.var->base.type == NT_VARIABLE ?
+            node->index.var : node->index.def->var;
+    }
+
+    void emitInitIndex(CompilerState* state, Loop* node, Variable* exp) {
+        Variable* index = getLoopIndexVariable(node);
+        if (index) {
+            if (node->index.var->base.type == NT_VARIABLE_DEFINITION) {
+                compile(state, node->index.def);
+            }
+
+            if (exp) {
+                compile(state, exp);
+            } else {
+                pushOpcode(state, OC_PUSH_I64);
+                pushOperand(state, 0);
+            }
+
+            pushSetOpcode(state, index->value.type, index->def, 0);
+            pushGetOpcode(state, index->value.type, index->def, 0);
+        } else {
+            // Implicit stack index
+            if (exp) {
+                compile(state, exp);
+            } else {
+                pushOpcode(state, OC_PUSH_I64);
+                pushOperand(state, 0);
+            }
+        }
+    }
+
+    void emitUpdateIndex(CompilerState* state, Loop* node, Variable* stepExp) {
+        Variable* index = getLoopIndexVariable(node);
+        if (index) {
+            // Discard old loop comparison copy
+            pushOpcode(state, OC_POP);
+
+            pushGetOpcode(state, index->value.type, index->def, 0);
+            if (stepExp) {
+                compile(state, stepExp);
+            } else {
+                pushOpcode(state, OC_PUSH_I64);
+                pushOperand(state, 1);
+            }
+
+            pushOpcode(state, OC_ADD_I64);
+            pushSetOpcode(state, index->value.type, index->def, 0);
+            pushGetOpcode(state, index->value.type, index->def, 0);
+        } else {
+            // Update implicit index on stack
+            if (stepExp) {
+                compile(state, stepExp);
+            } else {
+                pushOpcode(state, OC_PUSH_I64);
+                pushOperand(state, 1);
+            }
+            pushOpcode(state, OC_ADD_I64);
+        }
+    }
+
+    // Condition Loop: 'loop <condition> as condition_value at iteration_count { ... }'
+    Err::Err compileConditionLoop(CompilerState* state, Loop* node, uint64_t* outContinue, uint64_t* outBreak) {
+        Variable* index = getLoopIndexVariable(node);
+        if (index) {
+            emitInitIndex(state, node, nullptr);
+        }
+
+        const uint64_t loopHeaderOffset = state->bytecode.logicalPos;
+
+        Err::Err err = compile(state, node->arg.exp);
         if (err != Err::OK) return err;
 
-        const uint64_t jumpOperandStartOffset = state->bytecode.logicalPos;
-        pushOpcode(state, OC_JUMP_IF_FALSE);
-        uint8_t* jumpOperandPtr = pushOperand(state, 0);
+        if (node->item) {
+            compile(state, node->item);
+
+            pushOpcode(state, OC_DUP);
+            pushOpcode(state, OC_SET_I64);
+            pushOperand(state, node->item->vmOffset);
+
+            if (node->item->type.qualifier & Type::Q_REF) {
+                // TODO: I guess we forbid this
+            }
+        }
+
+        JumpPatch exitJump = pushJumpPlaceholder(state, OC_JUMP_IF_FALSE);
 
         err = compile(state, node->bodyScope);
         if (err != Err::OK) return err;
 
-        pushOpcode(state, OC_JUMP);
-        pushOperand(state, startOffset - state->bytecode.logicalPos + 1);
+        *outContinue = state->bytecode.logicalPos;
 
-        const uint64_t jumpOperandRelativeOffset = state->bytecode.logicalPos - jumpOperandStartOffset;
-        memcpy(jumpOperandPtr, &jumpOperandRelativeOffset, sizeof(uint64_t));
+        if (index) {
+            emitUpdateIndex(state, node, NULL);
+        }
 
-        state->currentLoop = prevLoop;
-        state->currentLoopAddress = prevCurrentLoopAddress;
+        pushJumpBack(state, loopHeaderOffset);
+
+        patchJumpToHere(state, exitJump);
+        *outBreak = state->bytecode.logicalPos;
 
         return Err::OK;
     }
-*/
-    // TODO
+
+    // TODO: compile-time ranges optimization
+    // Range Loop: 'loop <start:step:end> as item at index { ... }'
+    static Err::Err compileRangeLoop(CompilerState* state, Loop* node, uint64_t* outContinue, uint64_t* outBreak) {
+        RangeExpression* range = node->arg.range;
+
+        compile(state, range->eidx);
+        emitInitIndex(state, node, range->bidx);
+        // On stack: [end, start]
+
+        const uint64_t loopHeaderOffset = state->bytecode.logicalPos;
+
+        pushOpcode(state, OC_DUP_N);
+        pushOperand(state, 2);
+
+        if (node->item) {
+            // Reference is forbidden by the validator
+            compile(state, node->item);
+
+            pushOpcode(state, OC_DUP);
+            pushOpcode(state, OC_SET_I64);
+            pushOperand(state, node->item->vmOffset);
+        }
+
+        // Step direction decider
+        if (range->step) {
+            compile(state, range->step);
+        } else {
+            pushOpcode(state, OC_PUSH_I64);
+            pushOperand(state, 1);
+        }
+
+        pushOpcode(state, OC_PUSH_I64);
+        pushOperand(state, 0);
+        // On stack: [end, start, end, start, step, 0]
+
+        pushOpcode(state, OC_LT_I64);
+        JumpPatch negStepBranch = pushJumpPlaceholder(state, OC_JUMP_IF_TRUE);
+
+        // Positive check (end >= index)
+        pushOpcode(state, OC_GE_I64);
+        JumpPatch exitPos = pushJumpPlaceholder(state, OC_JUMP_IF_FALSE);
+        JumpPatch enterBody = pushJumpPlaceholder(state, OC_JUMP);
+
+        // Negative check (end <= index)
+        patchJumpToHere(state, negStepBranch);
+        pushOpcode(state, OC_LE_I64);
+        JumpPatch exitNeg = pushJumpPlaceholder(state, OC_JUMP_IF_FALSE);
+
+        patchJumpToHere(state, enterBody);
+
+        Err::Err err = compile(state, node->bodyScope);
+        if (err != Err::OK) return err;
+
+        *outContinue = state->bytecode.logicalPos;
+
+        emitUpdateIndex(state, node, range->step);
+        pushJumpBack(state, loopHeaderOffset);
+
+        patchJumpToHere(state, exitPos);
+        patchJumpToHere(state, exitNeg);
+        *outBreak = state->bytecode.logicalPos;
+
+        // Clean up [end, index]
+        pushOpcode(state, OC_POP);
+        pushOpcode(state, OC_POP);
+
+        return Err::OK;
+    }
+
+    // Array/Slice: 'loop arr as item at index { ... }'
+    Err::Err compileArrayLoop(CompilerState* state, Loop* node, uint64_t* outContinue, uint64_t* outBreak) {
+        compile(state, node->arg.exp, NULL, FORCE_ARRAY_LENGTH);
+        pushOpcode(state, OC_SWAP);
+
+        uint64_t arrayOffset;
+        if (node->item) {
+            compile(state, node->item);
+
+            pushAndRecordLocal(state, node->item->var, Type::getInfo(Type::DT_U64), &arrayOffset);
+            if (!isOffsetValid(arrayOffset)) {
+                return Err::COMPILE_TIME_KNOWN_EXPRESSION_REQUIRED;
+            }
+
+            pushOpcode(state, OC_SET_PTR);
+            pushOperand(state, arrayOffset);
+        } else {
+            pushOpcode(state, OC_POP);
+        }
+
+        emitInitIndex(state, node, nullptr);
+        // Stack [len, 0]
+
+        const uint64_t loopHeaderOffset = state->bytecode.logicalPos;
+
+        pushOpcode(state, OC_DUP_N);
+        pushOperand(state, 2);
+
+        // len > index
+        pushOpcode(state, OC_GT_I64);
+        JumpPatch exitJump = pushJumpPlaceholder(state, OC_JUMP_IF_FALSE);
+
+        if (node->item) {
+            Type::TypeInfo* type = node->item->var->value.type;
+
+            Variable* index = getLoopIndexVariable(node);
+            if (index) {
+                pushOpcode(state, OC_GET_PTR);
+                pushOperand(state, arrayOffset);
+                pushGetOpcode(state, index->value.type, index->def, 0);
+            } else {
+                pushOpcode(state, OC_DUP);
+                pushOpcode(state, OC_GET_PTR);
+                pushOperand(state, arrayOffset);
+                pushOpcode(state, OC_SWAP);
+            }
+
+            pushOpcode(state, OC_PTR_IDX);
+            if (node->item->type.qualifier & Type::Q_REF) {
+                pushOperand(state, ((Type::PointerInfo*) type)->element->size);
+                pushSetOpcode(state, type, node->item, 0);
+            } else {
+                pushOperand(state, type->size);
+                pushLoadOpcode(state, type);
+                pushSetOpcode(state, type, node->item, 0);
+            }
+        }
+
+        Err::Err err = compile(state, node->bodyScope);
+        if (err != Err::OK) return err;
+
+        *outContinue = state->bytecode.logicalPos;
+
+        emitUpdateIndex(state, node, nullptr);
+        pushJumpBack(state, loopHeaderOffset);
+
+        patchJumpToHere(state, exitJump);
+        *outBreak = state->bytecode.logicalPos;
+
+        // Clean up [len, index]
+        pushOpcode(state, OC_POP);
+        pushOpcode(state, OC_POP);
+
+        return Err::OK;
+    }
+
     Err::Err compile(CompilerState* state, Loop* node) {
-        // TODO : kinda wasteful, maybe we create either flag or
-        //  force each line-like statement to be parsed as Statement
+        Err::Err err;
+
         Span tmpSpan = *node->base.span;
         tmpSpan.end = node->bodyScope->base.span->start;
         updateSourceLocation(state, &tmpSpan);
 
-        Err::Err err;
+        SyntaxNode* prevLoop             = state->currentLoop;
+        uint64_t    prevLoopAddress      = state->currentLoopAddress;
+        uint64_t    prevListHeadBreak    = state->listHeadBreak;
+        uint64_t    prevListHeadContinue = state->listHeadContinue;
 
-        const uint64_t startOffset = state->bytecode.logicalPos;
-        const uint64_t prevCurrentLoopAddress = state->currentLoopAddress;
-        state->currentLoopAddress = startOffset;
-
-        SyntaxNode* prevLoop = state->currentLoop;
         state->currentLoop = (SyntaxNode*) node;
-
-        uint64_t oldListHeadBreak = state->listHeadBreak;
-        uint64_t oldListHeadContinue = state->listHeadContinue;
+        state->currentLoopAddress = state->bytecode.logicalPos;
         state->listHeadBreak = patchListHeadNull;
         state->listHeadContinue = patchListHeadNull;
 
-        int64_t stride = 1;
-        if (node->arg.range->step) {
-            Variable* tmp = unwrap(node->arg.range->step);
-            stride = *(int64_t*) &(tmp->value.u64);
+        uint64_t continueOffset = 0;
+        uint64_t breakOffset    = 0;
+
+        switch (node->arg.kind) {
+            case Loop::Arg::CONDITION:
+                err = compileConditionLoop(state, node, &continueOffset, &breakOffset);
+                break;
+            case Loop::Arg::RANGE:
+                err = compileRangeLoop(state, node, &continueOffset, &breakOffset);
+                break;
+            default:
+                err = compileArrayLoop(state, node, &continueOffset, &breakOffset);
+                break;
         }
 
-        int64_t indexOffset = -1;
-        if (node->index.var) {
-            SyntaxNode* index = (SyntaxNode*) node->index.var;
-            compile(state, index);
-            indexOffset = index->type == NT_VARIABLE ?
-                node->index.var->def->vmOffset : node->index.def->vmOffset;
+        if (err == Err::OK) {
+            patchList(state, state->listHeadContinue, continueOffset);
+            patchList(state, state->listHeadBreak, breakOffset);
         }
 
-        if (node->arg.kind == Loop::Arg::EXPRESSION) {
-            compile(state, node->arg.exp);
-            pushOpcode(state, OC_SWAP);
-            pushOpcode(state, OC_POP);
-        } else {
-            compile(state, node->arg.range->eidx);
-        }
+        state->currentLoop        = prevLoop;
+        state->currentLoopAddress = prevLoopAddress;
+        state->listHeadBreak      = prevListHeadBreak;
+        state->listHeadContinue   = prevListHeadContinue;
 
-        pushOpcode(state, stride >= 0 ? OC_LT_U64 : OC_LT_I64);
-
-        const uint64_t jumpOperandStartOffset = state->bytecode.logicalPos;
-        pushOpcode(state, OC_JUMP_IF_FALSE);
-        uint8_t* jumpOperandPtr = pushOperand(state, 0);
-
-        err = compile(state, node->bodyScope);
-        if (err != Err::OK) return err;
-
-        const uint64_t incOffset = state->bytecode.logicalPos;
-        if (indexOffset >= 0) {
-            pushOpcode(state, OC_GET_I64);
-            pushOperand(state, indexOffset);
-
-            pushOpcode(state, OC_PUSH_I64);
-            pushOperand(state, stride);
-
-            pushOpcode(state, OC_ADD_I64);
-
-            pushOpcode(state, OC_SET_I64);
-            pushOperand(state, indexOffset);
-        }
-
-        pushOpcode(state, OC_JUMP);
-        pushOperand(state, startOffset - state->bytecode.logicalPos + 1);
-
-        const uint64_t jumpOperandRelativeOffset = state->bytecode.logicalPos - jumpOperandStartOffset;
-        memcpy(jumpOperandPtr, &jumpOperandRelativeOffset, sizeof(uint64_t));
-
-        patchList(state, state->listHeadBreak, state->bytecode.logicalPos);
-        patchList(state, state->listHeadContinue, incOffset);
-
-        state->currentLoop = prevLoop;
-        state->listHeadBreak = oldListHeadBreak;
-        state->listHeadContinue = oldListHeadContinue;
-        state->currentLoopAddress = prevCurrentLoopAddress;
-
-        return Err::OK;
+        return err;
     }
 
     Err::Err compile(CompilerState* state, ReturnStatement* node) {
@@ -1810,7 +2786,7 @@ namespace Interpreter {
 
     Err::Err compile(CompilerState* state, Statement* node) {
         updateSourceLocation(state, node->base.span);
-        compile(state, node->operand);
+        compile(state, node->operand, NULL, IS_BARE_STATEMENT);
         return Err::OK;
     }
 

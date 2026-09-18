@@ -25,7 +25,8 @@ enum Option {
     OUTPUT_DIR,   // -d, --outdir
     DEBUG_INFO,   // -g, --debug
     OPT_LEVEL,    // -O<number>
-    BAT_MODE      // -b, --bat
+    BAT_MODE,     // -b, --bat
+    CASCADE       // -cascade
 };
 
 
@@ -92,6 +93,7 @@ const char* str(Option opt) {
         case Option::DEBUG_INFO:  return "-g/--debug";
         case Option::OPT_LEVEL:   return "-O<level>";
         case Option::BAT_MODE:    return "-b/--bat";
+        case Option::CASCADE:     return "-cascade";
         case Option::UNKNOWN:
         default:                  return "Unknown Option";
     }
@@ -120,6 +122,10 @@ const char* getOptionArgsHint(Option opt) {
         case Option::BAT_MODE:
             return "Indicate the program is called from a batch script.";
 
+        case Option::CASCADE:
+            return "Backend is asked to also produce outputs for all prior pipeline stages.\n"
+                   "(Check -> Translate -> Build -> Run)";
+
         default:
             return "";
     }
@@ -141,6 +147,7 @@ Option toOption(const char* arg) {
     if (strcmp(flag, "d") == 0 || strcmp(flag, "outdir") == 0) return Option::OUTPUT_DIR;
     if (strcmp(flag, "g") == 0 || strcmp(flag, "debug") == 0)  return Option::DEBUG_INFO;
     if (strcmp(flag, "b") == 0 || strcmp(flag, "bat") == 0)    return Option::BAT_MODE;
+    if (strcmp(flag, "cascade") == 0)                          return Option::CASCADE;
 
     return Option::UNKNOWN;
 }
@@ -187,7 +194,8 @@ void printHelp() {
         Option::OUTPUT_DIR,
         Option::DEBUG_INFO,
         Option::OPT_LEVEL,
-        Option::BAT_MODE
+        Option::BAT_MODE,
+        Option::CASCADE,
     };
 
     for (Option opt : allOptions) {
@@ -275,6 +283,10 @@ bool parseArgs(char* argv[], int argc) {
                 }
                 break;
 
+            case Option::CASCADE:
+                Compiler::cascade = true;
+                break;
+
             case Option::UNKNOWN:
             default:
                 Logger::log(logWrn, "Warning: Unknown argument '%s' ignored.", NULL, arg);
@@ -335,7 +347,7 @@ int main(int argc, char* argv[]) {
 
             std::exit(1);
         }
-        Compiler::mainFile = String(argv[argc - 1]);
+        Compiler::mainFile = String(argv[2]);
     }
 
 	if (!parseArgs(argv + 3, argc - 3)) {
@@ -503,6 +515,9 @@ int run () {
 //
 //   -g, --debug           Generate debug information (verbose source output, symbols).
 //   -O<level>             Optimization level: 0 (default), 1, 2, 3.
+//
+//   -cascade              Backend is asked to also produce outputs for all prior
+//                         pipeline stages (Check -> Translate -> Build -> Run).
 //
 //   -h, --help            Print this help message.
 //   -b, --bat             Indicate the program is called from a batch script

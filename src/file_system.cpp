@@ -346,30 +346,21 @@ namespace FileSystem {
                              offsetof(String, buff);
     }
 
+    void clear() {
+        DArray::clear(&filesData);
+        Set::clear(&filesSet);
+    }
+
     void release() {
         DArray::release(&filesData);
         Set::release(&filesSet);
     }
 
-    Handle load(Path* absPath, Origin origin) {
-
-        {
-            File* file = (File*) Set::find(&filesSet, (uint64_t) absPath->buffer);
-            if (file) {
-                file->isOpened = true;
-                return file;
-            }
-        }
-
-        char* buffer;
-        const int bufferLen = FileDriver::readFile(absPath->buffer, &buffer);
-        if (bufferLen < 0) return null;
-
+    Handle load(Path* absPath, String data, Origin origin) {
         File file;
         file.isOpened = true;
         file.origin = origin;
-        file.data.buff = buffer;
-        file.data.len = bufferLen;
+        file.data = data;
         file.info.modifiedTime = { 0, 0 };
         file.info.sizeBytes = 0;
         file.info.relativePath = NULL;
@@ -386,7 +377,22 @@ namespace FileSystem {
         DArray::push(&filesData, &file);
 
         return DArray::get(&filesData, file.idx);
+    }
 
+    Handle load(Path* absPath, Origin origin) {
+        {
+            File* file = (File*) Set::find(&filesSet, (uint64_t) absPath->buffer);
+            if (file) {
+                file->isOpened = true;
+                return file;
+            }
+        }
+
+        char* buffer;
+        const int bufferLen = FileDriver::readFile(absPath->buffer, &buffer);
+        if (bufferLen < 0) return null;
+
+        return load(absPath, { buffer, (uint64_t) bufferLen }, origin);
     }
 
     Handle load(String fname, Origin origin) {
@@ -420,6 +426,17 @@ namespace FileSystem {
 
         return load(absPath, origin);
 
+    }
+
+    // TODO
+    Handle loadBuffer(String fname, String data, Origin origin) {
+        Path* path = alloc<Path>();
+        memcpy(path->buffer, data.buff, data.len);
+        path->bufferLen = data.len;
+        path->buffer[path->bufferLen] = '\0';
+        annotatePath(path);
+
+        return load(path, data, origin);
     }
 
     void unload(Handle fhnd, Origin origin) {

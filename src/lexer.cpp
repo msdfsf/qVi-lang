@@ -110,7 +110,7 @@ namespace Lex {
 
     }
 
-    uint32_t hash(const char* str, int len) {
+    uint32_t kwHash(const char* str, int len) {
         uint32_t hash = 0x811C9DC5 ^ 0x558355AF;
         int idx = 0;
         while (idx < len) {
@@ -120,8 +120,18 @@ namespace Lex {
         return hash;
     }
 
+    uint32_t cdHash(const char* str, int len) {
+        uint32_t h = 0x811C9DC5 ^ 0x558355AF;
+        int idx = 0;
+        while (idx < len) {
+            h ^= (uint8_t)str[idx++];
+            h *= 0x01000193;
+        }
+        return h;
+    }
+
     inline Keyword keywordLookup(const char* str, const int len) {
-        const unsigned int h = hash(str, len) % KW_TABLE_SIZE;
+        const unsigned int h = kwHash(str, len) % KW_TABLE_SIZE;
         Keyword keyword = (Keyword) keywordTable[h];
 
         const int ans = cstrcmp(keywordStringTable[keyword], String { (char*) str, (uint64_t) len });
@@ -129,10 +139,10 @@ namespace Lex {
     }
 
     inline Directive directiveLookup(const char* str, const int len) {
-        const unsigned int h = hash(str, len) % CD_TABLE_SIZE + 1;
-        Directive directive = (Directive) directivesTable[h];
+        const unsigned int h = cdHash(str, len) % CD_TABLE_SIZE;
+        Directive directive = (Directive) directiveTable[h];
 
-        const int ans = cstrcmp(directivesStringTable[directive], String { (char*) str, (uint64_t) len });
+        const int ans = cstrcmp(directiveStringTable[directive], String { (char*) str, (uint64_t) len });
         return ans ? directive : CD_NONE;
     }
 
@@ -399,6 +409,18 @@ namespace Lex {
 
         }
 
+    }
+
+    uint64_t parseInt(const char* const str, uint64_t* idx) {
+        uint64_t num = 0;
+        while (1) {
+            const char ch = str[*idx];
+            if (ch >= '0' && ch <= '9') num = num * 10 + (ch - '0');
+            else break;
+            (*idx)++;
+        }
+
+        return num;
     }
 
     int parseEscapeChar(const char* str, int* idx) {
@@ -1049,11 +1071,26 @@ namespace Lex {
 
                 if (isIdentifierStart(ch)) {
 
+                    // TODO: think more...
                     QualifiedName stackName;
                     QualifiedName* name = val ? ((QualifiedName*) nalloc(AT_QUALIFIED_NAME)) : &stackName;
                     token = parseQualifiedName(span, str + startPos.idx, name, &len);
 
-                    if (val) val->any = (void*) name;
+                    if (val) {
+                        val->any = (void*) name;
+
+                        // TODO: quick patch...
+                        // TODO: clear from parser span spawning
+                        name->span = getSpanStamp(span);
+                        name->span->start = startPos;
+                        name->span->end.ln = startPos.ln + ln;
+                        name->span->end.idx = startPos.idx + len - 1;
+
+                        span->start = startPos;
+                        span->end.ln = startPos.ln + ln;
+                        span->end.idx = startPos.idx + len - 1;
+                        return token;
+                    }
 
                 } else if (isNumberStart(ch)) {
 

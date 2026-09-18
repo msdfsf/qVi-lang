@@ -15,6 +15,7 @@ namespace Backend {
         const char* outFile;
 
         bool debugInfo;
+        bool cascade;
     };
 
     struct Driver {

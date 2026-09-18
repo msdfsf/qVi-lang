@@ -1,6 +1,7 @@
 #include "compiler.h"
 
 #include "allocator.h"
+#include "data_types.h"
 #include "file_system.h"
 #include "diagnostic.h"
 #include "string.h"
@@ -26,7 +27,9 @@ namespace Compiler {
     Target*      targets[TK_COUNT + 1] = { 0 };
     bool         debugInfo             = false;
     uint8_t      optLevel              = 0;
+    bool         cascade               = false;
 
+    uint8_t threadCount = 0;
 
     inline const char* getTargetName(Target* target) {
         switch (target->kind) {
@@ -39,11 +42,93 @@ namespace Compiler {
 
 
 
-    int compile() {
+    void init() {
+        allocInit();
+        nallocInit();
 
-        // --- CONFIGURATION VALIDATION
-        //
+        Type::init();
+        Ast::init();
+        FileSystem::init();
+        TaskSystem::init(threadCount);
 
+        Extern::init();
+    }
+
+    void clear() {
+        Extern::clear();
+
+        // TODO: maybe add clear? TaskSystem::init(0);
+        FileSystem::clear();
+        Ast::clear();
+        Type::clear();
+
+        allocClear();
+    }
+
+    void release() {
+        Extern::release();
+
+        TaskSystem::release();
+        FileSystem::release();
+        Ast::release();
+        Type::release();
+
+        allocRelease();
+    }
+
+
+
+    int64_t runFrontend(FileSystem::Handle fileHandle) {
+        TaskSystem::beginGroup();
+        TaskSystem::dispatchParse(fileHandle);
+        TaskSystem::wait();
+
+        Logger::log(logInf, "Parsing completed");
+
+
+
+        TaskSystem::beginGroup();
+        TaskSystem::dispatchPreValidation(fileHandle);
+        TaskSystem::wait();
+
+        Logger::log(logInf, "Pre validation completed");
+
+
+
+        TaskSystem::beginGroup();
+        TaskSystem::dispatchValidation(fileHandle);
+        TaskSystem::wait();
+
+        Logger::log(logInf, "Validating completed");
+
+        return 0;
+    }
+
+    int64_t runBackends(FileSystem::Handle fileHandle) {
+        TaskSystem::beginGroup();
+        {
+            int i = 0;
+            while (targets[i] != NULL) {
+                Target* const target = targets[i];
+
+                Backend::BuildContext ctx = {
+                    .command   = Compiler::command,
+                    .outDir    = Compiler::outDir,
+                    .outFile   = Compiler::outFile,
+                    .debugInfo = Compiler::debugInfo,
+                    .cascade   = Compiler::cascade,
+                };
+
+                TaskSystem::dispatchBackend(fileHandle, target->backend, &ctx);
+                i++;
+            }
+        }
+        TaskSystem::wait();
+
+        return 0;
+    }
+
+    int64_t compile() {
         if (!targets[0]) {
             Logger::log(logErr, "No build targets were specified.");
             return Err::UNEXPECTED_ERROR;
@@ -76,25 +161,12 @@ namespace Compiler {
         }
 
 
-        // --- INITIALIZATION
-        //
 
-        allocInit();
-        nallocInit();
-
-        Type::init();
-        Ast::init();
-        FileSystem::init();
-        TaskSystem::init(0);
-
-        Extern::init();
-
+        init();
         Logger::log(logInf, "Initialization completed");
 
-
-
-        // --- FRONT-END
-        //
+        // TODO: we should record final status in context, so we can check
+        //       here for errors that werent registered as errors...
 
         FileSystem::Handle mainFileHandle
             = FileSystem::load(mainFile, FileSystem::Origins::COMPILER_SOURCE);
@@ -107,58 +179,19 @@ namespace Compiler {
             return Err::FILE_LOAD_FAILED;
         }
 
-        TaskSystem::beginGroup();
-        TaskSystem::dispatchParse(mainFileHandle);
-        TaskSystem::wait();
-
-        Logger::log(logInf, "Parsing completed");
 
 
-
-        TaskSystem::beginGroup();
-        TaskSystem::dispatchPreValidation(mainFileHandle);
-        TaskSystem::wait();
-
-        Logger::log(logInf, "Pre validation completed");
-
-
-
-        TaskSystem::beginGroup();
-        TaskSystem::dispatchValidation(mainFileHandle);
-        TaskSystem::wait();
-
-        Logger::log(logInf, "Validating completed");
-
+        runFrontend(mainFileHandle);
         if (command == BC_VALIDATE) return 0;
 
-
-
-        // --- BACK-END
-        //
-
-        TaskSystem::beginGroup();
-        {
-            int i = 0;
-            while (targets[i] != NULL) {
-                Target* const target = targets[i];
-
-                Backend::BuildContext ctx = {
-                    .command   = Compiler::command,
-                    .outDir    = Compiler::outDir,
-                    .outFile   = Compiler::outFile,
-                    .debugInfo = Compiler::debugInfo,
-                };
-
-                TaskSystem::dispatchBackend(mainFileHandle, target->backend, &ctx);
-                i++;
-            }
-        }
-        TaskSystem::wait();
+        runBackends(mainFileHandle);
 
         Logger::log(logInf, "Compilation completed");
 
-        return Err::OK;
 
+
+        release();
+        return Err::OK;
     }
 
 }

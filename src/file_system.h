@@ -77,11 +77,16 @@ namespace FileSystem {
 
     // init/release the FileSystem itself
     void init   ();
+    void clear  ();
     void release();
 
     // load/unload file from the FileSystem
     Handle load(String fname, Origin origin);
     Handle load(String fpath, String fname, Origin origin);
+
+    // For test purposes, but maybe evolve later to something
+    // meaningful.
+    Handle loadBuffer(String fname, String data, Origin origin);
 
     void   unload(Handle file, Origin origin);
 

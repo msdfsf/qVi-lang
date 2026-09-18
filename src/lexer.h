@@ -14,6 +14,8 @@
 
 namespace Lex {
 
+    constexpr uint64_t INVALID_INDEX = -1LL;
+
     enum TokenKind : int32_t;
     enum TokenDetail : int32_t;
 
@@ -192,24 +194,28 @@ namespace Lex {
 
     constexpr auto keywordTable = makeKeywordTable();
 
-    static const char* CDS_NONE = "none";
-    static const char* CDS_TEST = "test";
-
-    enum Directive {
-        CD_NONE,
-        CD_TEST,
+    enum Directive : int32_t {
+        CD_NONE        = -1,
+        CD_TEST        = 0,
         CD_COUNT
     };
 
-    static const char* directivesStringTable[CD_COUNT] = {
-        CDS_NONE,
+    inline const char* CDS_TEST = "test";
+
+    inline const char* directiveStringTable[CD_COUNT] = {
         CDS_TEST,
     };
 
-    constexpr int CD_TABLE_SIZE = 1;
-    static const int directivesTable[CD_TABLE_SIZE] = {
-        CD_TEST,
-    };
+    constexpr int CD_TABLE_SIZE = 2;
+    constexpr std::array<int, CD_TABLE_SIZE> makeDirectiveTable() {
+        std::array<int, CD_TABLE_SIZE> table = {};
+
+        table[ 1] = CD_TEST        ;
+
+        return table;
+    }
+
+    constexpr auto directiveTable = makeDirectiveTable();
 
     enum TokenKind : int32_t {
         TK_NONE,
@@ -504,5 +510,7 @@ namespace Lex {
         memcpy(&tmp, &ch, sizeof(T));
         return tmp;
     }
+
+    uint64_t parseInt(const char* const str, uint64_t* idx);
 
 }

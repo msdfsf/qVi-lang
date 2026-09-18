@@ -9,6 +9,7 @@
 #include "syntax.h"
 #include "task_system.h"
 #include "validator.h"
+#include <cassert>
 
 
 
@@ -543,9 +544,25 @@ namespace Interpreter {
         }
     }
 
-    void applyOperator(AstContext* ctx, Span* span, OperatorEnum op, Variable* leftVar, Variable* rightVar, Value* result) {
-        Value* left = &leftVar->value;
-        Value* right = &rightVar->value;
+    void applyOperator(AstContext* ctx, Span* span, BinaryExpression* bex, Value* result) {
+        const OperatorEnum op = bex->base.opType;
+
+        Value* left  = &bex->left->value;
+        Value* right = &bex->right->value;
+
+        if (isMemberSelection(op)) {
+            if (left->type->kind == Type::DT_ENUM) {
+                Type::EnumInfo* type = (Type::EnumInfo*) left->type;
+                result->type = Type::getInfo(type->memberKind);
+                result->i64 = ((Type::EnumMemberInfo*) right->type)->value;
+            } else if (Type::isStructLike(left->type)) {
+                assert(false && "TODO: applyOperator:memberSelection:Struct");
+            } else if (Type::isArrayLike(left->type)) {
+                assert(false && "TODO: applyOperator:memberSelection:Array");
+            }
+
+            return;
+        }
 
         switch (left->type->kind) {
             case Type::DT_I8: {
@@ -597,6 +614,8 @@ namespace Interpreter {
                 result->f64 = applyArithmetic(ctx, span, op, left->f64, right->f64);
                 break;
             }
+
+
         }
     }
 
@@ -664,6 +683,9 @@ namespace Interpreter {
     void initEval(CompilerState* state) {
     }
 
+    void releaseEval(CompilerState *state) {
+
+    }
     /*
     void flatten(AstContext* ast, Variable* var) {
         if (!var || !var->expression) return;
@@ -718,18 +740,21 @@ namespace Interpreter {
             err = Validator::ensureValidated(ctx, (SyntaxNode*) def);
             if (err != Err::OK) return err;
 
+            // TODO: think of param to ensureValidated to not unlock the node, so
+            //       we dont have to lock twice
             // Now evaluate...
             AcquireNodeReturn ans =
-                acquireNode(&def->base.cmpStatus, &def->base.workerId, ctx->workerId, true);
+                acquireNode(&def->base.lock, &def->base.workerId, ctx->workerId, true);
 
             if (ans == ANR_ACQUIRED_FOR_WORK) {
                 err = eval(ctx, def->var);
                 if (err != Err::OK) {
-                    releaseNode(&def->base.cmpStatus, err == Err::OK);
+                    releaseNode(&def->base.lock, err == Err::OK);
                     return err;
                 } else {
                     // flatten(ctx->unit->ast, def->var);
-                    releaseNode(&def->base.cmpStatus, err == Err::OK);
+                    releaseNode(&def->base.lock, err == Err::OK);
+                    var->base.state = NS_COMPILE_TIME;
                 }
             } else if (ans == ANR_ALREADY_ACQUIRED_BY_CALLER) {
                 Diag::report(ctx->unit->ast, def->base.span, Err::UNEXPECTED_ERROR, Diag::Format {
@@ -768,10 +793,12 @@ namespace Interpreter {
                 err = eval(ctx, bex->left);
                 if (err != Err::OK) return err;
 
-                err = eval(ctx, bex->right);
-                if (err != Err::OK) return err;
+                if (!isMemberSelection(bex->base.opType)) {
+                    err = eval(ctx, bex->right);
+                    if (err != Err::OK) return err;
+                }
 
-                applyOperator(ctx->unit->ast, var->base.span, bex->base.opType, bex->left, bex->right, &var->value);
+                applyOperator(ctx->unit->ast, var->base.span, bex, &var->value);
                 var->value.hasValue = true;
 
                 break;
