@@ -228,6 +228,7 @@ inline Test::Case gPrecedenceParserCases[] = {
 
 extern const Test::Suite gParserSuitePrecedence = {
     "Parser - Expression: Precedence",
+    NULL,
     gPrecedenceParserCases,
     sizeof(gPrecedenceParserCases) / sizeof(Test::Case),
     gParserPreCase,

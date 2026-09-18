@@ -22,7 +22,7 @@ static void assertRangeBounds(RangeExpression* range, bool hasStart, bool hasSte
 static void assertItemAlias(Loop* loop, const char* expectedName) {
     assertLoopBase(loop);
     Test::assertOrDie(loop->item != NULL);
-    Test::assert(cstrcmp((String*)&loop->item->name, (String*)expectedName) == 0);
+    Test::assert(cstrcmp((String*)&loop->item->var->name, (String*)expectedName) == 0);
 }
 
 static void assertIndexDef(
@@ -144,6 +144,7 @@ inline Test::Case gLoopParserCases[] = {
 
 extern const Test::Suite gParserSuiteLoop = {
     "Parser - Loop",
+    NULL,
     gLoopParserCases,
     sizeof(gLoopParserCases) / sizeof(Test::Case),
     gParserPreCase,

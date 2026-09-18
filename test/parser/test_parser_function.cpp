@@ -163,6 +163,7 @@ inline Test::Case gFunctionParserCases[] = {
 
 extern const Test::Suite gParserSuiteFunction = {
     "Parser - Function",
+    NULL,
     gFunctionParserCases,
     sizeof(gFunctionParserCases) / sizeof(Test::Case),
     gParserPreCase,

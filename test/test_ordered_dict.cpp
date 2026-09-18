@@ -94,6 +94,7 @@ const Test::Case gOrderedDictCases[] = {
 
 extern const Test::Suite gOrderedDictSuite = {
     "OrderedDict Suite",
+    NULL,
     gOrderedDictCases,
     sizeof(gOrderedDictCases) / sizeof(Test::Case)
 };

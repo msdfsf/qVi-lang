@@ -592,6 +592,7 @@ inline Test::Case gLexerCases[] = {
 
 extern const Test::Suite gLexerSuite = {
     "Lexer",
+    NULL,
     gLexerCases,
     sizeof(gLexerCases) / sizeof(Test::Case),
     gLexerPreCase,

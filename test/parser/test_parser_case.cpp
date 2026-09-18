@@ -163,6 +163,7 @@ inline Test::Case gCaseParserCases[] = {
 
 extern const Test::Suite gParserSuiteCase = {
     "Parser - Case-When",
+    NULL,
     gCaseParserCases,
     sizeof(gCaseParserCases) / sizeof(Test::Case),
     gParserPreCase,

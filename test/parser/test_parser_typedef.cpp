@@ -161,6 +161,7 @@ inline Test::Case gTypedefParserCases[] = {
 
 extern const Test::Suite gParserSuiteTypedef = {
     "Parser - Struct, Union",
+    NULL,
     gTypedefParserCases,
     sizeof(gTypedefParserCases) / sizeof(Test::Case),
     gParserPreCase,

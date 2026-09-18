@@ -48,7 +48,7 @@ static void assertTypeInit(
 
 static void assertCastExpr(
     Cast* castNode,
-    Cast::Kind expectedKind
+    Type::CastKind expectedKind
 ) {
     Test::assertOrDie(castNode != NULL);
     Test::assertOrDie(castNode->operand != NULL);
@@ -162,6 +162,7 @@ inline Test::Case gExpressionParserCases[] = {
 
 extern const Test::Suite gParserSuiteExpression = {
     "Parser - Expression",
+    NULL,
     gExpressionParserCases,
     sizeof(gExpressionParserCases) / sizeof(Test::Case),
     gParserPreCase,

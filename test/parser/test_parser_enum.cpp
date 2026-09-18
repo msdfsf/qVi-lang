@@ -151,6 +151,7 @@ inline Test::Case gEnumParserCases[] = {
 
 extern const Test::Suite gParserSuiteEnum = {
     "Parser - Enumerator",
+    NULL,
     gEnumParserCases,
     sizeof(gEnumParserCases) / sizeof(Test::Case),
     gParserPreCase,

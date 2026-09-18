@@ -126,6 +126,7 @@ const Test::Case gDArrayCases[] = {
 
 extern const Test::Suite gDArraySuite = {
     "DArray (Dynamic Array) Suite",
+    NULL,
     gDArrayCases,
     sizeof(gDArrayCases) / sizeof(Test::Case)
 };

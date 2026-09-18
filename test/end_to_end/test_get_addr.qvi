@@ -1,0 +1,152 @@
+// =============================================================================
+// 1. Primitive Scalar Variables (&x)
+// =============================================================================
+
+// 1.1 Reading a primitive value through a pointer
+x: i32 = 42;
+ptr: i32^ = &x;
+val: i32 = ^ptr;
+"%v" val;
+#test "42"
+
+// 1.2 Mutating a primitive variable in-place through a pointer
+num: i32 = 10;
+pNum: i32^ = &num;
+^pNum = 99;
+"%v" num;
+#test "99"
+
+
+// =============================================================================
+// 2. Array Element Addresses (&arr[i])
+// =============================================================================
+
+// 2.1 Mutating middle array element via &arr[index]
+arr: i32[4] = [10, 20, 30, 40];
+elemPtr: i32^ = &arr[2];
+^elemPtr = 333;
+"%v" arr;
+#test "[10, 20, 333, 40]"
+
+// 2.2 Mutating first and last array elements
+data: i32[3] = [1, 2, 3];
+pFirst: i32^ = &data[0];
+pLast:  i32^ = &data[2];
+^pFirst = 100;
+^pLast  = 300;
+"%v" data;
+#test "[100, 2, 300]"
+
+
+// =============================================================================
+// 3. Slice Element Addresses (&slice[i])
+// =============================================================================
+
+// 3.1 Mutating underlying buffer through a slice element pointer
+buffer: i32[5] = [1, 2, 3, 4, 5];
+slc: i32[const] = buffer;
+pSliceElem: i32^ = &slc[3]; // Points to buffer[3]
+^pSliceElem = 400;
+"%v" buffer;
+#test "[1, 2, 3, 400, 5]"
+
+
+// =============================================================================
+// 4. Structs & Struct Members (&struct, &struct.member)
+// =============================================================================
+
+// 4.1 Address of a specific struct member
+Point: struct {
+    x: i32;
+    y: i32;
+}
+
+p: Point;
+p.x = 10;
+p.y = 20;
+
+pY: i32^ = &p.y;
+^pY = 999;
+"%v, %v" p.x, p.y;
+#test "10, 999"
+
+// 4.2 Pointer to an entire struct instance (writing through struct pointer)
+Vector2: struct {
+    x: f32;
+    y: f32;
+}
+
+v: Vector2;
+v.x = 1.5;
+v.y = 2.5;
+
+pVec: Vector2^ = &v;
+pVec.x = 10.0;
+pVec.y = 20.0;
+"%v, %v" v.x, v.y;
+#test "10, 20"
+
+
+// =============================================================================
+// 5. Nested Structs & Arrays of Structs
+// =============================================================================
+
+// 5.1 Address of a struct member inside an array of structs
+Player: struct {
+    id: i32;
+    score: i32;
+}
+
+players: Player[3];
+players[1].id = 101;
+players[1].score = 50;
+
+pScore: i32^ = &players[1].score;
+^pScore = 9999;
+"%v" players[1].score;
+#test "9999"
+
+
+// =============================================================================
+// 6. Passing Pointers to Functions
+// =============================================================================
+
+// 6.1 Mutating a caller's local variable via pointer parameter
+increment: (valPtr: i32^) {
+    ^valPtr = ^valPtr + 1;
+}
+
+counter: i32 = 41;
+increment(&counter);
+"%v" counter;
+#test "42"
+
+// 6.2 Swapping two variables via pointers
+swap: (a: i32^, b: i32^) {
+    tmp: i32 = ^a;
+    ^a = ^b;
+    ^b = tmp;
+}
+
+val1: i32 = 10;
+val2: i32 = 20;
+swap(&val1, &val2);
+"%v, %v" val1, val2;
+#test "20, 10"
+
+
+// =============================================================================
+// 7. Re-binding a Slice via Pointer to Slice Descriptor
+// =============================================================================
+
+// 7.1 Pointer to a slice descriptor itself (&slice)
+bufA: i32[3] = [1, 2, 3];
+bufB: i32[3] = [10, 20, 30];
+mySlice: i32[const] = bufA;
+
+// Pointer to the 16-byte slice descriptor {ptr, len}
+pSlice: i32[const]^ = &mySlice;
+^pSlice = bufB; // Rebinds mySlice through its pointer!
+
+"%v" mySlice;
+#test "[10, 20, 30]"

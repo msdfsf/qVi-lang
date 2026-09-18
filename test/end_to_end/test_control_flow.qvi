@@ -1,0 +1,637 @@
+// =============================================================================
+// 1. Basic If / Else & Structure
+// =============================================================================
+
+// 1.1 Basic if-else
+x: i32 = 10;
+if x > 5 {
+    "big\n";
+} else {
+    "small\n";
+}
+#test "big\n"
+
+// 1.2 Else-if ladder
+score: i32 = 75;
+grade: i32 = 0;
+if score >= 90 {
+    grade = 4;
+} else if score >= 70 {
+    grade = 3;
+} else if score >= 60 {
+    grade = 2;
+} else {
+    grade = 1;
+}
+"%v\n" grade;
+#test "3\n"
+
+// 1.3 Single-statement scope form
+val: i32 = 3;
+result: i32 = 0;
+if val == 3 : result = 30;
+"%v\n" result;
+#test "30\n"
+
+// 1.4 Inline else form
+flag: i32 = 0;
+if flag: "on\n"; else: "off\n";
+#test "off\n"
+
+// 1.5 Nested if
+a: i32 = 5;
+b: i32 = 10;
+if a > 0 {
+    if b > 5 {
+        "nested\n";
+    }
+}
+#test "nested\n"
+
+
+// =============================================================================
+// 2. Pointer Truthiness & Null Pointer Checks (null, !ptr)
+// =============================================================================
+
+// 2.1 Null pointer evaluated directly as condition (falsy)
+nullPtr: i32^ = null;
+if nullPtr {
+    "valid\n";
+} else {
+    "null\n";
+}
+#test "null\n"
+
+// 2.2 Logical negation of a Null pointer (!nullPtr is truthy)
+pNull: i32^ = null;
+if !pNull {
+    "is null\n";
+} else {
+    "not null\n";
+}
+#test "is null\n"
+
+// 2.3 Non-null valid pointer evaluated as condition (truthy)
+val: i32 = 42;
+validPtr: i32^ = &val;
+if validPtr {
+    "valid pointer\n";
+} else {
+    "null pointer\n";
+}
+#test "valid pointer\n"
+
+// 2.4 Logical negation of a Non-null pointer (!validPtr is falsy)
+num: i32 = 100;
+pNum: i32^ = &num;
+if !pNum {
+    "pointer was null\n";
+} else {
+    "pointer was valid\n";
+}
+#test "pointer was valid\n"
+
+// 2.5 Null pointer comparison (ptr == 0 and ptr != 0)
+p1: i32^ = null;
+targetVal: i32 = 55;
+p2: i32^ = &targetVal;
+
+if (p1 == null) : "p1_is_null ";
+if (p2 != null) : "p2_is_valid\n";
+#test "p1_is_null p2_is_valid\n"
+
+
+// =============================================================================
+// 3. Arbitrary Integer & Bitwise Expressions in Conditions
+// =============================================================================
+
+// 3.1 Non-zero positive integer is truthy
+pos: i32 = 42;
+if pos {
+    "positive is truthy\n";
+} else {
+    "falsy\n";
+}
+#test "positive is truthy\n"
+
+// 3.2 Negative integer is truthy (any non-zero number is true)
+neg: i32 = -5;
+if neg {
+    "negative is truthy\n";
+} else {
+    "falsy\n";
+}
+#test "negative is truthy\n"
+
+// 3.3 Arithmetic subtraction evaluating to 0 (falsy)
+v1: i32 = 50;
+v2: i32 = 50;
+if v1 - v2 {
+    "non-zero result\n";
+} else {
+    "zero result\n";
+}
+#test "zero result\n"
+
+// 3.4 Bitwise AND (&) flag checking in condition
+flags: u32 = 0b0110;
+if flags & 0b0010 : "flag2_set ";
+if flags & 0b1000 : "flag8_set ";
+"\n";
+#test "flag2_set \n"
+
+// 3.5 Complex compound arithmetic condition
+m1: i32 = 5;
+m2: i32 = 3;
+expectedProd: i32 = 15;
+if (m1 * m2) == expectedProd {
+    "math correct\n";
+} else {
+    "math error\n";
+}
+#test "math correct\n"
+
+
+// =============================================================================
+// 4. Logical Operators (&&, ||, !) & Compound Conditions
+// =============================================================================
+
+// 4.1 Logical AND (&&) combinations
+if 1 && 1 : "T_T ";
+if 1 && 0 : "T_F ";
+if 0 && 1 : "F_T ";
+if 0 && 0 : "F_F ";
+"\n";
+#test "T_T \n"
+
+// 4.2 Logical OR (||) combinations
+if 1 || 0 : "T_F ";
+if 0 || 1 : "F_T ";
+if 0 || 0 : "F_F ";
+"\n";
+#test "T_F F_T \n"
+
+// 4.3 Double Negation (!!val normalizes any non-zero to 1)
+truthyVal: i32 = 42;
+zeroVal: i32 = 0;
+"%v, %v\n" !!truthyVal, !!zeroVal;
+#test "1, 0\n"
+
+// 4.4 Mixed logical compound: (A && B) || C
+condA: i32 = 0;
+condB: i32 = 1;
+condC: i32 = 1;
+
+if (condA && condB) || condC {
+    "compound true\n";
+} else {
+    "compound false\n";
+}
+#test "compound true\n"
+
+
+// =============================================================================
+// 5. Break Statement
+// =============================================================================
+
+// 5.1 Break exits loop early
+sum: i32 = 0;
+loop 0 : 100 at i {
+    if i > 4 : break;
+    sum = sum + i;
+}
+"%v\n" sum;
+#test "10\n"
+
+// 5.2 Break exits infinite condition loop
+count: i32 = 0;
+loop true {
+    count = count + 1;
+    if count >= 3 : break;
+}
+"%v\n" count;
+#test "3\n"
+
+// 5.3 Nested loop break (breaks ONLY the inner loop)
+innerBreaks: i32 = 0;
+loop 0 : 2 at x {
+    loop 0 : 10 at y {
+        if y >= 2 : break; // Only breaks inner 'y' loop!
+        innerBreaks = innerBreaks + 1;
+    }
+}
+"%v\n" innerBreaks; // 3 outer iterations * 2 inner iterations = 6
+#test "6\n"
+
+
+// =============================================================================
+// 6. Continue Statement
+// =============================================================================
+
+// 6.1 Continue skips even iterations
+total: i32 = 0;
+loop 0 : 5 at i {
+    if i % 2 == 0 : continue;
+    total = total + i; // 1 + 3 + 5 = 9
+}
+"%v\n" total;
+#test "9\n"
+
+// 6.2 Combined Break and Continue in the same loop
+acc: i32 = 0;
+loop 0 : 10 at i {
+    if i % 2 != 0 : continue; // Skip odds (1, 3, 5, 7, 9)
+    if i >= 8 : break;         // Stop when reaching 8
+    acc = acc + i;             // 0 + 2 + 4 + 6 = 12
+}
+"%v\n" acc;
+#test "12\n"
+
+
+// =============================================================================
+// 7. Case-When Linear Implementation
+// =============================================================================
+
+// 7.1 Single-case switch (Match & Miss)
+x: i32 = 1;
+res1: i32 = 0;
+case x {
+    when 1 { res1 = 100; }
+}
+"%v " res1;
+
+x = 99;
+res1 = 0;
+case x {
+    when 1 { res1 = 100; }
+}
+"%v " res1;
+#test "100 0 "
+
+// 7.2 Two-case switch (Tests 1st branch, 2nd branch, and Fallthrough)
+loop 1 : 3 at x {
+    val: i32 = 0;
+    case x {
+        when 1 { val = 10; }
+        when 2 { val = 20; }
+    }
+    "%v " val;
+}
+#test "10 20 0 "
+
+// 7.3 Three-case switch (Upper boundary of linear search)
+loop 0 : 4 at x {
+    ans: i32 = -1;
+    case x {
+        when 1 { ans = 111; }
+        when 2 { ans = 222; }
+        when 3 { ans = 333; }
+    }
+    "%v " ans;
+}
+#test "-1 111 222 333 -1 "
+
+// 7.4 Single-line colon syntax for linear cases (when 1 : ...)
+k: i32 = 2;
+out: i32 = 0;
+case k {
+    when 1 : out = 10;
+    when 2 : out = 20;
+    when 3 : out = 30;
+}
+"%v" out;
+#test "20"
+
+
+// =============================================================================
+// 8. Case-When Jump Table Implementation
+// =============================================================================
+
+// 8.1 Exactly 4 cases (Minimum threshold for Jump Table generation)
+loop 0 : 4 at x {
+    tableRes: i32 = 0;
+    case x {
+        when 0 { tableRes = 10; }
+        when 1 { tableRes = 20; }
+        when 2 { tableRes = 30; }
+        when 3 { tableRes = 40; }
+    }
+    "%v " tableRes;
+}
+#test "10 20 30 40 0 "
+
+// 8.2 Offset Jump Table (Non-zero start index: 10..14)
+loop 10 : 15 at x {
+    code: i32 = 999;
+    case x {
+        when 10 { code = 1; }
+        when 11 { code = 2; }
+        when 12 { code = 3; }
+        when 13 { code = 4; }
+        when 14 { code = 5; }
+    }
+    "%v " code;
+}
+#test "1 2 3 4 5 999 "
+
+// 8.3 Signed & Negative Range Jump Table (-2 .. +2)
+loop -2 : 3 at x {
+    signVal: i32 = 0;
+    case x {
+        when -2 { signVal = -200; }
+        when -1 { signVal = -100; }
+        when 0  { signVal = 1;    }
+        when 1  { signVal = 100;  }
+        when 2  { signVal = 200;  }
+    }
+    "%v " signVal;
+}
+#test "-200 -100 1 100 200 0 "
+
+
+// 8.4 Case-When Jump Table with 8 Cases (Extended Table)
+loop 0 : 8 at x {
+    digitName: i32 = 0;
+    case x {
+        when 0 { digitName = 10; }
+        when 1 { digitName = 20; }
+        when 2 { digitName = 30; }
+        when 3 { digitName = 40; }
+        when 4 { digitName = 50; }
+        when 5 { digitName = 60; }
+        when 6 { digitName = 70; }
+        when 7 { digitName = 80; }
+    }
+    "%v " digitName;
+}
+#test "10 20 30 40 50 60 70 80 0 "
+
+
+// 8.5 Switch Mutating Existing Variables in Memory
+arr: i32[4] = [0, 0, 0, 0];
+loop 0 : 3 at i {
+    case i {
+        when 0 { arr[0] = 10; }
+        when 1 { arr[1] = 20; }
+        when 2 { arr[2] = 30; }
+        when 3 { arr[3] = 40; }
+    }
+}
+"%v" arr;
+#test "[10, 20, 30, 40]"
+
+
+// =============================================================================
+// 9. Case-When All-Around
+// =============================================================================
+
+// 9.1 Basic case
+x: i32 = 2;
+case x {
+    when 1 { x = 10; }
+    when 2 { x = 20; }
+    when 3 { x = 30; }
+}
+"%v" x;
+#test "20"
+
+
+// 9.2 Case with else
+x: i32 = 7;
+case x {
+    when 1 { x = 10; }
+    when 2 { x = 20; }
+    else   { x = 99; }
+}
+"%v" x;
+#test "99"
+
+
+// 9.3 First branch
+x: i32 = 1;
+case x {
+    when 1 { x = 1; }
+    when 2 { x = 2; }
+    when 3 { x = 3; }
+}
+"%v" x;
+#test "1"
+
+
+// 9.4 Last branch
+x: i32 = 3;
+case x {
+    when 1 { value = 1; }
+    when 2 { value = 2; }
+    when 3 { value = 3; }
+}
+"%v" x;
+#test "3"
+
+
+// 9.5 Empty branch
+x: i32 = 2;
+case x {
+    when 1 {}
+    when 2 { x = 42; }
+}
+"%v" x;
+#test "42"
+
+
+// 9.6 Multiple statements in branch
+x: i32 = 1;
+case x {
+    when 1 {
+        a: i32 = 10;
+        b: i32 = 20;
+        x = a + b;
+    }
+}
+"%v" x;
+#test "30"
+
+
+// 9.7 Nested case
+x: i32 = 1;
+y: i32 = 2;
+
+case x {
+    when 1 {
+        case y {
+            when 1 { x = 10; }
+            when 2 { x = 20; }
+        }
+    }
+}
+"%v" x;
+#test "20"
+
+
+// 9.8 Nested case with outer else
+x: i32 = 5;
+y: i32 = 2;
+
+case x {
+    when 1 {
+        x = 10;
+    }
+    else {
+        case y {
+            when 1 { x = 20; }
+            when 2 { x = 30; }
+        }
+    }
+}
+"%v" x;
+#test "30"
+
+
+// 9.9 Case expression
+x: i32 = 2;
+case x + 1 {
+    when 1 { x = 10; }
+    when 2 { x = 20; }
+    when 3 { x = 30; }
+}
+"%v" x;
+#test "30"
+
+
+// 9.10 Character values
+ch: u8 = 'b';
+case ch {
+    when 'a' { ch = 1; }
+    when 'b' { ch = 2; }
+    when 'c' { ch = 3; }
+}
+"%v" ch;
+#test "2"
+
+
+// 9.11 Boolean values
+condition: u8 = true;
+case condition {
+    when false { condition = 10; }
+    when true  { condition = 20; }
+}
+"%v" condition;
+#test "20"
+
+
+// 9.12 Enum values in Switch
+State: enum {
+    IDLE,
+    RUNNING,
+    DONE
+}
+
+state: State = State.RUNNING;
+value: i32 = 0;
+
+case state {
+    when State.IDLE    { value = 1; }
+    when State.RUNNING { value = 2; }
+    when State.DONE    { value = 3; }
+}
+"%v" value;
+#test "2"
+
+
+// 9.13 Variable declared inside branch (Inner Block Scope)
+x: i32 = 1;
+value: i32 = 0;
+
+case x {
+    when 1 {
+        tmp: i32 = 123;
+        value = tmp;
+    }
+}
+"%v" value;
+#test "123"
+
+
+// 9.14 Different control flow in branches with else fallback
+x: i32 = 2;
+value: i32 = 0;
+
+case x {
+    when 1 {
+        value = 10;
+    }
+    when 2 {
+        value = 20;
+        value = value + 5;
+    }
+    else {
+        value = 30;
+    }
+}
+"%v" value;
+#test "25"
+
+
+// 9.15 Case inside a loop
+value: i32 = 0;
+
+loop 0 : 3 at i {
+    case i {
+        when 0 { value = value + 1; }
+        when 1 { value = value + 10; }
+        when 2 { value = value + 100; }
+        else   { value = value + 1000; }
+    }
+}
+"%v" value;
+#test "1111"
+
+
+// 9.16 Nested Case inside Case
+x: i32 = 1;
+y: i32 = 1;
+z: i32 = 2;
+value: i32 = 0;
+
+case x {
+    when 1 {
+        case y {
+            when 1 {
+                case z {
+                    when 1 { value = 10; }
+                    when 2 { value = 20; }
+                }
+            }
+        }
+    }
+}
+"%v" value;
+#test "20"
+
+
+// 9.17 No matching branch and no else (Retains original value)
+x: i32 = 10;
+value: i32 = 123;
+
+case x {
+    when 1 { value = 1; }
+    when 2 { value = 2; }
+}
+"%v" value;
+#test "123"
+
+
+// 9.18 Multiple consecutive cases in the same surrounding scope
+x: i32 = 1;
+y: i32 = 2;
+value: i32 = 0;
+
+case x {
+    when 1 { value = 10; }
+}
+
+case y {
+    when 2 { value = value + 20; }
+}
+"%v" value;
+#test "30"

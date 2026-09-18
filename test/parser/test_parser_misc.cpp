@@ -131,6 +131,7 @@ inline Test::Case gMiscParserCases[] = {
 
 extern const Test::Suite gParserSuiteMisc = {
     "Parser - Return, Break, Continue",
+    NULL,
     gMiscParserCases,
     sizeof(gMiscParserCases) / sizeof(Test::Case),
     gParserPreCase,

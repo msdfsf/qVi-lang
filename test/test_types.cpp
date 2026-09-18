@@ -113,6 +113,7 @@ inline Test::Case gTypeSystemCases[] = {
 
 extern const Test::Suite gTypeSystemSuite = {
     "Type System",
+    NULL,
     gTypeSystemCases,
     sizeof(gTypeSystemCases) / sizeof(Test::Case)
 };

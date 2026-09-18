@@ -113,6 +113,7 @@ const Test::Case gSetCases[] = {
 
 extern const Test::Suite gSetSuite = {
     "Set / Hash Table Suite",
+    NULL,
     gSetCases,
     sizeof(gSetCases) / sizeof(Test::Case)
 };

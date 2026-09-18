@@ -131,6 +131,7 @@ inline Test::Case gVardefParserCases[] = {
 
 extern const Test::Suite gParserSuiteVardef = {
     "Parser - Variable Definitions",
+    NULL,
     gVardefParserCases,
     sizeof(gVardefParserCases) / sizeof(Test::Case),
     gParserPreCase,

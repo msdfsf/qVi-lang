@@ -152,6 +152,7 @@ inline Test::Case gIfParserCases[] = {
 
 extern const Test::Suite gParserSuiteIf = {
     "Parser - If",
+    NULL,
     gIfParserCases,
     sizeof(gIfParserCases) / sizeof(Test::Case),
     gParserPreCase,

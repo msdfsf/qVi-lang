@@ -1,0 +1,173 @@
+// =============================================================================
+// 1. Literal Percent & Escapes (%%)
+// =============================================================================
+
+// 1.1 Escaped percent sign
+val: i32 = 100;
+"%v%%\n" val;
+#test "100%\n"
+
+// 1.2 Multiple escaped percent signs
+"%%%%\n";
+#test "%%\n"
+
+// 1.2 Multiple escaped percent signs
+val: i32 = 14;
+"AAAA%%%v%%BBBB\n" val;
+#test "AAAA%14%BBBB\n"
+
+
+// =============================================================================
+// 2. Value (%v) and Type (%t) Shortcuts
+// =============================================================================
+
+// 2.1 Basic Value (%v) and Type (%t) of primitives
+num: i32 = 42;
+"val: %v, type: %t\n" num, num;
+#test "val: 42, type: i32\n"
+
+// 2.2 Value and Type of a fixed array
+arr: i32[4] = [1, 2, 3, 4];
+"type: %t, val: %v\n" arr, arr;
+#test "type: i32[4], val: [1, 2, 3, 4]\n"
+
+// 2.3 Value and Type of a slice
+data: i32[3] = [10, 20, 30];
+slc: i32[const] = data;
+"%t = %v\n" slc, slc;
+#test "i32[const] = [10, 20, 30]\n"
+
+// 2.4 Value and Type of a struct
+Point: struct {
+    x: i32;
+    y: i32;
+}
+
+p: Point;
+p.x = 10;
+p.y = 20;
+"%t: %v\n" p, p;
+#test "Point: {x: 10, y: 20}\n"
+
+
+// =============================================================================
+// 3. Text Immediately Attached to 1-Char Shortcut (%vwhatever)
+// =============================================================================
+
+// 3.1 Attached suffix text to %v
+count: i32 = 5;
+"%vitems in cart\n" count;
+#test "5items in cart\n"
+
+// 3.2 Attached suffix text to %t
+f: f32 = 3.14;
+"%t_scalar\n" f;
+#test "f32_scalar\n"
+
+// 3.3 Surrounded placeholder (prefix_%v_suffix)
+id: i32 = 101;
+"user_%v_profile\n" id;
+#test "user_101_profile\n"
+
+
+// =============================================================================
+// 4. Number Base Formatting: Hex (%x) and Binary (%b)
+// =============================================================================
+
+// 4.1 Hexadecimal shortcut (%x)
+maskU8:  u8  = 255;
+maskU16: u16 = 255;
+maskU32: u32 = 255;
+maskU64: u64 = 255;
+"%x %x %x %x" maskU8, maskU16, maskU32, maskU64;
+#test "0xFF 0x00FF 0x000000FF 0x00000000000000FF"
+
+// 4.2 Binary shortcut (%b)
+bitsU8:  u8  = 0b00001010;
+bitsU16: u16 = 0b00000000_000001010;
+"%b %b" bitsU8, bitsU16;
+#test "00001010 0000000000001010"
+
+// 4.3 Hexadecimal Pretty (%{#x})
+maskU8:  u8  = 255;
+maskU16: u16 = 255;
+maskU32: u32 = 255;
+maskU64: u64 = 255;
+"%{#x} %{#x} %{#x} %{#x}" maskU8, maskU16, maskU32, maskU64;
+#test "0xFF 0x00_FF 0x00_00_00_FF 0x00_00_00_00_00_00_00_FF"
+
+// 4.4 Binary Pretty (%{#b})
+bitsU8:  u8  = 0b00001010;
+bitsU16: u16 = 0b00000000_000001010;
+"%{#b} %{#b}" bitsU8, bitsU16;
+#test "00001010 00000000_00001010"
+
+
+// =============================================================================
+// 5. Force Sign Display (%+ and %{+})
+// =============================================================================
+
+// 5.1 Force plus sign for positive numbers
+posVal: i32 = 42;
+negVal: i32 = -42;
+"pos: %+, neg: %+\n" posVal, negVal;
+#test "pos: +42, neg: -42\n"
+
+
+// =============================================================================
+// 6. Raw Data (%r)
+// =============================================================================
+
+// 6.1 Raw bytes of an 8-bit integer
+val: u8 = 0xAB;
+"%r" val;
+#test "\xAB"
+
+// 6.2 Raw bytes of a 16-bit integer
+val: u16 = 0x1234;
+"%r" val;
+#test "\x34\x12"
+
+// 6.3 Raw bytes of a 32-bit integer
+val: u32 = 0x12345678;
+"%r" val;
+#test "\x78\x56\x34\x12"
+
+// 6.4 Raw bytes of a 64-bit integer
+val: u64 = 0x1122334455667788;
+"%r" val;
+#test "\x88\x77\x66\x55\x44\x33\x22\x11"
+
+// 6.5 Raw bytes of a negative integer
+val: i32 = -1;
+"%r" val;
+#test "\xFF\xFF\xFF\xFF"
+
+// 6.6 Raw representation preserves the declared type size
+val8:  u8  = 1;
+val16: u16 = 1;
+val32: u32 = 1;
+val64: u64 = 1;
+"%r|%r|%r|%r" val8, val16, val32, val64;
+#test "\x01|\x01\x00|\x01\x00\x00\x00|\x01\x00\x00\x00\x00\x00\x00\x00"
+
+// 6.7 Raw bytes differ from hexadecimal formatting
+val: u32 = 0x12345678;
+"%x|%r" val, val;
+#test "0x12345678|\x78\x56\x34\x12"
+
+// 6.8 Raw representation of a struct
+Pair: struct {
+    a: u8;
+    b: u8;
+}
+
+p: Pair;
+p.a = 0x12;
+p.b = 0x34;
+
+"%r" p;
+#test "\x12\x34"
+
+
+// TODO

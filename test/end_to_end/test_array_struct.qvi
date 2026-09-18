@@ -1,0 +1,114 @@
+// 1. Array of Structs with Vector/Array Field Slicing (The Tetris Bug Pattern)
+struct Cell {
+    color: u8[3];
+    id: i32;
+}
+
+cells: Cell[2];
+
+// Test 1.1: Direct in-place array assignment into cells[0].color[:]
+cells[0].color[:] = [255, 0, 0];
+cells[0].id = 101;
+
+// Test 1.2: Direct in-place array assignment into cells[1].color[:]
+cells[1].color[:] = [0, 255, 0];
+cells[1].id = 202;
+
+"%v, %v, %v, %v\n" cells[0].id, cells[0].color, cells[1].id, cells[1].color;
+#test "101, [255, 0, 0], 202, [0, 255, 0]\n"
+
+
+// 2. Struct Array Field Mutated Inside a Loop (RenderBuffer Pattern)
+struct RenderCell {
+    color: u8[3];
+    symbol: u8;
+}
+
+screen: RenderCell[4];
+
+loop 0 : 3 at i {
+    // Overwrite color slice and scalar symbol for each cell in the array
+    screen[i].color[:] = [10, 20, 30];
+    screen[i].symbol = 35; // '#'
+}
+
+"%v, %v\n" screen[0].color, screen[3].symbol;
+#test "[10, 20, 30], 35\n"
+
+
+// =============================================================================
+// 3. Sub-Slice Mutation Inside a Struct Member (struct.array[1:2] = ...)
+// =============================================================================
+
+struct Particle {
+    coords: i32[4];
+    active: i32;
+}
+
+p: Particle;
+p.active = 1;
+p.coords[:] = [1, 2, 3, 4];
+
+// Mutate only elements 1 and 2 inside the struct's array field in-place
+p.coords[1:2] = [88, 99];
+
+"%, %\n" p.active, p.coords;
+#test "1, [1, 88, 99, 4]\n"
+
+
+// =============================================================================
+// 4. Deeply Nested Struct Member LValue (e.tf.pos.x = ...)
+// =============================================================================
+
+struct Vec2 {
+    x: i32;
+    y: i32;
+}
+
+struct Transform {
+    pos: Vec2;
+    scale: i32;
+}
+
+struct Entity {
+    id: i32;
+    tf: Transform;
+}
+
+e: Entity;
+e.id = 1;
+e.tf.pos.x = 100;
+e.tf.pos.y = 200;
+e.tf.scale = 5;
+
+"id: %, pos: (%, %), scale: %\n" e.id, e.tf.pos.x, e.tf.pos.y, e.tf.scale;
+#test "id: 1, pos: (100, 200), scale: 5\n"
+
+
+// 5. Array of Deeply Nested Structs (entities[i].tf.pos.x)
+entities: Entity[3];
+
+entities[1].id = 42;
+entities[1].tf.pos.x = 777;
+entities[1].tf.pos.y = 888;
+entities[1].tf.scale = 10;
+
+"%v, (%v, %v)\n" entities[1].id, entities[1].tf.pos.x, entities[1].tf.pos.y;
+#test "42, (777, 888)\n"
+
+
+// 6. Vector Math Directly Written into Struct Array Field
+struct DataBlock {
+    data: i32[3];
+    checksum: i32;
+}
+
+block: DataBlock;
+v1: i32[3] = [1, 2, 3];
+v2: i32[3] = [10, 20, 30];
+
+block.data = v1 + v2;
+block.checksum = 999;
+
+"%v, %v\n" block.data, block.checksum;
+#test "[11, 22, 33], 999\n"

@@ -202,6 +202,7 @@ const Test::Case gArenaCases[] = {
 
 extern const Test::Suite gArenaSuite = {
     "Arena Allocator Suite",
+    NULL,
     gArenaCases,
     sizeof(gArenaCases) / sizeof(Test::Case)
 };
