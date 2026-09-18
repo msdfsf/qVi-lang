@@ -1,0 +1,26 @@
+// raddbg 0.9.28 project file
+
+name: "qVi-lang"
+target:
+{
+  executable: "../build/debug/compiler.exe"
+  working_directory: "../../tmpLang"
+  arguments: "run ./test/examples/test.qvi -cascade"
+  label: Compiler
+  enabled: 0
+}
+target:
+{
+  executable: "../build/debug/test.exe"
+  working_directory: "../../tmpLang"
+  label: Test
+  enabled: 1
+}
+target:
+{
+  executable: "../build/debug/qVi-lsp.exe"
+  working_directory: "../lsp"
+  enabled: 0
+  label: LSP
+}
+use_default_ue_type_views: 0
