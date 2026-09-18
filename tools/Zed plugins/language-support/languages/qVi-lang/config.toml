@@ -1,3 +1,6 @@
 name = "qVi-lang"
 scope = "source.qVi-lang"
+grammar = "qvi"
 path_suffixes = ["qvi", "qv"]
+line_comments = ["// "]
+block_comment = ["/{", "/}"]

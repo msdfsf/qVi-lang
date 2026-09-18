@@ -7,3 +7,7 @@ description = "Language support and LSP integration for qVi."
 [language_servers.qVi-lsp]
 name = "qVi-lang LSP"
 languages = ["qVi-lang"]
+
+[grammars.qvi]
+repository = "https://github.com/msdfsf/tree-sitter-qvi"
+rev = "80ac5716040b8e37dd876d076e6ee7ba9677f430"

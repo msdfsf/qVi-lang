@@ -5,7 +5,7 @@ out/*
 src/.vscode/
 tmp/*
 lsp/build/
-tools/Zed\ plugins/languagge-support/target/
+tools/Zed\ plugins/language-support/target/
 
 *.exe
 *.txt
