@@ -1,0 +1,1253 @@
+// Tetris...
+//
+// Its not the best way to implement such game.
+// Purpose is just to have some sort of real illustration of the
+// language. A lot of stuff is done just to be done.
+//
+// NOTE: requires terminal that supports ANSI codes for moving
+//       cursor and stuff.
+//
+
+import [C] ucrtbase as LibC: {
+    // u32 CLOCKS_PER_SEC = 1000;
+    rand:    () -> i32;
+    srand:   (time: u32);
+    _time64: (time: i64^) -> i64;
+    _getch:  () -> i32;
+    _kbhit:  () -> i32;
+    pow:     (base: f64, exponent: f64) -> f64;
+    clock:   () -> i32;
+    exit:    (status: i32);
+}
+
+
+
+TetrominoType: enum {
+    NONE = -1,
+    I,
+    O,
+    T,
+    S,
+    Z,
+    J,
+    L,
+    COUNT
+}
+
+FieldType: enum {
+    EMPTY,
+    BORDER_X,
+    BORDER_Y,
+    SHADOW,
+    BLOCK,
+    COUNT
+}
+
+Action: enum {
+    NONE,
+    EXIT,
+    MOVE_LEFT,
+    MOVE_RIGHT,
+    MOVE_DOWN,
+    ROTATE_LEFT,
+    ROTATE_RIGHT,
+    FLIP,
+    DROP,
+    SWAP,
+    RESTART,
+    COUNT
+}
+
+ClearType: enum {
+    NONE,
+    SINGLE,
+    DOUBLE,
+    TRIPLE,
+    TETRIS,
+    T_SPIN,
+    ALL_CLEAR,
+    COUNT
+}
+
+TSpintType: enum {
+    NONE,
+    MINI,
+    PROPER,
+    COUNT
+}
+
+Orientation: enum {
+    DOWN,
+    LEFT,
+    UP,
+    RIGHT,
+    COUNT
+}
+
+Tetromino: struct {
+    // coords of top-left corner
+    x: i32 = 0;
+    y: i32 = 0;
+
+    orientation: Orientation;
+    type: TetrominoType;
+}
+
+tetrominos: i32[] = [
+    // I
+    0, 0, 0, 0,
+    1, 1, 1, 1,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+
+    0, 0, 0, 0,
+    1, 1, 1, 1,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+
+    // O
+    0, 0, 0, 0,
+    0, 1, 1, 0,
+    0, 1, 1, 0,
+    0, 0, 0, 0,
+
+    0, 0, 0, 0,
+    0, 1, 1, 0,
+    0, 1, 1, 0,
+    0, 0, 0, 0,
+
+    0, 0, 0, 0,
+    0, 1, 1, 0,
+    0, 1, 1, 0,
+    0, 0, 0, 0,
+
+    0, 0, 0, 0,
+    0, 1, 1, 0,
+    0, 1, 1, 0,
+    0, 0, 0, 0,
+
+    // T
+    0, 1, 0, 0,
+    1, 1, 1, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+
+    0, 1, 0, 0,
+    0, 1, 1, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 0,
+
+    0, 0, 0, 0,
+    1, 1, 1, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 0,
+
+    0, 1, 0, 0,
+    1, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 0,
+
+    // S
+    0, 1, 1, 0,
+    1, 1, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+
+    0, 1, 0, 0,
+    0, 1, 1, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 0,
+
+    0, 0, 0, 0,
+    0, 1, 1, 0,
+    1, 1, 0, 0,
+    0, 0, 0, 0,
+
+    1, 0, 0, 0,
+    1, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 0,
+
+    // Z
+    1, 1, 0, 0,
+    0, 1, 1, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+
+    0, 0, 1, 0,
+    0, 1, 1, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 0,
+
+    0, 0, 0, 0,
+    1, 1, 0, 0,
+    0, 1, 1, 0,
+    0, 0, 0, 0,
+
+    0, 1, 0, 0,
+    1, 1, 0, 0,
+    1, 0, 0, 0,
+    0, 0, 0, 0,
+
+    // J
+    1, 0, 0, 0,
+    1, 1, 1, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+
+    0, 1, 1, 0,
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 0,
+
+    0, 0, 0, 0,
+    1, 1, 1, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 0,
+
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+    1, 1, 0, 0,
+    0, 0, 0, 0,
+
+    // L
+    0, 0, 1, 0,
+    1, 1, 1, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0,
+
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 1, 1, 0,
+    0, 0, 0, 0,
+
+    0, 0, 0, 0,
+    1, 1, 1, 0,
+    1, 0, 0, 0,
+    0, 0, 0, 0,
+
+    1, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 0, 0
+];
+
+rotationOffsets: i32[] = [
+     0,  0,   0,  0,   0,  0,   0,  0,   0,  0,
+     0,  0,  +1,  0,  +1, -1,   0, +2,  +1, +2,
+     0,  0,   0,  0,   0,  0,   0,  0,   0,  0,
+     0,  0,  -1,  0,  -1, -1,   0, +2,  -1, +2
+];
+
+iRotationOffsets: i32[] = [
+     0,  0,  -1,  0,  +2,  0,  -1,  0,  +2,  0,
+    -1,  0,   0,  0,   0,  0,   0, +1,   0, -2,
+    -1, +1,  +1, +1,  -2, +1,  +1,  0,  -2,  0,
+     0, +1,   0, +1,   0, +1,   0, -1,   0, +2
+];
+
+KickTest: enum {
+    NONE = -1,
+    A,
+    B,
+    C,
+    D,
+    E,
+    COUNT
+}
+
+MAX_TETROMINO_WIDTH:  embed i32 = 4;
+MAX_TETROMINO_HEIGHT: embed i32 = 4;
+
+KC_SPECIAL_KEY: embed i32 = 224;
+KC_CTRL_C:      embed i32 = 3;
+KC_ARROW_UP:    embed i32 = 72;
+KC_ARROW_DOWN:  embed i32 = 80;
+KC_ARROW_LEFT:  embed i32 = 75;
+KC_ARROW_RIGHT: embed i32 = 77;
+KC_A:           embed i32 = 97;
+KC_S:           embed i32 = 115;
+KC_D:           embed i32 = 100;
+KC_W:           embed i32 = 119;
+KC_R:           embed i32 = 114;
+KC_SPACE:       embed i32 = 32;
+
+TICK_RATE:     embed i32 = 32;
+TICK_DURATION: embed f64 = 1.0 / TICK_RATE;
+
+// in ticks
+ACTION_DURATION: embed i32 = TICK_RATE / 32;
+requestedActions: i64[Action.COUNT] = false;
+
+// in ticks
+SLIDE_DURATION: embed i32 = TICK_RATE;
+
+// in ticks
+DEFAULT_FALL_SPEED: embed i32 = TICK_RATE;
+FALL_SPEED_DECAY:   embed f64 = 0.85;
+
+BOARD_OFFSET_Y: embed i32 = 1;
+BOARD_OFFSET_X: embed i32 = 1;
+
+WIDTH:  embed i32 = 10;
+HEIGHT: embed i32 = 20;
+
+board: i32[(WIDTH + 2) * (HEIGHT + 2)] = FieldType.EMPTY;
+
+tetrominoTemplate: Tetromino;
+currentTetromino: Tetromino^ = null;
+holdTetromino: TetrominoType = TetrominoType.NONE;
+
+queueIdx: i32 = 0;
+queue: TetrominoType[2 * TetrominoType.COUNT];
+
+// render stuff
+RENDER_UI_WIDTH: embed i32 = 7;
+UI_SWAP_STRING: u8[] = "SWAP";
+UI_QUEUE_STRING: u8[] = "NEXT";
+
+GAME_OVER_STRING: u8[] = "GAME  OVER";
+
+CLEAR_STRING: u8[] = "CLEARS";
+SINGLE_STRING: u8[] = "SINGLE";
+DOUBLE_STRING: u8[] = "DOUBLE";
+TRIPLE_STRING: u8[] = "TRIPLE";
+TETRIS_STRING: u8[] = "TETRIS";
+T_SPIN_STRING: u8[] = "T-SPIN";
+FALLBACK_STRING: u8[] = "ERROR";
+
+RENDER_WIDTH: embed i32  = WIDTH + 2 + RENDER_UI_WIDTH;
+RENDER_HEIGHT: embed i32 = HEIGHT + 2;
+
+RENDER_LINE_SIZE: embed i32 = RENDER_WIDTH;
+
+COLOR_I: u8[] = "\x1b[36m";
+COLOR_O: u8[] = "\x1b[33m";
+COLOR_T: u8[] = "\x1b[35m";
+COLOR_S: u8[] = "\x1b[32m";
+COLOR_Z: u8[] = "\x1b[31m";
+COLOR_J: u8[] = "\x1b[34m";
+COLOR_L: u8[] = "\x1b[91m";
+COLOR_FG: u8[] = "\x1b[37m";
+COLOR_BG: u8[] = "\x1b[30m";
+COLOR_SHADOW: u8[] = "\x1b[90m";
+EPIC: u8[] = "\x1b[36m";
+MYTHIC: u8[] = "\x1b[35m";
+LEGENDARY: u8[] = "\x1b[33m";
+GODLIKE: u8[] = "\x1b[31m";
+
+Fragment: struct {
+    color: u8[5];
+    leftBorder: u8;
+    value: u8;
+    rightBorder: u8;
+}
+
+renderBuffer: Fragment[RENDER_WIDTH * RENDER_HEIGHT];
+
+ticksFromLastAction: i32 = 2 * ACTION_DURATION;
+ticksFromLastFall: i32 = 0;
+ticksFromSlideStart: i32 = 0;
+clearTicks: i32 = 0;
+
+level: i32 = 0;
+score: i32 = 0;
+
+linesCleared: i32 = 0;
+fallSpeed: i32 = DEFAULT_FALL_SPEED;
+
+lastClearType: ClearType = ClearType.NONE;
+lastClearPoints: i32 = 0;
+
+lastKickTest: KickTest = KickTest.NONE;
+
+{
+    clrscr();
+    hideCursor();
+    flushInputBuffer();
+    reset(board, WIDTH);
+
+    lastTime: f64 = getTime();
+    elapsedTime: f64 = 0.0;
+
+    prevX: i32;
+    prevY: i32;
+    prevOrientation: Orientation;
+
+    swapAvaliable: i64 = true;
+    hardDropY: i32 = 0;
+
+    gameOver: i64 = false;
+    gameOverTicks: i32 = 0;
+
+    loop {
+
+        currentTime: f64 = getTime();
+        elapsedTime = elapsedTime + (currentTime - lastTime);
+        lastTime = currentTime;
+
+        if elapsedTime < TICK_DURATION : continue;
+        elapsedTime = 0.0;
+
+        // just to prevent overflow
+        if ticksFromLastAction <= 2 * ACTION_DURATION {
+            ticksFromLastAction = ticksFromLastAction + 1;
+        }
+
+        if !currentTetromino {
+            spawnRandomTetromino();
+            swapAvaliable = true;
+            if checkCollision(board, currentTetromino) {
+                gameOver = true;
+            }
+        }
+
+        hardDropY = calculateHardDropY();
+
+        gotoxy(0, 0);
+        render(board);
+        renderShadow(currentTetromino, hardDropY);
+        render(currentTetromino);
+        renderUI();
+
+        if gameOver {
+            if gameOverTicks < TICK_RATE {
+                renderGameOver();
+            } else if gameOverTicks > TICK_RATE * 2 {
+                gameOverTicks = 0;
+            }
+            gameOverTicks = gameOverTicks + 1;
+        }
+
+        if clearTicks > 0 {
+            tmp: i32 = ((clearTicks % TICK_RATE) + 1) - (TICK_RATE / 4);
+            if tmp >= 0 {
+                renderClearAnnouncement(lastClearType, lastClearPoints);
+            }
+            clearTicks = clearTicks - 1;
+        }
+
+        // free fall and slide logic
+        if !gameOver && ticksFromLastFall >= fallSpeed {
+            prevX = currentTetromino.x;
+            prevY = currentTetromino.y;
+            prevOrientation = currentTetromino.orientation;
+
+            currentTetromino.y = currentTetromino.y + 1;
+            if checkCollision(board, currentTetromino) {
+                if ticksFromSlideStart > SLIDE_DURATION {
+                    currentTetromino.y = currentTetromino.y - 1;
+                    placeTetromino();
+                    continue;
+                } else {
+                    ticksFromSlideStart = ticksFromSlideStart + 1;
+
+                    currentTetromino.x = prevX;
+                    currentTetromino.y = prevY;
+                    currentTetromino.orientation = prevOrientation;
+                }
+            } else {
+                ticksFromLastFall = 0;
+            }
+        } else {
+            ticksFromLastFall = ticksFromLastFall + 1;
+        }
+        flushRender();
+
+        // player input
+        actionWasHit: i64 = getInput();
+        if requestedActions[Action.EXIT] : break;
+
+        if gameOver {
+            if requestedActions[Action.RESTART] {
+                gameOver = false;
+                reset(board, WIDTH);
+            }
+            continue;
+        }
+
+        if ticksFromLastAction <= ACTION_DURATION {
+            requestedActions[:] = false;
+            continue;
+        }
+
+        if !actionWasHit || !currentTetromino : continue;
+        ticksFromLastAction = 1;
+
+        prevX = currentTetromino.x;
+        prevY = currentTetromino.y;
+        prevOrientation = currentTetromino.orientation;
+
+        if requestedActions[Action.MOVE_LEFT] {
+            currentTetromino.x = currentTetromino.x - 1;
+        }
+
+        if requestedActions[Action.MOVE_RIGHT] {
+            currentTetromino.x = currentTetromino.x + 1;
+        }
+
+        if requestedActions[Action.MOVE_DOWN] {
+            "MOVE_DOWN\n";
+            currentTetromino.y = currentTetromino.y + 1;
+        }
+
+        if checkCollision(board, currentTetromino) {
+            currentTetromino.x = prevX;
+            currentTetromino.y = prevY;
+            lastKickTest = KickTest.NONE;
+        }
+
+        if requestedActions[Action.ROTATE_LEFT] {
+            lastKickTest = rotate(1);
+        }
+
+        if requestedActions[Action.ROTATE_RIGHT] {
+            lastKickTest = rotate(-1);
+        }
+
+        if requestedActions[Action.FLIP] {
+            lastKickTest = rotate(2);
+        }
+
+        if requestedActions[Action.DROP] {
+            currentTetromino.y = hardDropY;
+            placeTetromino();
+        }
+
+        if requestedActions[Action.SWAP] && swapAvaliable {
+            if holdTetromino == TetrominoType.NONE {
+                holdTetromino = currentTetromino.type;
+                spawnRandomTetromino();
+            } else {
+                tmp: TetrominoType = currentTetromino.type;
+                spawnTetromino(holdTetromino);
+                holdTetromino = tmp;
+            }
+            swapAvaliable = false;
+        }
+
+        requestedActions[:] = false;
+    }
+
+    showCursor();
+    clrscr();
+    exit(0);
+}
+
+placeTetromino: () {
+    pushToBoard(currentTetromino);
+
+    tspin: TSpintType = TSpintType.NONE;
+    if currentTetromino.type == TetrominoType.T : tspin = checkForTSpin();
+
+    linesClearedNow: i32 = clearLines();
+    linesCleared = linesCleared + linesClearedNow;
+
+    if linesClearedNow > 0 {
+        points: i32 = 0;
+
+        case tspin {
+            when TSpintType.NONE {
+                lastClearType = linesClearedNow -> ClearType;
+
+                case linesClearedNow {
+                    when 1: points = 100;
+                    when 2: points = 300;
+                    when 3: points = 500;
+                    when 4: points = 800;
+                }
+            }
+            when TSpintType.MINI {
+                lastClearType = ClearType.T_SPIN;
+                points = 100 * (1 << linesClearedNow);
+            }
+            when TSpintType.PROPER {
+                lastClearType = ClearType.T_SPIN;
+                points = 400 * (linesClearedNow + 1);
+            }
+        }
+
+        clearTicks = TICK_RATE * 3;
+
+        lastClearPoints = points * (level + 1);
+        score = score + lastClearPoints;
+    }
+
+    tmpLevel: i32 = level;
+
+    level = linesCleared / 10;
+    if level > 9 : level = 9;
+
+    if level > tmpLevel {
+        fallSpeed = (DEFAULT_FALL_SPEED -> f64 * pow(FALL_SPEED_DECAY, level -> f64)) -> i32;
+    }
+
+    currentTetromino = null;
+    ticksFromLastFall = 0;
+    ticksFromSlideStart = 0;
+}
+
+checkForTSpin: () -> TSpintType {
+    if lastKickTest == KickTest.NONE : return TSpintType.NONE;
+    if lastKickTest == KickTest.E : return TSpintType.PROPER;
+
+    bX: i32 = currentTetromino.x + 1;
+    bY: i32 = currentTetromino.y + 1;
+
+    topL: i32 = board[(bY + 0) * (WIDTH + 2) + (bX + 0)] != FieldType.EMPTY;
+    topR: i32 = board[(bY + 0) * (WIDTH + 2) + (bX + 2)] != FieldType.EMPTY;
+    botL: i32 = board[(bY + 2) * (WIDTH + 2) + (bX + 0)] != FieldType.EMPTY;
+    botR: i32 = board[(bY + 2) * (WIDTH + 2) + (bX + 2)] != FieldType.EMPTY;
+
+    cnt: i32 = topL + topR + botL + botR;
+    if cnt < 3 : return TSpintType.NONE;
+
+    frontCornersOccupied: i64 = false;
+    case currentTetromino.orientation {
+        when Orientation.DOWN:  frontCornersOccupied = botR && botL;
+        when Orientation.UP:    frontCornersOccupied = topR && topL;
+        when Orientation.LEFT:  frontCornersOccupied = topL && botL;
+        when Orientation.RIGHT: frontCornersOccupied = topR && botR;
+    }
+
+    if frontCornersOccupied : return TSpintType.PROPER;
+    return TSpintType.MINI;
+}
+
+checkCollision: (board: i32[const], t: Tetromino^) -> i64 {
+    shape: i32^ = getTetrominoShape(t);
+
+    loop 0 : MAX_TETROMINO_WIDTH - 1 at x {
+        loop 0 : MAX_TETROMINO_HEIGHT - 1 at y {
+            if !shape[y * MAX_TETROMINO_WIDTH + x] : continue;
+
+            bField: const i32 = board[(t.y + 1 + (y -> i32)) * (WIDTH + 2) + t.x + 1 + (x -> i32)];
+            if (bField -> i64) != FieldType.EMPTY : return true;
+        }
+    }
+
+    return false;
+}
+
+calculateHardDropY: () -> i32 {
+    shape: i32^ = getTetrominoShape(currentTetromino);
+
+    dropDistance: i32 = HEIGHT + 1;
+    loop 0 : MAX_TETROMINO_WIDTH - 1 at x {
+        tX: i32 = currentTetromino.x + (x -> i32) + 1;
+        tY: i32 = -1;
+
+        loop 0 : MAX_TETROMINO_HEIGHT - 1 at y {
+            if shape[y * MAX_TETROMINO_WIDTH + x] : tY = y -> i32;
+        }
+        if tY < 0 : continue;
+
+        tY = currentTetromino.y + tY + 1;
+
+        bY: i32 = tY + 1;
+        loop bY < HEIGHT + 1 {
+            ft: FieldType = board[bY * (WIDTH + 2) + tX] -> FieldType;
+            if ft != FieldType.EMPTY : break;
+            bY = bY + 1;
+        }
+
+        dist: i32 = bY - tY - 1;
+        if dropDistance > dist : dropDistance = dist;
+    }
+
+    return currentTetromino.y + dropDistance;
+}
+
+clearLines: () -> i32 {
+    cnt: i32 = 0;
+    loop 0 : HEIGHT - 1 at y {
+        isLineFull: i32 = 1;
+        loop 0 : WIDTH - 1 at x {
+            if board[(y + 1) * (WIDTH + 2) + (x + 1)] == FieldType.EMPTY {
+                isLineFull = 0;
+            }
+        }
+
+        if isLineFull {
+            cnt = cnt + 1;
+            clearLine(y -> i32);
+        }
+    }
+
+    return cnt;
+}
+
+clearLine: (y: i32) {
+    loop 0 : WIDTH - 1 at x {
+        board[(y + 1) * (WIDTH + 2) + (x + 1)] = FieldType.EMPTY;
+
+        yy: i32 = y - 1;
+        loop yy >= 0 {
+            val: i32 = board[(yy + 1) * (WIDTH + 2) + (x + 1)];
+            if val != FieldType.BORDER_X {
+                board[(yy + 2) * (WIDTH + 2) + (x + 1)] = val;
+            }
+            yy = yy - 1;
+        }
+    }
+}
+
+// + -> clockwise
+rotate: (rotation: i32) -> KickTest {
+    old: Orientation = currentTetromino.orientation;
+    new: Orientation = (old + rotation) -> Orientation;
+
+    if new >= Orientation.COUNT : new = Orientation.DOWN;
+    else if new < 0 : new = (Orientation.COUNT - 1) -> Orientation;
+
+    currentTetromino.orientation = new;
+    if currentTetromino.type == TetrominoType.O : return KickTest.NONE;
+
+    oldX: i32 = currentTetromino.x;
+    oldY: i32 = currentTetromino.y;
+
+    OFF_CNT: embed i32 = KickTest.COUNT;
+
+    if currentTetromino.type == TetrominoType.I {
+        // offset to compensate that we are using only 4x4
+        // tetromino representation, while true rotation
+        // is represented by 5x5
+        offX: i32 = 0;
+        offY: i32 = 0;
+
+        if old == Orientation.UP : offX = 1;
+        else if old == Orientation.RIGHT : offY = -1;
+
+        if new == Orientation.UP : offX = -1;
+        else if new == Orientation.RIGHT : offY = 1;
+
+        loop 0 : OFF_CNT - 1 at i {
+            oldDX: i32 = iRotationOffsets[(2 * OFF_CNT) * (old -> i32) + (i -> i32) * 2 + 0];
+            oldDY: i32 = iRotationOffsets[(2 * OFF_CNT) * (old -> i32) + (i -> i32) * 2 + 1];
+            newDX: i32 = iRotationOffsets[(2 * OFF_CNT) * (new -> i32) + (i -> i32) * 2 + 0];
+            newDY: i32 = iRotationOffsets[(2 * OFF_CNT) * (new -> i32) + (i -> i32) * 2 + 1];
+
+            dX: i32 = offX + (oldDX - newDX);
+            dY: i32 = offY + (oldDY - newDY);
+
+            currentTetromino.x = oldX + dX;
+            currentTetromino.y = oldY - dY;
+            if !checkCollision(board, currentTetromino) : return i -> KickTest;
+        }
+    } else {
+        loop 0 : OFF_CNT - 1 at i {
+            oldDX: i32 = rotationOffsets[(2 * OFF_CNT) * (old -> i32) + (i -> i32) * 2 + 0];
+            oldDY: i32 = rotationOffsets[(2 * OFF_CNT) * (old -> i32) + (i -> i32) * 2 + 1];
+            newDX: i32 = rotationOffsets[(2 * OFF_CNT) * (new -> i32) + (i -> i32) * 2 + 0];
+            newDY: i32 = rotationOffsets[(2 * OFF_CNT) * (new -> i32) + (i -> i32) * 2 + 1];
+
+            dX: i32 = oldDX - newDX;
+            dY: i32 = oldDY - newDY;
+
+            currentTetromino.x = oldX + dX;
+            currentTetromino.y = oldY - dY;
+            if !checkCollision(board, currentTetromino) : return i -> KickTest;
+        }
+    }
+
+    currentTetromino.x = oldX;
+    currentTetromino.y = oldY;
+    currentTetromino.orientation = old;
+    return KickTest.NONE;
+}
+
+reset: (board: i32[const], width: i32) {
+    i: i32 = 0;
+    idx: i32 = -1;
+
+    loop i < WIDTH + 2 {
+        board[i] = FieldType.BORDER_X;
+        i = i + 1;
+    }
+
+    limit: i32 = board.length - WIDTH - 2;
+    loop i < limit {
+        if idx < 0 {
+            board[i] = FieldType.BORDER_Y;
+        } else if idx < width {
+            board[i] = FieldType.EMPTY;
+        } else {
+            board[i] = FieldType.BORDER_Y;
+            idx = -2;
+        }
+        idx = idx + 1;
+        i = i + 1;
+    }
+
+    bLen: i32 = board.length -> i32;
+    loop i < bLen {
+        board[i] = FieldType.BORDER_X;
+        i = i + 1;
+    }
+
+    loop renderBuffer at ri {
+        renderBuffer[ri].color[:] = COLOR_FG;
+        renderBuffer[ri].value = ' ';
+        renderBuffer[ri].leftBorder = ' ';
+        renderBuffer[ri].rightBorder = ' ';
+    }
+
+    initQueue();
+}
+
+renderUI: () {
+    offsetX: i32 = WIDTH + 3;
+    offsetY: i32 = 0;
+
+    offsetXSwap: i32 = offsetX + 1;
+    offsetYSwap: i32 = offsetY + 2;
+
+    offsetXQueue: i32 = offsetX + 1;
+    offsetYQueue: i32 = offsetYSwap + MAX_TETROMINO_HEIGHT + 2 + 1;
+
+    // fill background
+    x: i32 = offsetX;
+    loop x < RENDER_WIDTH {
+        y: i32 = 0;
+        loop y < RENDER_HEIGHT {
+
+            ri: i32 = y * RENDER_WIDTH + x;
+
+            renderBuffer[ri].color[:] = COLOR_FG;
+            renderBuffer[ri].leftBorder = ' ';
+            renderBuffer[ri].value = ' ';
+            renderBuffer[ri].rightBorder = ' ';
+            y = y + 1;
+
+        }
+        x = x + 1;
+    }
+
+    // borders
+    renderUIBorder(offsetXSwap - 1, offsetYSwap - 1, MAX_TETROMINO_WIDTH + 2, MAX_TETROMINO_HEIGHT + 2);
+    renderUIBorder(offsetXQueue - 1, offsetYQueue - 1, MAX_TETROMINO_WIDTH + 2, MAX_TETROMINO_HEIGHT * 3 + 2);
+
+    // strings
+    renderString(UI_SWAP_STRING, offsetX + 1, offsetY);
+    renderString(UI_QUEUE_STRING, offsetX + 1, offsetYQueue - 2);
+
+    // swap box
+    if holdTetromino != TetrominoType.NONE {
+        render(holdTetromino, offsetXSwap, offsetYSwap);
+    }
+
+    // preview queue
+    qIdx: i32 = queueIdx;
+    render(queue[queueIdx], offsetXQueue, offsetYQueue);
+
+    qIdx = (queueIdx + 1) % TetrominoType.COUNT;
+    render(queue[qIdx], offsetXQueue, offsetYQueue + MAX_TETROMINO_HEIGHT);
+
+    qIdx = (queueIdx + 2) % TetrominoType.COUNT;
+    render(queue[qIdx], offsetXQueue, offsetYQueue + MAX_TETROMINO_HEIGHT * 2);
+}
+
+renderUIBorder: (x: i32, y: i32, width: i32, height: i32) {
+    xValue: const u8 = '=';
+    yValue: const u8 = '|';
+
+    loop x + 1 : x + width - 1 at i {
+       ri: const i32 = y * RENDER_WIDTH + (i -> i32);
+       render(FieldType.BORDER_X, ri);
+    }
+
+    loop y : y + height - 1 at i {
+        ri: const i32 = (i -> i32) * RENDER_WIDTH + x;
+        render(FieldType.BORDER_Y, ri);
+    }
+
+    y2: i32 = y + height - 1;
+    loop x + 1 : x + width - 1 at i {
+        ri: const i32 = y2 * RENDER_WIDTH + (i -> i32);
+        render(FieldType.BORDER_X, ri);
+    }
+
+    x2: i32 = x + width - 1;
+    y3: i32 = y;
+    loop y3 : y3 + height - 1 at i {
+        ri: const i32 = (i -> i32) * RENDER_WIDTH + x2;
+        render(FieldType.BORDER_Y, ri);
+    }
+}
+
+renderString: (str: u8[const], x: i32, y: i32) {
+    loop str at i {
+        ri: const i32 = y * RENDER_WIDTH + x + (i -> i32);
+
+        renderBuffer[ri].color[:] = COLOR_FG;
+        renderBuffer[ri].leftBorder = ' ';
+        renderBuffer[ri].value = str[i];
+        renderBuffer[ri].rightBorder = ' ';
+    }
+}
+
+renderString: (str: u8[const], x: i32, y: i32, color: u8[const]) {
+    loop str at i {
+        ri: const i32 = y * RENDER_WIDTH + x + (i -> i32);
+
+        renderBuffer[ri].color[:] = color;
+        renderBuffer[ri].leftBorder = ' ';
+        renderBuffer[ri].value = str[i];
+        renderBuffer[ri].rightBorder = ' ';
+    }
+}
+
+renderChar: (ch: u8, x: i32, y: i32) {
+    ri: const i32 = y * RENDER_WIDTH + x;
+
+    renderBuffer[ri].color[:] = COLOR_FG;
+    renderBuffer[ri].leftBorder = ' ';
+    renderBuffer[ri].value = ch;
+    renderBuffer[ri].rightBorder = ' ';
+}
+
+renderNumber: (num: u32, x: i32, y: i32) {
+    MAX_LEN: embed i32 = 5;
+
+    tmp: u8[MAX_LEN];
+    tmpLen: i32 = 0;
+
+    if num == 0 {
+        tmp[0] = '0';
+        tmpLen = 1;
+    }
+
+    loop num > 0 && tmpLen < MAX_LEN {
+        tmp[tmpLen] = ((num % 10) + ('0' -> u32)) -> u8;
+        num = num / 10;
+        tmpLen = tmpLen + 1;
+    }
+
+    i: i32 = tmpLen - 1;
+    loop i >= 0 {
+        ri: const i32 = y * RENDER_WIDTH + x + tmpLen - i + (MAX_LEN - tmpLen);
+
+        renderBuffer[ri].color[:] = COLOR_FG;
+        renderBuffer[ri].leftBorder = ' ';
+        renderBuffer[ri].value = tmp[i];
+        renderBuffer[ri].rightBorder = ' ';
+        i = i - 1;
+    }
+}
+
+renderLine: (x: i32, y: i32, width: i32, ch: u8) {
+    curX: i32 = x;
+    endX: i32 = x + width;
+    loop curX < endX {
+        ri: const i32 = y * RENDER_WIDTH + curX;
+
+        renderBuffer[ri].color[:] = COLOR_FG;
+        renderBuffer[ri].leftBorder = ' ';
+        renderBuffer[ri].value = ch;
+        renderBuffer[ri].rightBorder = ' ';
+        curX = curX + 1;
+    }
+}
+
+renderLine: (x: i32, y: i32, width: i32) {
+    renderLine(x, y, width, '=');
+}
+
+renderClearAnnouncement: (type: ClearType, points: i32) {
+    y: i32 = 3;
+    x: i32 = WIDTH + 3;
+
+    renderString(CLEAR_STRING, x, y - 3);
+    renderLine(x, y - 2, 6, '=');
+    renderLine(x, y - 1, 6, ' ');
+
+    case type {
+        when ClearType.SINGLE: renderString(SINGLE_STRING, x, y, EPIC);
+        when ClearType.DOUBLE: renderString(DOUBLE_STRING, x, y, MYTHIC);
+        when ClearType.TRIPLE: renderString(TRIPLE_STRING, x, y, MYTHIC);
+        when ClearType.TETRIS: renderString(TETRIS_STRING, x, y, LEGENDARY);
+        when ClearType.T_SPIN: renderString(T_SPIN_STRING, x, y, GODLIKE);
+        else: renderString(FALLBACK_STRING, x, y);
+    }
+
+    renderLine(x, y + 1, 6, ' ');
+    renderChar('+', x, y + 1);
+    renderNumber(points -> u32, x, y + 1);
+
+    renderLine(x, y + 2, 6, ' ');
+    renderLine(x, y + 3, 6, '=');
+}
+
+renderGameOver: () {
+    y: i32 = 10;
+
+    renderLine(1, y - 1, WIDTH);
+    renderString(GAME_OVER_STRING, 1, y, GODLIKE);
+    renderLine(1, y + 1, WIDTH);
+}
+
+render: (board: i32[const]) {
+    loop 0 : board.length - 1 at i {
+        x: i32 = (i -> i32) % (WIDTH + 2);
+        y: i32 = (i -> i32) / (WIDTH + 2);
+
+        if x == 0 || y == 0 || x == WIDTH + 1 || y == HEIGHT + 1 {
+            continue;
+        }
+
+        ri: i32 = y * RENDER_WIDTH + x;
+        render(board[i] -> FieldType, ri);
+    }
+
+    renderUIBorder(0, 0, WIDTH + 2, RENDER_HEIGHT);
+}
+
+render: (field: FieldType, ri: i32) {
+    value: u8;
+    lBorder: u8 = '[';
+    rBorder: u8 = ']';
+    color: u8[5] = COLOR_FG;
+
+    case field {
+        when FieldType.EMPTY {
+            value = '.';
+            lBorder = ' ';
+            rBorder = ' ';
+        }
+        when FieldType.BORDER_X {
+            value = '=';
+        }
+        when FieldType.BORDER_Y {
+            value = '|';
+        }
+        else {
+            value = '@';
+            lBorder = '[';
+            rBorder = ']';
+            tmp: i32 = (field -> i32) - (FieldType.BLOCK -> i32);
+            case tmp -> TetrominoType {
+                when TetrominoType.NONE {
+                    value = ' ';
+                    color[:] = COLOR_SHADOW;
+                }
+                when TetrominoType.I: color[:] = COLOR_I;
+                when TetrominoType.O: color[:] = COLOR_O;
+                when TetrominoType.T: color[:] = COLOR_T;
+                when TetrominoType.S: color[:] = COLOR_S;
+                when TetrominoType.Z: color[:] = COLOR_Z;
+                when TetrominoType.L: color[:] = COLOR_L;
+                when TetrominoType.J: color[:] = COLOR_J;
+            }
+        }
+    }
+
+    renderBuffer[ri].color[:] = color;
+    renderBuffer[ri].leftBorder = lBorder;
+    renderBuffer[ri].value = value;
+    renderBuffer[ri].rightBorder = rBorder;
+}
+
+render: (t: TetrominoType, offsetX: i32, offsetY: i32) {
+    renderTetrominoShape(getTetrominoShape(t), t, offsetX, offsetY);
+}
+
+render: (t: Tetromino^) {
+    renderTetrominoShape(getTetrominoShape(t), t.type, t.x + 1, t.y + 1);
+}
+
+renderTetrominoShape: (shape: i32^, t: TetrominoType, offsetX: i32, offsetY: i32) {
+    x: i32 = -1;
+    y: i32 = 0;
+    loop 0 : (MAX_TETROMINO_WIDTH * MAX_TETROMINO_HEIGHT) - 1 at i {
+        x = x + 1;
+        if x >= MAX_TETROMINO_WIDTH {
+            y = y + 1;
+            x = 0;
+        }
+
+        if !shape[i] : continue;
+
+        ri: i32 = (offsetY + y) * RENDER_WIDTH + offsetX + x;
+        render((FieldType.BLOCK + t) -> FieldType, ri);
+    }
+}
+
+renderShadow: (t: Tetromino^, y: i32) {
+    renderTetrominoShape(getTetrominoShape(t), TetrominoType.NONE, t.x + 1, y + 1);
+}
+
+flushRender: () {
+    loop 0 : RENDER_HEIGHT - 1 at y {
+        offset: const u64 = y * RENDER_WIDTH;
+        "%r\n" renderBuffer[offset : offset + RENDER_LINE_SIZE - 1];
+    }
+
+    "%r" COLOR_FG;
+
+    "\n  Controls                                Level: %v\n" level;
+    "      Move:       <- ->                   Score: %v\n" score;
+    "      Rotate:     [up/down arrows]        Lines: %v\n" linesCleared;
+    "      Drop:       s\n";
+    "      Swap:       a\n";
+    "      Hard drop:  [space]\n";
+    "      Rotate 180: w\n";
+    "      Restart:    r\n";
+}
+
+getTetrominoShape: (t: Tetromino^) -> i32^ {
+    block: const i32 = MAX_TETROMINO_WIDTH * MAX_TETROMINO_HEIGHT;
+    offset: const i32 = block * (Orientation.COUNT * (t.type -> i32) + (t.orientation -> i32));
+    return &tetrominos[offset];
+}
+
+getTetrominoShape: (t: TetrominoType) -> i32^ {
+    block: const i32 = MAX_TETROMINO_WIDTH * MAX_TETROMINO_HEIGHT;
+    offset: const i32 = block * (Orientation.COUNT * (t -> i32));
+    return &tetrominos[offset];
+}
+
+pushToBoard: (t: Tetromino^) {
+    shape: i32^ = getTetrominoShape(t);
+
+    idx: const i32 = (t.y + 1) * (WIDTH + 2) + t.x + 1;
+    loop 0 : (MAX_TETROMINO_WIDTH * MAX_TETROMINO_HEIGHT) - 1 at i {
+        if !shape[i] : continue;
+
+        x: const i32 = (i -> i32) % MAX_TETROMINO_WIDTH;
+        y: const i32 = (i -> i32) / MAX_TETROMINO_WIDTH;
+        board[idx + (WIDTH + 2) * y + x] = FieldType.BLOCK + t.type;
+    }
+}
+
+flushInputBuffer: () {
+    loop kbhit() -> i64 {}
+}
+
+getInput: () -> i64 {
+    wasAction: i64 = false;
+
+    loop kbhit() -> i64 {
+        wasAction = true;
+        key: const i32 = getchar();
+
+        if key == KC_CTRL_C {
+            requestedActions[Action.EXIT] = true;
+        } else if key == KC_SPECIAL_KEY {
+            case getchar() -> i64 {
+                when KC_ARROW_UP:    requestedActions[Action.ROTATE_LEFT] = true;
+                when KC_ARROW_DOWN:  requestedActions[Action.ROTATE_RIGHT] = true;
+                when KC_ARROW_LEFT:  requestedActions[Action.MOVE_LEFT] = true;
+                when KC_ARROW_RIGHT: requestedActions[Action.MOVE_RIGHT] = true;
+                else: wasAction = false;
+            }
+        } else if key == KC_SPACE {
+            requestedActions[Action.DROP] = true;
+        } else if key == KC_W {
+            requestedActions[Action.FLIP] = true;
+        } else if key == KC_S {
+            requestedActions[Action.MOVE_DOWN] = true;
+        } else if key == KC_A {
+            requestedActions[Action.SWAP] = true;
+        } else if key == KC_R {
+            requestedActions[Action.RESTART] = true;
+        }
+    }
+
+    return wasAction;
+}
+
+spawnRandomTetromino: () {
+    spawnTetromino(queue[queueIdx]);
+
+    queueIdx = queueIdx + 1;
+    if queueIdx >= 2 * TetrominoType.COUNT {
+        queueIdx = 0;
+        shuffle(&queue[0], TetrominoType.COUNT);
+    }
+}
+
+spawnTetromino: (t: TetrominoType) {
+    tetrominoTemplate = {
+        x: 2,
+        y: 0,
+        orientation: Orientation.DOWN,
+        type: t
+    };
+
+    currentTetromino = &tetrominoTemplate;
+}
+
+initQueue: () {
+    loop 0 : TetrominoType.COUNT - 1 at i {
+        t: TetrominoType = i -> TetrominoType;
+        queue[i] = t;
+        queue[i + TetrominoType.COUNT] = t;
+    }
+}
+
+shuffle: (arr: TetrominoType^, n: i32) {
+    if n < 2 : return;
+
+    loop 0 : n - 1 at i {
+        j: i32 = randn(i -> i32, TetrominoType.COUNT - 1);
+        tmp: TetrominoType = arr[j];
+        arr[j] = arr[i];
+        arr[i] = tmp;
+    }
+}
+
+clrscr: () {
+    "\033[2J\033[H";
+}
+
+hideCursor: () {
+    "\033[?25l";
+}
+
+showCursor: () {
+    "\033[?25h";
+}
+
+gotoxy: (x: i32, y: i32) {
+    "\033[%v;%vH" x, y;
+}
+
+randn: (lowEdge: i32, topEdge: i32) -> i32 {
+	if topEdge <= lowEdge : return lowEdge;
+	return lowEdge + LibC::rand() % (topEdge - lowEdge);
+}
+
+srand: () {
+	LibC::srand(LibC::_time64(null));
+}
+
+getchar: () -> i32 {
+    return LibC::_getch();
+}
+
+kbhit: () -> i32 {
+    return LibC::_kbhit();
+}
+
+pow: (base: f64, exponent: f64) -> f64 {
+    return LibC::pow(base, exponent);
+}
+
+getTime: () -> f64 {
+    CLOCKS_PER_SEC: i32 = 1000;
+    return (LibC::clock() -> f64) / (CLOCKS_PER_SEC -> f64);
+}
+
+exit: (status: i32) {
+	LibC::exit(status);
+}
