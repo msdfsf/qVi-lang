@@ -153,25 +153,24 @@
     </header>
 
     <div class="field-group">
-        <label>Input Keywords</label>
-        <textarea id="keywordsInput" spellcheck="false">void, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, const, embed, fluid, struct, union, if, else, loop, when, case, enum, return, continue, break, using, alloc, free, error, catch, import, from, as, at, true, false, null</textarea>
+        <label>Input Keywords (prefix directives with @)</label>
+        <textarea id="keywordsInput" spellcheck="false">void, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, const, embed, fluid, struct, union, if, else, loop, when, case, enum, return, continue, break, using, alloc, free, error, catch, import, from, as, at, true, false, null, @test</textarea>
     </div>
 
     <div class="config-grid">
         <div class="field-group">
-            <label>Algorithm</label>
-            <select id="hashInput">
-                <option value="AUTO">Smallest Overall (Auto)</option>
-                <option value="fnv1a">FNV-1a</option>
-                <option value="murmur3">MurmurHash3</option>
-                <option value="djb2a">DJB2a</option>
-            </select>
+            <label>Keyword Table Size</label>
+            <input type="number" id="kwTableSize" value="51" min="1">
         </div>
         <div class="field-group">
-            <label>Seeds Per Size</label>
-            <input type="number" id="seedAttempts" value="1000">
+            <label>Directive Table Size</label>
+            <input type="number" id="cdTableSize" value="2" min="1">
         </div>
         <div class="field-group">
+            <label>Max Iterations</label>
+            <input type="number" id="maxIterations" value="10000" min="1">
+        </div>
+        <div class="field-group" style="display: none">
             <label>Output Prefix</label>
             <input type="text" id="enumPrefixInput" value="KW">
         </div>
@@ -191,46 +190,61 @@
 </div>
 
 <script>
-    const ALGORITHMS = {
-        fnv1a: (str, seed) => {
-            let h = 0x811c9dc5 ^ seed;
-            for (let i = 0; i < str.length; i++) {
-                h ^= str.charCodeAt(i);
-                h = Math.imul(h, 0x01000193);
-            }
-            return h >>> 0;
-        },
-        murmur3: (str, seed) => {
-            let h1 = seed ^ 0x811c9dc5;
-            for (let i = 0; i < str.length; i++) {
-                let k1 = str.charCodeAt(i);
-                k1 = Math.imul(k1, 0xcc9e2d51);
-                k1 = (k1 << 15) | (k1 >>> 17);
-                k1 = Math.imul(k1, 0x1b873593);
-                h1 ^= k1;
-                h1 = (h1 << 13) | (h1 >>> 19);
-                h1 = Math.imul(h1, 5) + 0xe6546b64;
-            }
-            h1 ^= str.length;
-            h1 ^= h1 >>> 16; h1 = Math.imul(h1, 0x85ebca6b);
-            h1 ^= h1 >>> 13; h1 = Math.imul(h1, 0xc2b2ae35);
-            h1 ^= h1 >>> 16;
-            return h1 >>> 0;
-        },
-        djb2a: (str, seed) => {
-            let h = 5381 ^ seed;
-            for (let i = 0; i < str.length; i++) {
-                h = ((h << 5) + h) ^ str.charCodeAt(i);
-            }
-            return h >>> 0;
-        }
-    };
+    const KW_HASH_SEED = 0x558355AF;
+    const CD_HASH_SEED = 0x558355AF;
+    const FNV_OFFSET_BASIS = 0x811C9DC5;
+    const FNV_PRIME = 0x01000193;
 
-    function getCppSource(algo, seed) {
-        const s = "0x" + (seed >>> 0).toString(16).toUpperCase();
-        if(algo === 'fnv1a') return `uint32_t hash(const char* str) {\n    uint32_t h = 0x811C9DC5 ^ ${s};\n    while (*str) { h ^= (uint8_t)*str++; h *= 0x01000193; }\n    return h;\n}`;
-        if(algo === 'murmur3') return `uint32_t hash(const char* str) {\n    uint32_t h = ${s} ^ 0x811C9DC5; uint32_t len = 0;\n    while(str[len]) {\n        uint32_t k = (uint8_t)str[len++]; k *= 0xCC9E2D51; k = (k << 15) | (k >> 17); k *= 0x1B873593;\n        h ^= k; h = (h << 13) | (h >> 19); h = h * 5 + 0xE6546B64;\n    }\n    h ^= len; h ^= h >> 16; h *= 0x85EBCA6B; h ^= h >> 13; h *= 0xC2B2AE35; h ^= h >> 16;\n    return h;\n}`;
-        if(algo === 'djb2a') return `uint32_t hash(const char* str) {\n    uint32_t h = 5381 ^ ${s};\n    while (*str) { h = ((h << 5) + h) ^ (uint8_t)*str++; }\n    return h;\n}`;
+    function fnv1a(str, seed) {
+        let h = FNV_OFFSET_BASIS ^ seed;
+        for (let i = 0; i < str.length; i++) {
+            h ^= str.charCodeAt(i);
+            h = Math.imul(h, FNV_PRIME);
+        }
+        return h >>> 0;
+    }
+
+    function findTable(keywords, size, seed) {
+        const table = Array(size).fill(-1);
+        for (let k = 0; k < keywords.length; k++) {
+            const h = fnv1a(keywords[k], seed) % size;
+            if (table[h] !== -1) return null;
+            table[h] = k;
+        }
+        return table;
+    }
+
+    function findDirectiveTable(directives, size, seed) {
+        const table = Array(size).fill(-1);
+        for (let k = 0; k < directives.length; k++) {
+            const h = (fnv1a(directives[k], seed) % size) + 1;
+            if (h >= size) return null;
+            if (table[h] !== -1) return null;
+            table[h] = k;
+        }
+        return table;
+    }
+
+    function getCppHashFns() {
+        return `uint32_t kwHash(const char* str, int len) {
+    uint32_t h = 0x811C9DC5 ^ 0x558355AF;
+    int idx = 0;
+    while (idx < len) {
+        h ^= (uint8_t)str[idx++];
+        h *= 0x01000193;
+    }
+    return h;
+}
+
+uint32_t cdHash(const char* str, int len) {
+    uint32_t h = 0x811C9DC5 ^ 0x558355AF;
+    int idx = 0;
+    while (idx < len) {
+        h ^= (uint8_t)str[idx++];
+        h *= 0x01000193;
+    }
+    return h;
+}`;
     }
 
     async function runOptimization() {
@@ -238,9 +252,12 @@
         const output = document.getElementById('output');
         const stats = document.getElementById('stats');
         const raw = document.getElementById('keywordsInput').value;
-        const keywords = [...new Set(raw.split(/[,\s]+/).map(s => s.trim()).filter(s => s.length > 0))];
-        const maxSeedAttempts = parseInt(document.getElementById('seedAttempts').value);
-        const mode = document.getElementById('hashInput').value;
+        const allTokens = [...new Set(raw.split(/[,\s]+/).map(s => s.trim()).filter(s => s.length > 0))];
+        const keywords = allTokens.filter(t => !t.startsWith('@'));
+        const directives = allTokens.filter(t => t.startsWith('@')).map(d => d.slice(1));
+        const kwTableSize = parseInt(document.getElementById('kwTableSize').value);
+        const cdTableSize = parseInt(document.getElementById('cdTableSize').value);
+        const maxIterations = parseInt(document.getElementById('maxIterations').value);
 
         btn.disabled = true;
         output.textContent = "// Searching for minimal perfect hash...";
@@ -248,56 +265,67 @@
 
         await new Promise(r => setTimeout(r, 60));
 
-        const algosToTry = mode === "AUTO" ? Object.keys(ALGORITHMS) : [mode];
-        let best = { size: Infinity, algo: '', seed: 0, table: [] };
+        let kwTable = null;
+        let cdTable = null;
 
-        for (let size = keywords.length; size < keywords.length * 4; size++) {
-            if (size >= best.size) break;
-            for (const algoName of algosToTry) {
-                const hashFn = ALGORITHMS[algoName];
-                for (let attempt = 0; attempt < maxSeedAttempts; attempt++) {
-                    const seed = (attempt === 0) ? 0x811C9DC5 : (Math.random() * 0xFFFFFFFF) >>> 0;
-                    let table = Array(size).fill(null);
-                    let collision = false;
-                    for (let k = 0; k < keywords.length; k++) {
-                        const h = hashFn(keywords[k], seed) % size;
-                        if (table[h] !== null) { collision = true; break; }
-                        table[h] = k;
-                    }
-                    if (!collision) {
-                        best = { size, algo: algoName, seed, table: [...table] };
-                        break;
-                    }
-                }
-                if (best.size === size) break;
-            }
+        for (let attempt = 0; attempt < maxIterations; attempt++) {
+            const seed = (attempt === 0) ? KW_HASH_SEED : (Math.random() * 0xFFFFFFFF) >>> 0;
+            kwTable = findTable(keywords, kwTableSize, seed);
+            if (kwTable) break;
         }
 
-        if (best.size === Infinity) {
-            output.textContent = "// Error: Search space exhausted.";
+        for (let attempt = 0; attempt < maxIterations; attempt++) {
+            const seed = (attempt === 0) ? CD_HASH_SEED : (Math.random() * 0xFFFFFFFF) >>> 0;
+            cdTable = findDirectiveTable(directives, cdTableSize, seed);
+            if (cdTable) break;
+        }
+
+        if (!kwTable || !cdTable) {
+            output.textContent = "// Error: Could not find collision-free tables.";
             btn.disabled = false;
             return;
         }
 
         const prefix = document.getElementById('enumPrefixInput').value;
         let code = '';
-        keywords.forEach(kw => code += `const char* ${prefix}S_${kw.toUpperCase()} = "${kw}";\n`);
+
+        code += `enum Keyword : int32_t {\n`;
+        keywords.forEach((kw, i) => code += `    ${prefix}_${kw.toUpperCase().padEnd(12)}= ${i},\n`);
+        code += `    ${prefix}_COUNT\n};\n\n`;
+
+        code += `enum Directive : int32_t {\n`;
+        directives.forEach((dir, i) => code += `    CD_${dir.toUpperCase().padEnd(12)}= ${i},\n`);
+        code += `    CD_COUNT\n};\n\n`;
+
+        keywords.forEach(kw => code += `const char* ${prefix}S_${kw.toUpperCase().padEnd(12)}= "${kw}";\n`);
+        directives.forEach(dir => code += `const char* CDS_${dir.toUpperCase().padEnd(12)}= "${dir}";\n`);
         code += `\nconst char* keywordStringTable[KW_COUNT] = {\n`;
         keywords.forEach(kw => code += `    ${prefix}S_${kw.toUpperCase()},\n`);
-        code += `    ${prefix}_COUNT\n};\n\n`;
-        code += `constexpr int ${prefix}_TABLE_SIZE = ${best.size};\n`;
-        code += `constexpr std::array<int, ${prefix}_TABLE_SIZE> makeKeywordTable() {\n`;
-        code += `    std::array<int, ${prefix}_TABLE_SIZE> table = {};\n\n`;
-        best.table.forEach((idx, i) => {
-            if (idx !== null) code += `    table[${i}] = ${prefix}_${keywords[idx].toUpperCase()};\n`;
+        code += `};\n\n`;
+        code += `const char* directiveStringTable[CD_COUNT] = {\n`;
+        directives.forEach(dir => code += `    CDS_${dir.toUpperCase()},\n`);
+        code += `};\n\n`;
+        code += `constexpr int KW_TABLE_SIZE = ${kwTableSize};\n`;
+        code += `constexpr std::array<int, KW_TABLE_SIZE> makeKeywordTable() {\n`;
+        code += `    std::array<int, KW_TABLE_SIZE> table = {};\n\n`;
+        kwTable.forEach((idx, i) => {
+            if (idx !== -1) code += `    table[${String(i).padStart(2)}] = ${prefix}_${keywords[idx].toUpperCase().padEnd(12)};\n`;
         });
         code += `\n    return table;\n}\n\n`;
         code += `constexpr auto keywordTable = makeKeywordTable();\n\n`;
-        code += getCppSource(best.algo, best.seed);
+        code += `constexpr int CD_TABLE_SIZE = ${cdTableSize};\n`;
+        code += `constexpr std::array<int, CD_TABLE_SIZE> makeDirectiveTable() {\n`;
+        code += `    std::array<int, CD_TABLE_SIZE> table = {};\n\n`;
+        cdTable.forEach((idx, i) => {
+            if (idx !== -1) code += `    table[${String(i).padStart(2)}] = CD_${directives[idx].toUpperCase().padEnd(12)};\n`;
+        });
+        code += `\n    return table;\n}\n\n`;
+        code += `constexpr auto directiveTable = makeDirectiveTable();\n\n`;
+        code += getCppHashFns();
 
         output.textContent = code;
         stats.style.display = "block";
-        stats.innerHTML = `✓ Found <strong>${best.algo}</strong> table | Size: <strong>${best.size}</strong> | Density: <strong>${((keywords.length/best.size)*100).toFixed(1)}%</strong> | Seed: <strong>0x${best.seed.toString(16).toUpperCase()}</strong>`;
+        stats.innerHTML = `✓ Keywords: <strong>${keywords.length}</strong> | Directives: <strong>${directives.length}</strong> | KW Table: <strong>${kwTableSize}</strong> | CD Table: <strong>${cdTableSize}</strong> | Seed: <strong>0x558355AF</strong>`;
         btn.disabled = false;
     }
 

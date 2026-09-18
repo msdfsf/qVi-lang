@@ -1259,3 +1259,37 @@ fcn [C] native_callback(int id) {
     "Callback triggered for: %" id;
 }
 ```
+
+---
+
+## Format Strings (TODO: Concept)
+
+Functions accepting formatted input declare their format parameter using `u8[print]`.
+
+```c
+printf:  (fmt: u8[print], args: ...) { ... }
+logInfo: (level: LogLevel, fmt: u8[print], args: ...) { ... }
+```
+
+---
+
+### 1. Format String Grammar
+
+Format strings are composed of literal text and `%`-prefixed format directives. The parser operates deterministically without lookahead or escaping requirements for literal curly braces `{}`.
+
+1. **`%%`** $\rightarrow$ Escaped literal `%` character.
+2. **`%<char>`** $\rightarrow$ Exact 1-character shortcut option. Text resumes immediately after the character (e.g. `"%vwhatever"` $\rightarrow$ placeholder `%v` + literal `"whatever"`).
+3. **`%{Options:Indent:MaxWidth:Precision}`** $\rightarrow$ Full formatting block. Text resumes immediately after the closing `}` (e.g. `"%{r+:1:10}whatever"`).
+4. **Literal Text** $\rightarrow$ Any sequence not beginning with `%`. Plain `{` and `}` require **no escaping** (e.g. `"my {json} %v text"`).
+
+##### 1-Character Option Flags (Combinable in any order within `%{...}`):
+| Flag | Name | Description |
+| :---: | :--- | :--- |
+| **`v`** | Value | Default type-inferred value formatting. |
+| **`t`** | Type | Emits the type name of the argument instead of its value. |
+| **`R`** | Right Align | Right-aligns output within the specified `MaxWidth`. |
+| **`L`** | Left Align | Left-aligns output within the specified `MaxWidth`. |
+| **`+`** | Show Sign | Forces a `+` sign for positive numeric values. |
+| **`x`** | Hexadecimal | Formats integers or pointers in hexadecimal notation. |
+| **`b`** | Binary | Formats integers in binary notation. |
+| **`#`** | Pretty | Pretty-prints structs and complex collections. |

@@ -342,7 +342,19 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 
 ---
 
-### 5.4 Control Flow
+### 5.4 Memory Instructions
+
+**`memcpy`**
+* **Stack:** `..., dest_ptr, src_ptr, count -> ...`
+* **Description:** Copies `count` raw bytes from `src_ptr` to `dest_ptr`.
+
+**`memset`**
+* **Stack:** `..., dest_ptr, byte_val, count -> ...`
+* **Description:** Sets `count` bytes starting at `dest_ptr` to `byte_val`.
+
+---
+
+### 5.5 Control Flow
 
 **`jump`**  `u64: offset`
 * **Description:** Sets the Instruction Pointer to `code_base + offset`.
@@ -367,83 +379,142 @@ The VM populates the Linkage slots, copies the `locals` template, and shifts the
 
 ---
 
-### 5.5 Vector Instructions
-In case of traditional stack operations, operands are pushed directly onto the stack. For vector operations, however, data is manipulated via **Slices**, which are represented on the operand stack as a pair of Words: `[Pointer, Length]`. Pushing raw vector data onto the operand stack is avoided to prevent stack overflow and to facilitate both compile-time and execution-time optimizations.
+### 5.6 Vector Instructions
 
+In traditional scalar execution, operands are pushed and operated on directly via the operand stack. For vector operations, data is manipulated via **Slices**, represented on the operand stack as a pair of Words: `[Pointer, Length]`. Pushing raw vector data onto the operand stack is avoided to prevent stack overflow and to facilitate both compile-time and execution-time optimizations.
+
+#### Buffer Management
 A tricky part in vector execution is buffer management. While variables provide "natural" buffers that could theoretically be reused for in-place modification, doing so is often not possible, as overwriting a source buffer results in the loss of data required for subsequent expressions. The compiler must determine when a local buffer can be safely overwritten and when a fresh destination is required.
 
- To address this, the management of **temporary buffer** is delegated to the VM. When the compiler determines that no local buffer is suitable for an operation, it emits an instruction to allocate space within the VM's temporary storage. The VM manages this transient memory, returning a handler to the newly allocated block. This abstraction allows the VM to implement suitable memory-management strategies — such as recycling temporary blocks once they are no longer referenced — while keeping the compiler’s code generation logic simple and robust.
+Vector instructions write their results into one of two destinations, controlled by the **`isDestTmp`** flag in the instruction’s 64-bit descriptor:
 
-To support this workflow, all vector instructions are designed to be **chainable**, leaving the resulting slice (pointer and length) on the operand stack for the next operation. Every vector expression concludes with any specialized finalization instruction which signals to the VM that it can safely reset or reclaim its temporary buffers and, depending on the instruction, pop the last slice.
+1. **Pre-allocated / Concrete Destination (`isDestTmp = 0`):**  
+   The destination pointer (`dest_ptr`) is pushed onto the operand stack **before** the instruction's input operands. The instruction pops the input operands, pops `dest_ptr`, writes directly into that memory, and pushes `[dest_ptr, length]`.  
+   *This provides a 100% uniform model for all concrete destinations — local variables (`lea_local`), globals (`lea_global`), struct fields (`ptr_idx`), and heap pointers.*
 
-#### Descriptor
-Each vector instruction reads a 64-bit immediate descriptor. The layout (bit positions within the 64-bit word, LSB-first):
+2. **VM Temporary Scratch Storage (`isDestTmp = 1`):**  
+   When evaluating intermediate nodes within chained expressions, the compiler sets `isDestTmp = 1`. The VM automatically allocates transient memory from its internal scratch pool and writes the result there. No `dest_ptr` is required on the stack; the instruction pushes `[tmp_ptr, length]`.
 
-*   **Bits 0-7:** `DataType` Enum (e.g., `U8`, `I32`, `F64`) — destination / element type.
-*   **Bits 8-15:** `Operator` Enum (e.g., `ADD`, `MUL`, `CAST`).
-*   **Bits 16-23:** Source `DataType` Enum (used e.g. for casts).
-*   **Bits 24-31:** Reserved.
-*   **Bits 32-63:** Flags field (a 32-bit region), with the following bits meaningfully used *within that field*:
-    *   `bit 29` (`isRightTmp`): If set, the right source operand is in a VM-managed temporary buffer.
-    *   `bit 30` (`isLeftTmp`): If set, the left source operand is in a VM-managed temporary buffer.
-    *   `bit 31` (`isDestTmp`): If set, the result is stored in a VM-managed temporary buffer.
+#### Chaining & Expression Lifecycle
+All vector instructions are **chainable**, leaving the resulting slice `[Pointer, Length]` on the operand stack for consumption by subsequent instructions. 
+
+Every vector statement concludes with a finalization instruction:
+* **`vec_reset`**: Pops the top slice (`[res_ptr, length]`) and reclaims all transient memory allocated from the VM scratch pool during expression evaluation.
+* **`vec_mem_reset`**: Reclaims all transient memory without modifying the operand stack (used when the resulting slice was already consumed or transformed, e.g. via `vec_to_ref`).
+
+---
+
+#### Descriptor Layout
+Each vector instruction carries a single **64-bit immediate descriptor** Word directly following its opcode.
+
+The layout (bit positions within the 64-bit word, LSB-first):
+* **Bits 0–7:** `DataType` Enum (e.g., `U8`, `I32`, `F64`) — destination / element type.
+* **Bits 8–15:** `Operator` Enum (e.g., `ADD`, `MUL`, `CAST`).
+* **Bits 16–23:** Source `DataType` Enum (used for conversions / casts).
+* **Bits 24–31:** Reserved.
+* **Bits 32–63:** Flags field (32-bit region):
+  * `bit 29` (`isRightTmp`): If set, the right source operand is in a VM-managed temporary buffer.
+  * `bit 30` (`isLeftTmp`): If set, the left source operand is in a VM-managed temporary buffer.
+  * `bit 31` (`isDestTmp`): If set, the result is written to a fresh VM temporary buffer. If clear (`0`), the destination pointer `dest_ptr` is popped from the stack below the input operands.
+
+---
 
 #### Instruction Set
 
-Unless noted, each `vec_*` instruction below carries two immediate Words after its opcode byte: the descriptor described above, and a `dest` value. When the `isDestTmp` flag is clear, `dest` is interpreted as a Locals Block offset (`FP + dest`); otherwise the result is allocated from the VM's temporary buffer pool (and `dest` is unused).
+*(Note: Unless specified, every `vec_*` instruction takes a single immediate: `u64: descriptor`.)*
 
-**`vec_vv`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., ptr_src1, length1, ptr_src2, length2 -> ..., res_ptr, length`
-*   **Description:** Performs `dest[i] = src1[i] OP src2[i]`.
+---
 
-**`vec_vs`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., ptr_src, scalar_val, length -> ..., res_ptr, length`
-*   **Description:** Performs `dest[i] = src[i] OP scalar_val`.
+**`vec_vv`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, ptr_src1, len1, ptr_src2, len2 -> ..., dest_ptr, len1`
+* **Stack (`isDestTmp = 1`):** `..., ptr_src1, len1, ptr_src2, len2 -> ..., tmp_ptr, len1`
+* **Description:** Vector-Vector element-wise binary operation: `dest[i] = src1[i] OP src2[i]`.
 
-**`vec_sv`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., scalar_val, ptr_src, length -> ..., res_ptr, length`
-*   **Description:** Performs `dest[i] = scalar_val OP src[i]`.
+---
 
-**`vec_unary`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., ptr_src, length -> ..., res_ptr, length`
-*   **Description:** Applies a unary operator to every element in `src`.
+**`vec_vs`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, ptr_src, scalar_val, length -> ..., dest_ptr, length`
+* **Stack (`isDestTmp = 1`):** `..., ptr_src, scalar_val, length -> ..., tmp_ptr, length`
+* **Description:** Vector-Scalar element-wise binary operation: `dest[i] = src[i] OP scalar_val`.
 
-**`vec_cast`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., ptr_src, length -> ..., res_ptr, length`
-*   **Description:** Casts all elements from the source type (read from the descriptor's source-`DataType` byte) to the type in the descriptor's `DataType` byte.
+---
 
-**`vec_load_indirect`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., ptr_src_ptrs, length -> ..., res_ptr, length`
-*   **Description:** Gather: reads values from the list of pointers in `src_ptrs` and writes them into `dest`.
+**`vec_sv`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, scalar_val, ptr_src, length -> ..., dest_ptr, length`
+* **Stack (`isDestTmp = 1`):** `..., scalar_val, ptr_src, length -> ..., tmp_ptr, length`
+* **Description:** Scalar-Vector element-wise binary operation: `dest[i] = scalar_val OP src[i]`.
 
-**`vec_store_indirect`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., ptr_dest_ptrs, ptr_src, length -> ..., res_ptr, length`
-*   **Description:** Scatter: writes values from `src` to the various addresses in `dest_ptrs`.
+---
 
-**`vec_cat`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., ptr_src1, len1, ptr_src2, len2 -> ..., res_ptr, add(len1, len2)`
-*   **Description:** Concatenates two arrays into `dest`.
+**`vec_unary`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, ptr_src, length -> ..., dest_ptr, length`
+* **Stack (`isDestTmp = 1`):** `..., ptr_src, length -> ..., tmp_ptr, length`
+* **Description:** Applies a unary operator (e.g. `NEG`, `NOT`, `ABS`) to every element in `src`.
 
-**`vec_copy`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., ptr_src, length -> ..., res_ptr, length`
-*   **Description:** Bulk memory copy of `length` bytes from `src` to `dest`.
+---
 
-**`vec_fill`**  `u64: descriptor, u64: dest`
-*   **Stack:** `..., value, length -> ..., res_ptr, length`
-*   **Description:** Fills `dest` with `length` copies of `value`.
+**`vec_cast`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, ptr_src, length -> ..., dest_ptr, length`
+* **Stack (`isDestTmp = 1`):** `..., ptr_src, length -> ..., tmp_ptr, length`
+* **Description:** Casts all elements from the source type (read from descriptor's source-`DataType`) to the destination `DataType`.
 
-**`vec_alloc`**  `u64: stride`
-*   **Stack:** `..., count -> ..., ptr`
-*   **Description:** Allocates `count * stride` bytes of VM-managed scratch memory and pushes the resulting pointer. (Note that the result is a bare `ptr`, not a slice — no length is pushed.)
+---
+
+**`vec_copy`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, ptr_src, length -> ..., dest_ptr, length`
+* **Stack (`isDestTmp = 1`):** `..., ptr_src, length -> ..., tmp_ptr, length`
+* **Description:** Bulk memory copy of `length` elements from `src` to `dest`.
+
+---
+
+**`vec_fill`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, value, length -> ..., dest_ptr, length`
+* **Stack (`isDestTmp = 1`):** `..., value, length -> ..., tmp_ptr, length`
+* **Description:** Fills `dest` with `length` copies of `value`.
+
+---
+
+**`vec_cat`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, ptr_src1, len1, ptr_src2, len2 -> ..., dest_ptr, len1 + len2`
+* **Stack (`isDestTmp = 1`):** `..., ptr_src1, len1, ptr_src2, len2 -> ..., tmp_ptr, len1 + len2`
+* **Description:** Concatenates two slices into `dest`.
+
+---
+
+**`vec_load_indirect`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, ptr_src_ptrs, length -> ..., dest_ptr, length`
+* **Stack (`isDestTmp = 1`):** `..., ptr_src_ptrs, length -> ..., tmp_ptr, length`
+* **Description:** **Gather:** Reads values from the list of addresses in `src_ptrs` and stores them contiguously into `dest`.
+
+---
+
+**`vec_store_indirect`** `u64: descriptor`
+* **Stack (`isDestTmp = 0`):** `..., dest_ptr, ptr_dest_ptrs, ptr_src, length -> ..., dest_ptr, length`
+* **Stack (`isDestTmp = 1`):** `..., ptr_dest_ptrs, ptr_src, length -> ..., tmp_ptr, length`
+* **Description:** **Scatter:** Writes values from `src` into the various addresses specified in `dest_ptrs`.
+
+---
+
+**`vec_alloc`** `u64: stride`
+* **Stack:** `..., count -> ..., ptr`
+* **Description:** Explicitly allocates `count * stride` bytes from the VM's transient scratch pool and pushes the raw pointer (no length is pushed).
+
+---
 
 **`vec_to_ref`**
-*   **Stack:** `..., data_ptr, length -> ..., ref_ptr`  
-*   **Description:** Allocates a slice descriptor (`{ptr, len}`) in the VM's scratch memory, populates it from the top slice, and pushes a single-Word pointer to that slice descriptor. Used to pass arrays into **variadic functions** or **`Any`** types, which require values to be exactly one Word wide.
+* **Stack:** `..., data_ptr, length -> ..., ref_ptr`
+* **Description:** Allocates a slice descriptor structure (`{ptr, len}`) in the VM scratch memory, populates it with `data_ptr` and `length`, and pushes a single pointer to that descriptor. Used to pass arrays to `Any` types or variadic functions.
+
+---
 
 **`vec_reset`**
-*   **Stack:** `..., res_ptr, length -> ...`
-*   **Description:** Signals the end of a vector expression: pops the top slice and reclaims the VM's scratch memory.
+* **Stack:** `..., res_ptr, length -> ...`
+* **Description:** **Full Expression Finalizer.** Pops the top slice (`res_ptr` and `length`) and reclaims all transient memory allocated from the VM's temporary buffer pool during the expression.
+
+---
 
 **`vec_mem_reset`**
-*   **Stack:** `... -> ...`  
-*   **Description:** **Memory-Only Reset.** Reclaims the VM's scratch memory without modifying the operand stack. Use when the vector result has already been transformed (e.g. after `vec_to_ref`) or consumed, but the underlying temporary memory still needs to be cleared.
+* **Stack:** `... -> ...`
+* **Description:** **Memory-Only Reset.** Reclaims the VM's temporary scratch pool without modifying the operand stack. Used when the slice has already been consumed or popped.
+
+---

@@ -1,475 +1,190 @@
-grammar MyLanguage;
-
-// --- Parser Rules ---
-
-// Start Rule
-program
-    : programElement* EOF
-    ;
-
-programElement
-    : definition
-    | statement
-    | namespaceDef
-    ;
-
-
-
-// Statements
-statement
-    : (expression | statementAssignment | variableDefinition) (SEMI | catchExpression)
-    | (printStatement | returnStatement | importStatement | breakStatement | continueStatement)? SEMI
-    | scope
-    | namespaceDef
-    | ifStatement 
-    | forStatement 
-    | whileStatement
-    | loopStatement
-    ;
-
-statementAssignment
-    : expression EQ rValue
-    ;
-
-variableDefinition
-    : qualifier* datatype decorator* IDENTIFIER (EQ rValue)?
-    ;
-
-rValue
-    : allocation
-    | expression
-    ;
-
-catchExpression
-    : KW_CATCH IDENTIFIER (SEMI | scope)
-    ;
-    
-allocation
-    : KW_ALLOC allocationDefinition
-    ;
-
-allocationDefinition
-    : datatype? (LBRACK expression? RBRACK)? (COLON expression)?
-    ;
-
-printStatement
-    : STRING_LITERAL expression (COMMA expression)*
-    ;
-
-returnStatement
-    : KW_RETURN expression
-    ;
-
-ifStatement
-    : KW_IF expression anyScope
-      ( KW_ELSE (COLON statement)? )?
-    | KW_IF LPAREN expression RPAREN anyScope
-      ( KW_ELSE (COLON statement)? )?
-    ;
-    
-whileStatement
-    : KW_WHILE expression (scope | COLON statement)
-    | KW_WHILE LPAREN expression RPAREN (scope | COLON statement)
-    ;
-
-forStatement
-    : KW_FOR expression? SEMI expression? SEMI expression? anyScope
-    | KW_FOR LPAREN expression? SEMI expression? SEMI expression? RPAREN anyScope
-    ;
-    
-loopStatement
-    : KW_LOOP expression KW_USING variableDefinition? expression anyScope
-    ;
-    
-importStatement
-    : KW_IMPORT (IDENTIFIER | DOT)+ KW_AS (KW_NAMESPACE | KW_SCOPE | KW_FCN) IDENTIFIER
-    ;
-
-breakStatement
-    : KW_BREAK
-    ;
-    
-continueStatement
-    : KW_CONTINUE
-    ;
-
-anyScope
-    : (scope | COLON statement)
-    ;
-
-range
-    : expression? ':' expression?
-    ;
+(*
+ * qVi Language Grammar
+ * *)
 
+(*
+ * Lexical Grammar
+ * --------------------------------------------------------------------------
+ *)
 
-datatype
-    : qualifiedIdentifier
-    | builtinDatatype
-    | functionPointer
-    ;
+Letter          = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
+                | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" |"Z"
+                | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" |"m"
+                | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" .
 
-builtinDatatype
-    : KW_INT | KW_I8 | KW_I16 | KW_I32 | KW_I64 | KW_U8 | KW_U16 | KW_U32 | KW_U64 | KW_F32 | KW_F64 | KW_ERROR
-    ;
+Digit           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" .
+HexDigit        = Digit | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C" | "D" | "E" | "F" .
+BinaryDigit     = "0" | "1" .
 
-decorator
-    : ( LBRACK ( INTEGER_LITERAL | range | qualifier | KW_AUTON | KW_DYNAMIC )? RBRACK )
-    | CARET
-    ;
+Identifier      = ( Letter | "_" ) { Letter | Digit | "_" } .
+QualifiedName   = Identifier { "::" Identifier } .
+FileName        = ( Letter | Digit | "_" | "." | "/" | "-" ) { Letter | Digit | "_" | "." | "/" | "-" } .
 
-qualifier
-    : KW_CONST | KW_EMBED
-    ;
+IntegerLiteral  = ( "0x" HexDigit { HexDigit | "_" } )
+                | ( "0b" BinaryDigit { BinaryDigit | "_" } )
+                | ( Digit { Digit | "_" } ) .
 
+FloatLiteral    = Digit { Digit | "_" } "." Digit { Digit | "_" } [ ( "f" | "F" ) ]
+                | Digit { Digit | "_" } ( "f" | "F" ) .
 
+Number          = FloatLiteral | IntegerLiteral .
+StringLiteral   = '"' { StringCharacter } '"' [ "b" ] .
+CharLiteral     = "'" { CharCharacter } "'" .
 
-// Definitions
-definition
-    : unionDefinition
-    | structDefinition
-    | functionDefinition
-    | errorDefinition
-    ;
+LineComment     = "//" { LineCommentCharacter } NewLine .
+NestedComment   = "/{" { NestedComment | NestedCommentCharacter } "/}" .
 
-unionDefinition
-    : KW_DEF KW_UNION IDENTIFIER structUnionBody
-    ;
 
-structDefinition
-    : KW_DEF KW_STRUCT? IDENTIFIER structUnionBody
-    ;
+(*
+ * Top-Level Declarations
+ * --------------------------------------------------------------------------
+ *)
 
-structUnionBody
-    : LBRACE (variableDefinition SEMI)* RBRACE
-    ;
+SourceFile          = { TopLevelItem } .
 
-errorDefinition
-    : KW_ERROR IDENTIFIER LBRACE (IDENTIFIER SEMI)* RBRACE
-    ;
+TopLevelItem        = Directive
+                    | Declaration
+                    | Statement
+                    | ";" .
 
-functionDefinition
-    : KW_FCN IDENTIFIER LPAREN paramList? RPAREN usingErrorSet? (ARROW datatype)? scope
-    | KW_FCN IDENTIFIER (ARROW datatype)? scope
-    ;
-    
-functionPointer
-    : KW_FCN LPAREN (datatype decorator* (COMMA datatype decorator*)*)? ARROW datatype? RPAREN
-    ;
+Directive           = "#test" | "#[" Identifier "]" .
 
-usingErrorSet
-    : KW_USING qualifiedIdentifier
-    ;
-    
-paramList
-    : parameter (COMMA parameter)*
-    ;
-
-parameter
-    : datatype decorator* IDENTIFIER
-    ;
-
-
-
-namespaceDef
-    : KW_NAMESPACE IDENTIFIER LBRACE (statement | definition | namespaceDef)* RBRACE
-    ;
-
-scope
-    : LBRACE statement* RBRACE
-    ;
-
-
-
-// --- Expressions ---
-
-expression
-    : assignmentExpression (COMMA assignmentExpression)*
-    ;
-
-assignmentExpression
-    : conditionalExpression ( assignmentOperator assignmentExpression )?
-    ;
-
-assignmentOperator
-    : EQ | PLUS_ASSIGN | MINUS_ASSIGN | STAR_ASSIGN | SLASH_ASSIGN | PERCENT_ASSIGN
-    | AMP_ASSIGN | CARET_ASSIGN | BAR_ASSIGN | LSHIFT_ASSIGN | RSHIFT_ASSIGN
-    ;
-
-conditionalExpression
-    : logicalOrExpression (QUESTION expression COLON conditionalExpression)?
-    ;
-
-logicalOrExpression
-    : logicalAndExpression (OR_OP logicalAndExpression)*
-    ;
-
-logicalAndExpression
-    : bitwiseOrExpression (AND_OP bitwiseOrExpression)*
-    ;
-
-bitwiseOrExpression
-    : bitwiseXorExpression (BIT_OR bitwiseXorExpression)*
-    ;
-
-bitwiseXorExpression
-    : bitwiseAndExpression (CARET bitwiseAndExpression)*
-    ;
-
-bitwiseAndExpression
-    : equalityExpression (AMP equalityExpression)*
-    ;
-
-equalityExpression
-    : relationalExpression ( (EQ_OP | NEQ_OP) relationalExpression )*
-    ;
-
-relationalExpression
-    : shiftExpression ( (LT | GT | LE | GE) shiftExpression )*
-    ;
-
-shiftExpression
-    : additiveExpression ( (LSHIFT | RSHIFT | CONCAT_OP) additiveExpression )*
-    ;
-
-additiveExpression
-    : multiplicativeExpression ( (PLUS | MINUS) multiplicativeExpression )*
-    ;
-
-multiplicativeExpression
-    : unaryExpression ( (STAR | SLASH | PERCENT) unaryExpression )*
-    ;
-
-unaryExpression
-    : (INC_OP | DEC_OP | PLUS | MINUS | BANG | TILDE | CARET | STAR | AMP) unaryExpression # PrefixUnaryExpr
-    | castExpression
-    | sizeofExpression
-    | postfixExpression
-    ;
-
-castExpression
-    : LPAREN datatype RPAREN unaryExpression
-    ;
-
-sizeofExpression
-    : KW_SIZEOF ( postfixExpression | LPAREN datatype RPAREN )
-    ;
-
-postfixExpression
-    : primaryExpression ( LBRACK (expression | range)? RBRACK
-                        | LPAREN argList? RPAREN      
-                        | (DOT) IDENTIFIER   
-                        | (INC_OP | DEC_OP)           
-                        )*
-    ;
-
-argList
-    : expression (COMMA expression)*
-    ;
-
-primaryExpression
-    : qualifiedIdentifier
-    | literal
-    | arrayInitialization
-    | typeInitialization
-    | LPAREN expression RPAREN
-    ;
-
-arrayInitialization
-    : LBRACK expression (COMMA expression)* RBRACK
-    ;
-
-// { expr1, expr2 } or { key1: val1, key2: val2 }
-typeInitialization
-    : LBRACE ( typeInitField (COMMA typeInitField)* )? RBRACE
-    ;
-
-typeInitField
-    : IDENTIFIER COLON expression # KeyValueField
-    | expression                  # ValueField
-    ;
-
-literal
-    : INTEGER_LITERAL
-    | FLOAT_LITERAL
-    | STRING_LITERAL
-    | CHAR_LITERAL
-    | internalConstant
-    ;
-
-internalConstant
-    : KW_TRUE | KW_FALSE | KW_NULL
-    ;
-
-qualifiedIdentifier
-    : SCOPE_OP? IDENTIFIER (SCOPE_OP IDENTIFIER)*
-    ;
-
-
-
-// --- Lexer Rules ---
-
-KW_INT      : 'int';
-KW_I8       : 'i8';
-KW_I16      : 'i16';
-KW_I32      : 'i32';
-KW_I64      : 'i64';
-KW_U8       : 'u8';
-KW_U16      : 'u16';
-KW_U32      : 'u32';
-KW_U64      : 'u64';
-KW_F32      : 'f32';
-KW_F64      : 'f64';
-KW_ALLOC    : 'alloc';
-KW_ERROR    : 'error';
-KW_CONST    : 'const';
-KW_EMBED    : 'embed';
-KW_DEF      : 'def';
-KW_UNION    : 'union';
-KW_STRUCT   : 'struct';
-KW_FCN      : 'fcn';
-KW_NAMESPACE : 'namespace';
-KW_TRUE     : 'true';
-KW_FALSE    : 'false';
-KW_NULL     : 'null';
-KW_SIZEOF   : 'sizeof';
-KW_RETURN   : 'return';
-KW_AUTON    : 'auton';
-KW_DYNAMIC  : 'dynamic';
-KW_IF       : 'if';
-KW_IMPORT   : 'import';
-KW_AS       : 'as';
-KW_SCOPE    : 'scope';
-KW_FOR      : 'for';
-KW_WHILE    : 'while';
-KW_BREAK    : 'break';
-KW_CONTINUE : 'continue';
-KW_LOOP     : 'loop';
-KW_USING    : 'using';
-KW_CATCH    : 'catch';
-KW_ELSE     : 'else';
-
-IDENTIFIER: LETTER (LETTER | DIGIT | '_')*;
-
-FLOAT_LITERAL: ( (DIGIT+ '.' DIGIT*) | ('.' DIGIT+) | (DIGIT+) 'f' );
-INTEGER_LITERAL
-    : HexLiteral
-    | BinaryLiteral
-    | OctalLiteral
-    | DecimalLiteral
-    ;
-
-fragment HexLiteral     : '0' [xX] HEX_DIGIT+ ;
-fragment BinaryLiteral  : '0' [bB] BIN_DIGIT+ ;
-fragment OctalLiteral   : '0' OCTAL_DIGIT+ ;
-fragment DecimalLiteral : [1-9] ( '_'? DIGIT )* | '0' ;
-
-fragment HEX_DIGIT      : [0-9a-fA-F] ;
-fragment BIN_DIGIT      : [01] ;
-fragment OCTAL_DIGIT    : [0-7] ;
-
-CHAR_LITERAL
-    : '\'' (ESCAPE_SEQUENCE | ~["\\\r\n])* '\''
-    ;
-
-STRING_LITERAL
-    : '"'
-      ( ESCAPE_SEQUENCE
-      | ~["\\\n]
-      )*
-      '"'
-      'b'?
-    ;
-
-fragment ESCAPE_SEQUENCE
-    : '\\' ( [btnfr"'\\] | OCTAL_ESCAPE | HEX_ESCAPE )
-    ;
-
-fragment OCTAL_ESCAPE
-    : [0-7] ([0-7] ([0-7])?)?
-    ;
-
-fragment HEX_ESCAPE
-    : 'x' HEX_DIGIT+
-    ;
-
-// Operators
-EQ              : '=';
-PLUS_ASSIGN     : '+=';
-MINUS_ASSIGN    : '-=';
-STAR_ASSIGN     : '*=';
-SLASH_ASSIGN    : '/=';
-PERCENT_ASSIGN  : '%=';
-AMP_ASSIGN      : '&=';
-CARET_ASSIGN    : '^=';
-BAR_ASSIGN      : '|=';
-LSHIFT_ASSIGN   : '<<=';
-RSHIFT_ASSIGN   : '>>=';
-
-OR_OP   : '||';
-AND_OP  : '&&';
-EQ_OP   : '==';
-NEQ_OP  : '!=';
-LE      : '<=';
-GE      : '>=';
-LSHIFT : '<<';
-RSHIFT : '>>';
-INC_OP : '++';
-DEC_OP : '--';
-ARROW  : '->';
-SCOPE_OP    : '::';
-CONCAT_OP   : '..';
-
-LT      : '<';
-GT      : '>';
-PLUS    : '+';
-MINUS   : '-';
-STAR    : '*';
-SLASH   : '/';
-PERCENT : '%';
-AMP     : '&';
-BIT_OR  : '|';
-CARET   : '^';
-TILDE   : '~';
-BANG    : '!';
-
-LPAREN  : '(';
-RPAREN  : ')';
-LBRACE  : '{';
-RBRACE  : '}';
-LBRACK  : '[';
-RBRACK  : ']';
-SEMI    : ';';
-COMMA   : ',';
-DOT     : '.';
-QUESTION: '?';
-COLON   : ':';
-
-
-// Fragments
-fragment LETTER: [a-zA-Z];
-fragment DIGIT: [0-9];
-
-// Whitespaces
-WS: [ \t\r\n]+ -> skip;
-
-// Comments
-COMMENT: '//' ~[\r\n]* -> skip;
-LINE_COMMENT: '//' ~[\r\n]* -> skip;
-
-
-//mode COMMENT_MODE;
-//COMMENT_START
-//    : '/{' -> pushMode(COMMENT_MODE), skip
-//    ;
-
-//CM_CLOSE
-//    : '/}' -> popMode, skip
-//    ;
-
-//CM_OPEN
-//    : '/{' -> pushMode(COMMENT_MODE)
-//    ;
-
-//CM_OTHER
-//    : . -> skip
-//    ;
+Declaration         = QualifiedName ":" [ LanguageTag ] Definition ";".
+
+Definition          = VariableDefinition
+                    | FunctionDefinition
+                    | TypeDefinition
+                    | EnumDefinition
+                    | Block .
+
+
+VariableDeclaration = QualifiedName ":" VariableDefinition .
+VariableDefinition  = DataType [ "=" Expression ]
+
+TypeDefinition      = ( "struct" | "union" ) "{" { FieldDeclaration } "}" .
+FieldDeclaration    = Identifier ":" DataType [ "=" Expression ] ";" .
+
+FunctionDefinition  = "(" [ ParameterList ] ")" [ "using" Identifier ] [ "->" DataType ] Block .
+ParameterList     = [ VariableDeclaration { "," VariableDeclaration } ] .
+
+
+(*
+ * Types
+ * --------------------------------------------------------------------------
+ *)
+
+IntType         = "i8" | "i16" | "i32" | "i64"
+                | "u8" | "u16" | "u32" | "u64" .
+
+FloatType       = "f32" | "f64" .
+BaseType        = IntType | FloatType | "bool" | "void" .
+
+Qualifier       = "const" | "embed" | "fluid" | "alloc" .
+
+DataType        = [ Qualifier ] ( TypeConstructor ) { TypeDecorator } .
+
+TypeConstructor = BaseType
+                | QualifiedName
+                | StructType
+                | EnumType
+                | FunctionType .
+
+StructType      = ( "struct" | "union" ) "{" { Binding ";" } "}" .
+
+EnumType        = "enum" [ ":" IntType ] "{" [ EnumMember { "," EnumMember } [ "," ] ] "}" .
+EnumMember      = Identifier [ "=" Expression ] .
+
+TypeDecorator   = "^"                                (* Pointer *)
+                | "[" [ Expression | Qualifier ] "]" (* Array or Slice *) .
+
+FunctionType    = "(" [ DataType { "," DataType } ] ")" "->" DataType .
+
+
+(*
+ * Statements
+ * --------------------------------------------------------------------------
+ *)
+
+Statement       = Block
+                | IfStatement
+                | LoopStatement
+                | CaseStatement
+                | ReturnStatement
+                | FlowControlStatement
+                | ImportStatement
+                | PrintStatement
+                | ExpressionStatement .
+
+Block           = "{" { TopLevelItem } "}"
+                | ":" Statement .
+
+IfStatement     = "if" Expression Block { "else" "if" Expression Block } [ "else" Block ] .
+
+LoopStatement   = "loop" Iterable [ "as" [ "&" ] Identifier ] [ "at" [ "&" ] Identifier [ ":" DataType ] ] Block .
+
+CaseStatement   = "case" Expression "{" { CaseClause } "}" .
+CaseClause      = ( "when" Expression | "else" ) Block .
+
+ReturnStatement = "return" [ Expression { "," Expression } ] ";" .
+FlowControlStatement = ( "break" | "continue" ) [ Identifier ] ";" .
+
+ImportStatement = "import" [ LanguageTag ] FileName "as" Identifier [ ":" Definition | ";" ] .
+PrintStatement  = StringLiteral [ Expression ] { "," Expression } ";" .
+ExpressionStatement = Expression [ "=" Expression ] ";" .
+
+
+(*
+ * MATLAB-style Ranges
+ * --------------------------------------------------------------------------
+ *)
+
+Range           = [ Expression ] ":" [ Expression ] [ ":" [ Expression ] ]
+                | ":" .
+
+Iterable        = Range | Expression .
+
+
+(*
+ * Expressions
+ * --------------------------------------------------------------------------
+ *)
+
+Expression      = LogicalOr .
+
+LogicalOr       = LogicalAnd   { "||" LogicalAnd } .
+LogicalAnd      = BitOr        { "&&" BitOr } .
+BitOr           = BitXor       { "|" BitXor } .
+BitXor          = BitAnd       { "^" BitAnd } .
+BitAnd          = Equality     { "&" Equality } .
+Equality        = Relational   { ( "==" | "!=" ) Relational } .
+Relational      = Shift        { ( "<" | "<=" | ">" | ">=" ) Shift } .
+Shift           = Additive     { ( "<<" | ">>" ) Additive } .
+Additive        = Multiplicative { ( "+" | "-" ) Multiplicative } .
+Multiplicative  = CastExpr     { ( "*" | "/" | "%" ) CastExpr } .
+CastExpr        = Unary        { ( "->" | "=>" ) DataType } .
+
+Unary           = ( "+" | "-" | "&" | "^" | "!" | "~" | "++" | "--" ) Unary
+                | Postfix .
+
+Postfix         = Primary { Selector | SliceOrIndex | FunctionCall } .
+
+Selector        = "." Identifier .
+SliceOrIndex    = "[" SliceElement { "," SliceElement } "]" .  (* Multi-dimensional slicing *)
+SliceElement    = Range | Expression .
+
+FunctionCall    = "(" [ Expression { "," Expression } ] ")" .
+
+Primary         = QualifiedName
+                | Number
+                | StringLiteral
+                | CharLiteral
+                | "true" | "false" | "null"
+                | "(" Expression ")"
+                | ArrayLiteral
+                | StructLiteral .
+
+ArrayLiteral    = "[" [ Expression { "," Expression } [ "," ] ] "]" .
+StructLiteral   = "{" [ FieldInit { "," FieldInit } [ "," ] ] "}" .
+FieldInit       = [ Identifier "=" ] Expression .
+
+LanguageTag     = "[" Identifier "]" .
