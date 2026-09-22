@@ -28,7 +28,9 @@ namespace Reg {
         if (!finfo->userData) return;
 
         Unit* unit = (Unit*) finfo->userData;
-        // TODO : release
+
+        Ast::release(unit->ast);
+        Ast::release(unit->reg);
         unit->ast = NULL;
         unit->reg = NULL;
     }

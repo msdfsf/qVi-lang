@@ -6,7 +6,9 @@
 #include "allocator.h"
 #include "array_list.h"
 #include "data_types.h"
+#include "dynamic_arena.h"
 #include "globals.h"
+#include "io.h"
 #include "keywords.h"
 #include "lexer.h"
 #include "logger.h"
@@ -14,6 +16,7 @@
 #include "string.h"
 #include "diagnostic.h"
 #include "task_status.h"
+#include "config.h"
 
 
 
@@ -29,14 +32,27 @@ void Ast::init(AstContext* ast) {
     memset(ast, 0, sizeof(AstContext));
     // TODO: to Config
     Arena::init(&ast->tmpArena, 4 * 2048);
+    Arena::init(&ast->errorArena, 4 * 2048);
+
+    ast->errors = alloc<AstError>(Config::opt.maxErrorCount);
+    ast->errorCount = 0;
+    ast->totalErrorCount = 0;
 }
 
 void Ast::clear(AstContext* ast) {
     Arena::clear(&ast->tmpArena);
+    Arena::clear(&ast->errorArena);
+
+    ast->errorCount = 0;
+    ast->totalErrorCount = 0;
 }
 
 void Ast::release(AstContext* ast) {
     Arena::release(&ast->tmpArena);
+    Arena::release(&ast->errorArena);
+
+    ast->errorCount = 0;
+    ast->totalErrorCount = 0;
 }
 
 void Ast::init(AstRegistry* reg) {

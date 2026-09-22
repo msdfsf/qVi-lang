@@ -14,6 +14,7 @@
 
 #include "allocator.h"
 #include "globals.h"
+#include "io.h"
 #include "operators.h"
 #include "data_types.h"
 #include "keywords.h"
@@ -1139,7 +1140,7 @@ constexpr int nodeTypeSize[AT_COUNT] = {
 // of nodes defined here, so there is an abstraction how each node type
 // is handled.
 // Look at allocator.h to for the 'actual' allocator that this is based on
-// TODO: shall we deprecate?
+// TODO: shall we deprecate? YES
 #if !defined(_CUSTOM_ALLOCATOR_)
 
     inline void nallocInit() {
@@ -1149,11 +1150,11 @@ constexpr int nodeTypeSize[AT_COUNT] = {
     }
 
     inline void* nalloc(AllocType type) {
-        return alloc(nodeTypeSize[type], nodeTypeSize[type]);
+        return alloc(nodeTypeSize[type], alignof(std::max_align_t));
     }
 
     inline void* nalloc(AllocType type, size_t count) {
-        return alloc(nodeTypeSize[type] * count, nodeTypeSize[type]);
+        return alloc(nodeTypeSize[type] * count, alignof(std::max_align_t));
     }
 
     inline void ndealloc(void* ptr) {

@@ -1,18 +1,18 @@
-#include "../src/vec_kernel.h"
-#include "test_core.h"
+#include "../../src/vec_kernel.h"
+#include "../test_core.h"
 
 
 
-inline void gVecKernelPreSuite() {
+inline void gVecKernelPreSuite(bool visualize) {
 }
 
-inline void gVecKernelPostSuite() {
+inline void gVecKernelPostSuite(bool visualize) {
 }
 
-inline void gVecKernelPreCase() {
+inline void gVecKernelPreCase(bool visualize) {
 }
 
-inline void gVecKernelPostCase() {
+inline void gVecKernelPostCase(bool visualize) {
 }
 
 

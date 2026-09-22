@@ -1,16 +1,14 @@
-#include "test_ete.h"
+#include "../test_ete.h"
 
 
 
 Test::FileCase gEtEEnumsCase = {
-    "test/end_to_end/test_enums.qvi",
-    gEtEFile
+    "test/end_to_end/to_pass/test_enums.qvi",
+    gEtEFileToPass
 };
 
-
-
 extern const Test::Suite gSuiteEtEEnums = {
-    "EtE - Enums",
+    "EtE:Pass - Enums",
     &gEtEEnumsCase,
     NULL,
     0,
@@ -18,4 +16,5 @@ extern const Test::Suite gSuiteEtEEnums = {
     gEtEPostCase,
     gEtEPreSuite,
     gEtEPostSuite,
+    Test::CK_RUN_PASS
 };

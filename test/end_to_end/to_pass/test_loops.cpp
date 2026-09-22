@@ -1,16 +1,14 @@
-#include "test_ete.h"
+#include "../test_ete.h"
 
 
 
 Test::FileCase gEtELoopsFileCase = {
-    "test/end_to_end/test_loops.qvi",
-    gEtEFile
+    "test/end_to_end/to_pass/test_loops.qvi",
+    gEtEFileToPass
 };
 
-
-
 extern const Test::Suite gSuiteEtELoops = {
-    "EtE - Loops",
+    "EtE:Pass - Loops",
     &gEtELoopsFileCase,
     NULL,
     0,
@@ -18,4 +16,5 @@ extern const Test::Suite gSuiteEtELoops = {
     gEtEPostCase,
     gEtEPreSuite,
     gEtEPostSuite,
+    Test::CK_RUN_PASS
 };

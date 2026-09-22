@@ -1,6 +1,6 @@
-#include "../src/data_types.h"
-#include "../src/globals.h"
-#include "test_core.h"
+#include "../../src/data_types.h"
+#include "../../src/globals.h"
+#include "../test_core.h"
 
 
 

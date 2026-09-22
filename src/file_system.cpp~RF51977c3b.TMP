@@ -396,6 +396,7 @@ namespace FileSystem {
     }
 
     Handle load(String fname, Origin origin) {
+
         if (fname.len >= MAX_FILE_PATH) {
             return null;
         }
@@ -406,9 +407,11 @@ namespace FileSystem {
         absPath->bufferLen = fname.len;
 
         return load(absPath, origin);
+
     }
 
     Handle load(String fpath, String fname, Origin origin) {
+
         if (fname.len + fpath.len + 1 >= MAX_FILE_PATH) {
             return null;
         }
@@ -422,13 +425,14 @@ namespace FileSystem {
         absPath->buffer[fpath.len + fname.len + 1] = '\0';
 
         return load(absPath, origin);
+
     }
 
     // TODO
     Handle loadBuffer(String fname, String data, Origin origin) {
         Path* path = alloc<Path>();
-        memcpy(path->buffer, fname.buff, fname.len);
-        path->bufferLen = fname.len;
+        memcpy(path->buffer, data.buff, data.len);
+        path->bufferLen = data.len;
         path->buffer[path->bufferLen] = '\0';
         annotatePath(path);
 

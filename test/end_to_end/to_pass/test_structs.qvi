@@ -61,7 +61,7 @@ dynamicPt: Point = {
     x: baseX + 5,
     y: baseY * 2
 };
-"%v\n" dynamicPt, dynamicPt;
+"%v\n" dynamicPt;
 #test "{x: 15, y: 40}\n"
 
 

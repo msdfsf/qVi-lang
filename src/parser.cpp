@@ -64,6 +64,7 @@
 // generating 'error states', which greatly simplifies the logic.
 //
 // TODO: make spans for everything!
+// TODO: make lexer batch process tokens.
 
 #include "parser.h"
 
@@ -1610,7 +1611,7 @@ namespace Parser {
             leftExp = NULL;
             token = Lex::nextToken(span);
         }
-        
+
         // second expression could be 'eidx' OR 'step'
         Variable* secondExp = NULL;
         token = parseExpression(ctx, span, &secondExp, INVALID_POS,
@@ -2667,7 +2668,7 @@ namespace Parser {
                 bex->left = Ast::Node::copy(var); // The array/pointer being indexed
 
                 // bex->right = Ast::Node::makeVariable();
-                
+
                 RangeExpression* range;
                 parseRangeExpression(ctx, span, { Lex::TK_ARRAY_END }, &range, &bex->right);
                 if (!bex->right) {
@@ -2803,6 +2804,10 @@ namespace Parser {
 
         Variable* tmpVar;
         token = parseExpression(ctx, span, &tmpVar, startPos, endToken, flags);
+
+        if (!tmpVar && !(flags & EMPTY_EXPRESSION_ALLOWED)) {
+            Diag::report(ctx->unit->ast, span, Err::UNEXPECTED_SYMBOL, "Blablbalba");
+        }
 
         UnaryExpression* uex = Ast::Node::makeUnaryExpression();
         uex->operand = tmpVar;

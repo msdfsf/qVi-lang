@@ -3,8 +3,6 @@
 #include <cstdlib>
 #include <ostream>
 #include <type_traits>
-#define CONFIG_DISABLE_LOGGING
-#define CONFIG_ERROR_RECOVERY
 
 
 #include <cstdint>
@@ -13,6 +11,7 @@
 #include <stdlib.h>
 #include <setjmp.h>
 #include "../src/ansi_colors.h"
+#include "../src/strlib.h"
 
 
 
@@ -44,9 +43,14 @@ inline jmp_buf gJumpBuffer;
 namespace Test {
     constexpr uint32_t maxAssertToDisplay = 16;
 
-    struct String {
-        char*    buf;
-        uint64_t len;
+    struct ExpectedDiagnostic {
+        int  code;
+        int  line;
+        enum Kind : uint8_t {
+            DK_ERROR,
+            DK_WARNING
+        }    kind;
+        bool hasLine;
     };
 
     struct Result {
@@ -62,11 +66,19 @@ namespace Test {
         bool     currentTestFailedHard = false;
     };
 
-    using CaseFcn = void (*)(Result* res);
-    using FileFcn = void (*)(const char* file, const char* output, Result* res);
+    union TestArgument {
+        const char* output;
+        struct {
+            int                 count;
+            ExpectedDiagnostic* data;
+        } diag;
+    };
 
-    using PreFcn  = void (*) ();
-    using PostFcn = void (*) ();
+    using CaseFcn = void (*)(Result* res);
+    using FileFcn = void (*)(const char* file, TestArgument arg, Result* res);
+
+    using PreFcn  = void (*) (bool visualize);
+    using PostFcn = void (*) (bool visualize);
 
     struct Case {
         const char* name;
@@ -76,6 +88,11 @@ namespace Test {
     struct FileCase {
         const char* fname;
         FileFcn     fcn;
+    };
+
+    enum FileCaseKind : uint8_t {
+        CK_RUN_PASS = 0,
+        CK_RUN_FAIL = 1
     };
 
     struct Suite {
@@ -89,7 +106,9 @@ namespace Test {
         PreFcn        preCaseFcn   = NULL;
         PostFcn       postCaseFcn  = NULL;
         PreFcn        preSuiteFcn  = NULL;
-        PreFcn        postSuiteFcn = NULL;
+        PostFcn       postSuiteFcn = NULL;
+
+        FileCaseKind  fileKind;
     };
 
     struct File {
@@ -104,7 +123,43 @@ namespace Test {
         uint64_t testCount;
     };
 
+    // Operators:
+    //   A & B - name has to contain A and B
+    //   A | B - name has to contain A or B
+    //   A ^ B - name has to contain either A or B
+    enum FilterOp : uint8_t {
+        NONE, // Has to be set on last element
+        AND,  // &
+        OR,   // |
+        XOR   // ^
+    };
+
+    struct FilterEntry {
+        String   str;
+        FilterOp op;  // Operator joining this with the next result
+    };
+
+    struct Filter {
+        static constexpr int MAX_QUERY_ENTRIES = 16;
+
+        FilterEntry qFile [MAX_QUERY_ENTRIES];
+        FilterEntry qSuite[MAX_QUERY_ENTRIES];
+        FilterEntry qTest [MAX_QUERY_ENTRIES];
+
+        int32_t qFileCount  = 0;
+        int32_t qSuiteCount = 0;
+        int32_t qTestCount  = 0;
+    };
+
+    struct Context {
+        Filter* filter;
+        bool    visualize;
+    };
+
     inline thread_local Result gResult;
+
+    constexpr int gExpectedDiagnosticCount = 32;
+    inline thread_local ExpectedDiagnostic gExpectedDiagnostics[gExpectedDiagnosticCount];
 
     inline int gOgStdout = -1;
     inline int gPipe[2] = { -1, -1 };
@@ -113,7 +168,7 @@ namespace Test {
 
 
     inline int _writeStatusLine(const char* status, String name, const char* color) {
-        printf("%s[%-5s]%s %.*s\n", color, status, AC_RESET, (int) name.len, name.buf);
+        printf("%s[%-5s]%s %.*s\n", color, status, AC_RESET, (int) name.len, name.buff);
         return 1 + 5 + 2 + name.len;
     }
 
@@ -157,6 +212,125 @@ namespace Test {
             printf(AC_BOLD_RED "WE WORK: " AC_RESET "%u|%u tests passed.\n",
                     res->testsPassed, testCount);
         }
+    }
+
+
+
+    inline const int32_t _skipWhitespaces(String str) {
+        int idx = 0;
+        while (idx < str.len && isspace(str.buff[idx])) {
+            idx++;
+        }
+        return idx;
+    }
+
+    // Parses a single section expression like "array & pointers | math"
+    inline bool parseFilterSection(String str, FilterEntry* entries, int32_t* count) {
+        FilterOp nextOp    = FilterOp::NONE;
+
+        int idx = 0;
+        int entryIdx = 0;
+        while (idx < str.len) {
+            idx += _skipWhitespaces({ str.buff + idx, str.len - idx});
+            if (idx >= str.len) break;
+
+            const char* token = str.buff + idx;
+
+            int tokenLen = 0;
+            while (idx + tokenLen < str.len
+                && token[tokenLen] != '&'
+                && token[tokenLen] != '|'
+                && token[tokenLen] != '^') {
+                tokenLen++;
+            }
+            if (tokenLen == 0) return false;
+            idx += tokenLen;
+
+
+            idx += _skipWhitespaces({ str.buff + idx, str.len - idx });
+
+            const char op = str.buff[idx++];
+            if      (op == '&') nextOp = FilterOp::AND;
+            else if (op == '|') nextOp = FilterOp::OR;
+            else if (op == '^') nextOp = FilterOp::XOR;
+            else                nextOp = FilterOp::NONE;
+
+            if (entryIdx >= Filter::MAX_QUERY_ENTRIES) {
+                return false;
+            }
+
+            FilterEntry* entry = entries + entryIdx;
+            entry->str = { (char*) token, (uint64_t) tokenLen };
+            entry->op  = nextOp;
+
+            entryIdx++;
+        }
+
+        if ((entries + entryIdx - 1)->op != FilterOp::NONE) {
+            // Last entry shall have no operator
+            return false;
+        }
+
+        *count = entryIdx;
+        return true;
+    }
+
+    enum FilterKind {
+        FK_FILE,
+        FK_SUITE,
+        FK_CASE,
+    };
+
+    inline bool filterMatches(Filter* filter, FilterKind kind, String str) {
+        if (!filter) return true;
+
+        int32_t count = 0;
+        const FilterEntry* entries = NULL;
+
+        switch (kind) {
+            case FK_FILE:
+                count   = filter->qFileCount;
+                entries = filter->qFile;
+                break;
+            case FK_SUITE:
+                count   = filter->qSuiteCount;
+                entries = filter->qSuite;
+                break;
+            case FK_CASE:
+                count   = filter->qTestCount;
+                entries = filter->qTest;
+                break;
+            default:
+                return true;
+        }
+
+        if (count == 0) return true;
+        if (!str) return false;
+
+        bool result = Strings::icontains(str, entries[0].str);
+
+        FilterOp op = entries[0].op;
+        for (int32_t i = 1; i < count; i++) {
+            bool currentMatch = Strings::icontains(str, entries[i].str);
+
+            switch (op) {
+                case FilterOp::AND:
+                    result = result && currentMatch;
+                    break;
+                case FilterOp::OR:
+                    result = result || currentMatch;
+                    break;
+                case FilterOp::XOR:
+                    result = (result != currentMatch); // != is boolean XOR
+                    break;
+                default:
+                    break;
+            }
+
+            op = entries[i].op;
+        }
+
+        return result;
     }
 
 
@@ -411,7 +585,7 @@ namespace Test {
                 // We record last comment line before test, so we
                 // can annotate it...
                 hasName = true;
-                name.buf = ptr + 2;
+                name.buff = ptr + 2;
                 recomputeNameLen = true;
             }
 
@@ -422,7 +596,7 @@ namespace Test {
                     result.tests[testIdx].name = name;
 
                     hasName = false;
-                    name.buf = NULL;
+                    name.buff = NULL;
                     name.len = 0;
                 }
 
@@ -459,7 +633,7 @@ namespace Test {
             while (*ptr && *ptr != '\n') ptr++;
             if (*ptr == '\n') {
                 if (recomputeNameLen) {
-                    name.len = ptr - name.buf;
+                    name.len = ptr - name.buff;
                     recomputeNameLen = false;
                 }
                 ptr++;
@@ -467,6 +641,61 @@ namespace Test {
         }
 
         return result;
+    }
+
+    // '#test "code[@line][,code[@line]]..."'
+    inline bool parseExpectedErrors(const char* spec, ExpectedDiagnostic* out, int* count) {
+        *count = 0;
+        if (!spec) return false;
+
+        const char* ptr = spec;
+        while (*ptr && *count < gExpectedDiagnosticCount) {
+            while (*ptr == ' ' || *ptr == ',') ptr++;
+            if (!*ptr) break;
+
+            ExpectedDiagnostic entry = { 0, -1, ExpectedDiagnostic::DK_ERROR, false };
+
+            if (*ptr == 'E') {
+                entry.kind = ExpectedDiagnostic::DK_ERROR;
+            } else if (*ptr == 'W') {
+                entry.kind = ExpectedDiagnostic::DK_WARNING;
+            } else {
+                return false;
+            }
+            ptr++;
+
+            if (*ptr < '0' || *ptr > '9') return false;
+
+            while (*ptr >= '0' && *ptr <= '9') {
+                entry.code = entry.code * 10 + (*ptr - '0');
+                ptr++;
+            }
+
+            if (*ptr == '@') {
+                ptr++;
+
+                if (*ptr < '0' || *ptr > '9') return false;
+
+                entry.line = 0;
+                while (*ptr >= '0' && *ptr <= '9') {
+                    entry.line = entry.line * 10 + (*ptr - '0');
+                    ptr++;
+                }
+                entry.hasLine = true;
+            }
+
+            out[*count] = entry;
+            (*count)++;
+
+            while (*ptr == ' ') ptr++;
+            if (*ptr == ',') {
+                ptr++;
+                continue;
+            }
+            if (*ptr) return false;
+        }
+
+        return *count > 0;
     }
 
     inline void freeTestFile(File* file) {
@@ -490,7 +719,7 @@ namespace Test {
         gResult.currentTestFailedHard = false;
     }
 
-    inline void runTestCase(const Test::Case* testCase, Test::Result* result) {
+    inline void runTestCase(Context* ctx, const Test::Case* testCase, Test::Result* result) {
         _clearCurrentResult(result);
 
         if (setjmp(gJumpBuffer) == 0) {
@@ -507,7 +736,7 @@ namespace Test {
         }
     }
 
-    inline void runTestFile(const Test::File* testFile, FileFcn fcn, const int idx, Test::Result* result) {
+    inline void runTestFileToPass(Context* ctx, const Test::File* testFile, FileFcn fcn, const int idx, Test::Result* result) {
         _clearCurrentResult(result);
 
         const String name = testFile->tests[idx].name;
@@ -518,9 +747,13 @@ namespace Test {
         if (setjmp(gJumpBuffer) == 0) {
             // TODO: do something if these fails
             captureStdoutBegin();
-            fcn(input, output, result);
+            fcn(input, { .output = output }, result);
             captureStdoutEnd();
             assert((const char*) gStdoutBuffer, (const char*) output);
+        }
+
+        if (ctx->visualize) {
+            printf("%s", gStdoutBuffer);
         }
 
         if (result->currentTestFailed) {
@@ -533,31 +766,68 @@ namespace Test {
         }
     }
 
-    inline void runTestSuite(const Test::Suite* suite, Test::Result* result) {
+    inline void runTestFileToFail(Context* ctx, const Test::File* testFile, FileFcn fcn, const int idx, Test::Result* result) {
+        _clearCurrentResult(result);
+        const String name = testFile->tests[idx].name;
+
+        const char* input = testFile->tests[idx].data;
+        const char* spec  = testFile->tests[idx].result;
+
+        int count;
+        parseExpectedErrors(spec, gExpectedDiagnostics, &count);
+
+        if (setjmp(gJumpBuffer) == 0) {
+            fcn(input, { .diag = { .count = count, .data = gExpectedDiagnostics } }, result);
+        }
+
+        if (result->currentTestFailed) {
+            _writeStatusLine(":FAIL", name, AC_BOLD_RED);
+            _writeAssertLine(result);
+            result->testsFailed++;
+        } else {
+            _writeStatusLine(":OKAY", name, AC_BOLD_GREEN);
+            result->testsPassed++;
+        }
+        fflush(stdout);
+    }
+
+    inline void runTestSuite(Test::Context* ctx, const Test::Suite* suite, Test::Result* result) {
+        if (!filterMatches(ctx->filter, FK_SUITE, suite->name)) return;
+
         int lineLen = _writeStatusLine("SUITE", suite->name, AC_BOLD_CYAN);
 
-        if (suite->preSuiteFcn) suite->preSuiteFcn();
+        if (suite->preSuiteFcn) suite->preSuiteFcn(ctx->visualize);
 
         if (suite->file) {
             File file = parseTestFile(suite->file->fname);
-            file.name.buf = (char*) suite->file->fname;
+            file.name.buff = (char*) suite->file->fname;
             file.name.len = strlen(suite->file->fname);
 
+
             for (size_t i = 0; i < file.testCount; i++) {
-                if (suite->preCaseFcn) suite->preCaseFcn();
-                runTestFile(&file, suite->file->fcn, i, result);
-                if (suite->postCaseFcn) suite->postCaseFcn();
+                if (!filterMatches(ctx->filter, FK_CASE, file.tests[i].name)) continue;
+
+                if (suite->fileKind == CK_RUN_PASS) {
+                    // In pass case we still don want to visualize
+                    if (suite->preCaseFcn) suite->preCaseFcn(false);
+                    runTestFileToPass(ctx, &file, suite->file->fcn, i, result);
+                    if (suite->postCaseFcn) suite->postCaseFcn(false);
+                } else {
+                    if (suite->preCaseFcn) suite->preCaseFcn(ctx->visualize);
+                    runTestFileToFail(ctx, &file, suite->file->fcn, i, result);
+                    if (suite->postCaseFcn) suite->postCaseFcn(ctx->visualize);
+                }
             }
             freeTestFile(&file);
         }
 
         for (size_t i = 0; i < suite->caseCount; i++) {
-            if (suite->preCaseFcn) suite->preCaseFcn();
-            runTestCase(suite->cases + i, result);
-            if (suite->postCaseFcn) suite->postCaseFcn();
+            if (suite->preCaseFcn) suite->preCaseFcn(false);
+            runTestCase(ctx, suite->cases + i, result);
+            if (suite->postCaseFcn) suite->postCaseFcn(false);
         }
 
-        if (suite->postSuiteFcn) suite->postSuiteFcn();
+        if (suite->postSuiteFcn) suite->postSuiteFcn(false);
 
         putchar('\n');
     }

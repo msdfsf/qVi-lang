@@ -1,16 +1,16 @@
-#include "test_ete.h"
+#include "../test_ete.h"
 
 
 
 Test::FileCase gEtEFunctionsFileCase = {
-    "test/end_to_end/test_functions.qvi",
-    gEtEFile
+    "test/end_to_end/to_pass/test_functions.qvi",
+    gEtEFileToPass
 };
 
 
 
 extern const Test::Suite gSuiteEtEFunctions = {
-    "EtE - Functions",
+    "EtE:Pass - Functions",
     &gEtEFunctionsFileCase,
     NULL,
     0,
@@ -18,4 +18,5 @@ extern const Test::Suite gSuiteEtEFunctions = {
     gEtEPostCase,
     gEtEPreSuite,
     gEtEPostSuite,
+    Test::CK_RUN_PASS
 };

@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 
 #include "logger.h"
 #include "syntax.h"
@@ -74,183 +75,8 @@ namespace Interpreter {
         Arena::release(&heap);
         Arena::release(&vecContext.arena);
     }
-    /*
-    Err::Err StackToVariable(AstContext* ast, uint8_t* buff, int64_t buffSize, Variable* var) {
-        Value* val = &var->value;
 
-        switch (val->type->kind) {
-            case Type::DT_I8:
-            case Type::DT_U8:
-            case Type::DT_I16:
-            case Type::DT_U16:
-            case Type::DT_I32:
-            case Type::DT_U32:
-            case Type::DT_I64:
-            case Type::DT_U64:
-            case Type::DT_F32:
-            case Type::DT_F64:
-            case Type::DT_POINTER: {
-                const int size = (Type::basicTypes + val->typeKind)->size;
-                if (buffSize < size) {
-                    Diag::report(ast, var->base.span,
-                        Err::UNEXPECTED_ERROR, Diag::Format {
-                            "Unexpected Comptime Memory Error: Attempted to read %d bytes from VM stack, "
-                            "but only %lld bytes are available in the current frame."
-                        },
-                        size, buffSize);
-                    return Err::UNEXPECTED_ERROR;
-                }
 
-                val->u64 = 0;
-                memcpy(&val->u64, buff, size);
-                val->hasValue = true;
-                break;
-            }
-
-            case Type::DT_CUSTOM: {
-                TypeDefinition* def = val->def;
-                Type::StructInfo* sInfo = (Type::StructInfo*) def->typeInfo;
-
-                TypeInitialization* init = Ast::Node::makeTypeInitialization();
-                init->attributeCount = sInfo->memberCount;
-                init->attributes = (Variable**) alloc(alc, init->attributeCount * sizeof(Variable*));
-
-                for (int i = 0; i < (int)sInfo->memberCount; i++) {
-                    Type::StructMemberInfo* mInfo = sInfo->members + i;
-
-                    Variable* mVar = Ast::Node::makeVariable();
-                    mVar->value.typeKind = mInfo->type->kind;
-                    mVar->value.def =
-                        mInfo->type->kind == Type::DT_CUSTOM ?
-                        (TypeDefinition*) mInfo->type : NULL;
-
-                    uint8_t* mBuff = buff + mInfo->offset;
-                    int64_t  mSize = buffSize - mInfo->offset;
-
-                    Err::Err err = StackToVariable(ast, mBuff, mSize, mVar);
-                    if (err != Err::OK) return err;
-
-                    init->attributes[i] = mVar;
-                }
-
-                var->expression = (Expression*) init;
-                break;
-            }
-
-            case Type::DT_ARRAY:
-            case Type::DT_SLICE: {
-                Diag::report(ast, var->base.span,
-                    Err::NOT_YET_IMPLEMENTED, Diag::Format {
-                        "Compile-time conversion for %s not yet implemented"
-                    }, Type::str(val->typeKind));
-                return Err::NOT_YET_IMPLEMENTED;
-            }
-
-            default: {
-                Diag::report(ast, var->base.span,
-                    Err::UNEXPECTED_ERROR, Diag::Format {
-                        "Invalid type kind (%i) in StackToValue"
-                    }, val->typeKind);
-                return Err::UNEXPECTED_ERROR;
-            }
-        }
-
-        return Err::OK;
-    }
-
-    Err::Err VariableToStack(AstContext* ast, uint8_t* buff, int64_t buffSize, Variable* var) {
-        Value* val = &var->value;
-
-        switch (val->typeKind) {
-            case Type::DT_I8:
-            case Type::DT_U8:
-            case Type::DT_I16:
-            case Type::DT_U16:
-            case Type::DT_I32:
-            case Type::DT_U32:
-            case Type::DT_I64:
-            case Type::DT_U64:
-            case Type::DT_F32:
-            case Type::DT_F64: {
-                const int size = (Type::basicTypes + val->typeKind)->size;
-                if (buffSize < size) {
-                    Diag::report(ast, var->base.span,
-                        Err::UNEXPECTED_ERROR, Diag::Format {
-                            "Unexpected Comptime Memory Error: Attempted to write %d bytes to VM stack, "
-                            "but only %lld bytes are available in the current frame."
-                        },
-                        size, buffSize);
-                    return Err::UNEXPECTED_ERROR;
-                }
-
-                memset(buff, 0, size);
-                memcpy(buff, &val->u64, size);
-                break;
-            }
-
-            // TODO : sanity check for memberCount == varCount?
-            case Type::DT_CUSTOM: {
-                TypeDefinition* def = val->def;
-                Type::StructInfo* sInfo = (Type::StructInfo*) def->typeInfo;
-
-                var = unwrap(var);
-                if (var->def) var = unwrap(var->def->var);
-
-                // TODO : for now assuming that it can be only init
-                if (!var->expression || var->expression->type != EXT_TYPE_INITIALIZATION) {
-                    Diag::report(ast, var->base.span, Err::UNEXPECTED_SYMBOL,
-                        "Expected struct initialization expression.");
-                    return Err::UNEXPECTED_ERROR;
-                }
-
-                TypeInitialization* init = (TypeInitialization*) var->expression;
-                for (int i = 0; i < sInfo->memberCount; i++) {
-                    Type::StructMemberInfo* mInfo = sInfo->members + i;
-
-                    Variable* mVar = NULL;
-                    if (i < init->attributeCount) {
-                        mVar = init->attributes[i];
-                    } else if (init->fillVar) {
-                        mVar = init->fillVar;
-                    } else {
-                        mVar = def->vars[i];
-                    }
-
-                    uint8_t* mBuff = buff + mInfo->offset;
-                    int64_t  mSize = buffSize - mInfo->offset;
-
-                    Err::Err err = VariableToStack(ast, mBuff, mSize, mVar);
-                    if (err != Err::OK) return err;
-                }
-
-                break;
-            }
-
-            case Type::DT_SLICE:
-            case Type::DT_ERROR:
-            case Type::DT_FUNCTION:
-            case Type::DT_COUNT:
-            case Type::DT_MULTIPLE_TYPES:
-            case Type::DT_ARRAY: {
-                Diag::report(ast, var->base.span,
-                    Err::NOT_YET_IMPLEMENTED, Diag::Format {
-                        "Compile-time conversion for %s not yet implemented"
-                    }, Type::str(val->typeKind));
-                return Err::NOT_YET_IMPLEMENTED;
-            }
-
-            default: {
-                Diag::report(ast, var->base.span,
-                    Err::UNEXPECTED_ERROR, Diag::Format {
-                        "Invalid type kind (%i) in ValueToStack"
-                    }, val->typeKind);
-                return Err::UNEXPECTED_ERROR;
-            }
-        }
-
-        return Err::OK;
-    }
-*/
 
     // some useful functions to not copy-paste that much
     // hopefully they get optimized
@@ -326,6 +152,30 @@ namespace Interpreter {
     resultCast ans = (resultCast)(left op right); \
     pushValue<resultCast>(sp, ans);
 
+    template<typename T>
+    Err::Err binaryDiv(AstContext* ast, uint8_t* ip, uint8_t* fp, vmword* sp) {
+        T right = popValue<T>(sp);
+        T left  = popValue<T>(sp);
+
+        if constexpr (std::is_integral_v<T>) {
+            if (right == 0) {
+                ExeBlock* exe = (ExeBlock*)(((vmword*) fp)[-1]);
+                String name = Ast::Node::getName(exe->node);
+
+                Diag::report(ast, NULL, Err::DIVISION_BY_ZERO,
+                    Diag::Format{
+                        "VM encountered division by zero: %lli / %lli;\nTriggered from: %.*s\n"
+                    }, left, right, name.len, name.buff);
+                return Err::DIVISION_BY_ZERO;
+            }
+        }
+
+        T ans = left / right;
+        pushValue<T>(sp, ans);
+
+        return Err::OK;
+    }
+
     // Ext allows to dictate how extended we want result to be...
     template<typename Src, typename Dest, typename Ext = Dest>
     inline void cast(vmword* sp) {
@@ -343,7 +193,7 @@ namespace Interpreter {
 
         ExeBlock* exe = (ExeBlock*) (((vmword*) fp)[-1]);
         String name = Ast::Node::getName(exe->node);
-        IO::writef(stream, "Triggered from:\n", name.len, name.buff);
+        IO::writef(stream, "Triggered from: %.*s\n", name.len, name.buff);
 
         _debugPrintOpcode(stream, exe, ip);
 
@@ -661,7 +511,9 @@ namespace Interpreter {
                     return Err::UNEXPECTED_ERROR;
                 };
 
-                Extern::Abi::marshal(ast, arg->value.type, arg, fp + offset, Extern::Abi::MarshalMode::SLOT_SE8);
+                Err::Err err = Extern::Abi::marshal(ast, arg->value.type, arg, fp + offset, Extern::Abi::MarshalMode::SLOT_SE8);
+                if (err != Err::OK) return err;
+
                 offset += size;
             }
         }
@@ -1241,32 +1093,38 @@ namespace Interpreter {
 
 
                 case OC_DIV_I32: {
-                    BINARY_EXP(int32_t, /);
+                    Err::Err err = binaryDiv<int32_t>(ast, ip, fp, sp);
+                    if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_DIV_U32: {
-                    BINARY_EXP(uint32_t, /);
+                    Err::Err err = binaryDiv<uint32_t>(ast, ip, fp, sp);
+                    if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_DIV_I64: {
-                    BINARY_EXP(int64_t, /);
+                    Err::Err err = binaryDiv<int64_t>(ast, ip, fp, sp);
+                    if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_DIV_U64: {
-                    BINARY_EXP(uint64_t, /);
+                    Err::Err err = binaryDiv<uint64_t>(ast, ip, fp, sp);
+                    if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_DIV_F32: {
-                    BINARY_EXP(float, /);
+                    Err::Err err = binaryDiv<float>(ast, ip, fp, sp);
+                    if (err != Err::OK) return err;
                     break;
                 }
 
                 case OC_DIV_F64: {
-                    BINARY_EXP(double, /);
+                    Err::Err err = binaryDiv<double>(ast, ip, fp, sp);
+                    if (err != Err::OK) return err;
                     break;
                 }
 

@@ -49,6 +49,7 @@ namespace Compiler {
         Type::init();
         Ast::init();
         FileSystem::init();
+        Diag::init();
         TaskSystem::init(threadCount);
 
         Extern::init();
@@ -58,6 +59,7 @@ namespace Compiler {
         Extern::clear();
 
         // TODO: maybe add clear? TaskSystem::init(0);
+        Diag::init();
         FileSystem::clear();
         Ast::clear();
         Type::clear();
@@ -69,6 +71,7 @@ namespace Compiler {
         Extern::release();
 
         TaskSystem::release();
+        Diag::release();
         FileSystem::release();
         Ast::release();
         Type::release();
@@ -83,6 +86,7 @@ namespace Compiler {
         TaskSystem::dispatchParse(fileHandle);
         TaskSystem::wait();
 
+        if (Diag::hasErrors()) return -1; // TODO: something meaningful
         Logger::log(logInf, "Parsing completed");
 
 
@@ -91,6 +95,7 @@ namespace Compiler {
         TaskSystem::dispatchPreValidation(fileHandle);
         TaskSystem::wait();
 
+        if (Diag::hasErrors()) return -1; // TODO: something meaningful
         Logger::log(logInf, "Pre validation completed");
 
 
@@ -99,6 +104,7 @@ namespace Compiler {
         TaskSystem::dispatchValidation(fileHandle);
         TaskSystem::wait();
 
+        if (Diag::hasErrors()) return -1; // TODO: something meaningful
         Logger::log(logInf, "Validating completed");
 
         return 0;
@@ -125,6 +131,7 @@ namespace Compiler {
         }
         TaskSystem::wait();
 
+        if (Diag::hasErrors()) return -1; // TODO: something meaningful
         return 0;
     }
 

@@ -1,6 +1,6 @@
 #include <string.h>
-#include "test_core.h"
-#include "../src/array_list.h"
+#include "../test_core.h"
+#include "../../src/array_list.h"
 
 const Test::Case gDArrayCases[] = {
 

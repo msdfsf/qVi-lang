@@ -421,9 +421,9 @@ case x {
 // 9.4 Last branch
 x: i32 = 3;
 case x {
-    when 1 { value = 1; }
-    when 2 { value = 2; }
-    when 3 { value = 3; }
+    when 1 { x = 1; }
+    when 2 { x = 2; }
+    when 3 { x = 3; }
 }
 "%v" x;
 #test "3"

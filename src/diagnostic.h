@@ -3,7 +3,9 @@
 //        internal compiler error.
 
 #pragma once
+#include "file_system.h"
 #include "stdint.h"
+#include <cstdint>
 
 struct Span;
 struct AstContext;
@@ -112,6 +114,13 @@ namespace Diag {
     struct Format {
         const char* fmt;
     };
+
+    void init();
+    void clear();
+    void release();
+
+    bool hasErrors();
+    AstContext** getAllErrorFiles(uint32_t* count);
 
     void report(AstContext* ast, Span* span, Err::Err code, ...);
     void report(AstContext* ast, Span* span, Wrn::Wrn code, ...);

@@ -1,11 +1,11 @@
 #pragma once
-#include "../../src/syntax.h"
-#include "../../src/parser.h"
-#include "../../src/globals.h"
-#include "../../src/registry.h"
-#include "../../src/allocator.h"
-#include "../../src/config.h"
-#include "../test_core.h"
+#include "../../../src/syntax.h"
+#include "../../../src/parser.h"
+#include "../../../src/globals.h"
+#include "../../../src/registry.h"
+#include "../../../src/allocator.h"
+#include "../../../src/config.h"
+#include "../../test_core.h"
 #include <cstring>
 
 
@@ -16,11 +16,12 @@ inline thread_local Parser::ParseContext ctx;
 inline thread_local Span span;
 inline thread_local QualifiedName name;
 
-inline void gParserPreSuite() {
+inline void gParserPreSuite(bool visualize) {
     allocInit();
     Type::init();
     Ast::init();
     Lex::init();
+    Diag::init();
 
     Reg::Unit* unit = alloc<Reg::Unit>();
     unit->ast = alloc<AstContext>();
@@ -38,17 +39,18 @@ inline void gParserPreSuite() {
     ctx.fileSpan = alloc<Span>();
 }
 
-inline void gParserPostSuite() {
+inline void gParserPostSuite(bool visualize) {
+    Diag::release();
     Ast::release(ctx.unit->ast);
     Ast::release(ctx.unit->reg);
     Lex::release();
     Parser::release(&ctx);
 }
 
-inline void gParserPreCase() {
+inline void gParserPreCase(bool visualize) {
 }
 
-inline void gParserPostCase() {
+inline void gParserPostCase(bool visualize) {
     DArray::clear(&ctx.nodeStack);
     DArray::clear(&ctx.defStack);
 }

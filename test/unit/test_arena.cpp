@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
-#include "test_core.h"
-#include "../src/dynamic_arena.h"
+#include "../test_core.h"
+#include "../../src/dynamic_arena.h"
 
 const Test::Case gArenaCases[] = {
 

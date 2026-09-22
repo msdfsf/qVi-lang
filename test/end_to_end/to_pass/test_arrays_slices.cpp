@@ -1,16 +1,14 @@
-#include "test_ete.h"
+#include "../test_ete.h"
 
 
 
 Test::FileCase gEtEArraySlicesFileCase = {
-    "test/end_to_end/test_arrays_slices.qvi",
-    gEtEFile
+    "test/end_to_end/to_pass/test_arrays_slices.qvi",
+    gEtEFileToPass
 };
 
-
-
 extern const Test::Suite gSuiteEtEArraySlices = {
-    "EtE - Array/Slices",
+    "EtE:Pass - Array/Slices",
     &gEtEArraySlicesFileCase,
     NULL,
     0,
@@ -18,4 +16,5 @@ extern const Test::Suite gSuiteEtEArraySlices = {
     gEtEPostCase,
     gEtEPreSuite,
     gEtEPostSuite,
+    Test::CK_RUN_PASS
 };

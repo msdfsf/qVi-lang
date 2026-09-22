@@ -1,7 +1,7 @@
-#include "../src/syntax.h"
-#include "../src/lexer.h"
-#include "../src/globals.h"
-#include "test_core.h"
+#include "../../src/syntax.h"
+#include "../../src/lexer.h"
+#include "../../src/globals.h"
+#include "../test_core.h"
 #include <cstdint>
 #include <stdio.h>
 
@@ -12,21 +12,21 @@
 static thread_local Span  span;
 // thread_local Arena::Container arena;
 
-inline void gLexerPreSuite() {
+inline void gLexerPreSuite(bool visualize) {
     //initAlloc(&a);
     //alc = &arena;
     nallocInit();
 }
 
-inline void gLexerPostSuite() {
+inline void gLexerPostSuite(bool visualize) {
     //Arena::release(&arena);
 }
 
-inline void gLexerPreCase() {
+inline void gLexerPreCase(bool visualize) {
     Lex::init();
 }
 
-inline void gLexerPostCase() {
+inline void gLexerPostCase(bool visualize) {
     Lex::release();
 }
 

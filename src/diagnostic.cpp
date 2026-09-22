@@ -1,10 +1,14 @@
 #include "diagnostic.h"
+#include "array_list.h"
 #include "globals.h"
 #include "logger.h"
 #include "config.h"
 #include "syntax.h"
 #include "task_system.h"
+#include <atomic>
 #include <cstdarg>
+#include <cstdint>
+#include <mutex>
 #include <stdarg.h>
 
 
@@ -196,6 +200,10 @@ bool Err::isFatal(Err err) {
 
 namespace Diag {
 
+    std::atomic_bool gHasErrors = false;
+    std::mutex gErrorFilesMutex;
+    DArray::Container gErrorFiles;
+
     Logger::Level toLoggerLevel(const Severity sev) {
         switch (sev) {
             case SEV_NOTE:    return Logger::INFO;
@@ -203,6 +211,42 @@ namespace Diag {
             case SEV_FATAL:
             case SEV_ERROR:   return Logger::ERROR;
         }
+    }
+
+    bool hasErrors() {
+        return gHasErrors;
+    }
+
+    AstContext** getAllErrorFiles(uint32_t* count) {
+        *count = gErrorFiles.size;
+        return (AstContext**) gErrorFiles.buffer;
+    }
+
+    void recordErrorFile(AstContext* ast) {
+        gHasErrors = true;
+        std::lock_guard<std::mutex> lock(gErrorFilesMutex);
+        if (ast->totalErrorCount == 0) {
+            DArray::push(&gErrorFiles, &ast);
+        }
+    }
+
+    void clearErrorFiles() {
+        gHasErrors = false;
+        DArray::clear(&gErrorFiles);
+    }
+
+    void init() {
+        gHasErrors = false;
+        DArray::init(&gErrorFiles, 32, sizeof(void*));
+    }
+
+    void clear() {
+        clearErrorFiles();
+    }
+
+    void release() {
+        gHasErrors = false;
+        DArray::release(&gErrorFiles);
     }
 
     void commit(AstContext* ctx, Span* span, Severity sev, uint32_t code) {
@@ -236,8 +280,7 @@ namespace Diag {
                 if (Err::isFatal((Err::Err)code)) {
                     TaskSystem::panic(code);
                 }
-            }
-            else {
+            } else {
                 TaskSystem::panic(code);
             }
         }

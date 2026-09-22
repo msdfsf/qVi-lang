@@ -4,6 +4,7 @@
 #include "ansi_colors.h"
 #include "io.h"
 #include <cstdarg>
+#include <cstdint>
 #include <stdint.h>
 
 
@@ -38,6 +39,7 @@ namespace Logger {
     struct Type {
         Level level     = PLAIN;
         Style style     = DEFAULT;
+        uint16_t code   = 0;
         const char* tag = NULL;
     };
 

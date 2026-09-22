@@ -257,13 +257,13 @@ namespace Logger {
     }
 
     int printSpan(Span* span, SpanStyle* style) {
-        return printSpan(&gBufferStream, span, style);
-    }
-
-    int printSpanNoFlush(Span* span, SpanStyle* style) {
         const int tmp = printSpan(&gBufferStream, span, style);
         flush();
         return tmp;
+    }
+
+    int printSpanNoFlush(Span* span, SpanStyle* style) {
+        return printSpan(&gBufferStream, span, style);
     }
 
 

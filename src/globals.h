@@ -162,14 +162,12 @@ static inline int isValidPos(Pos pos) {
 }
 
 static inline Span* getSpanStamp(Span* span) {
+    if (!span) return NULL;
 
     Span* stamp = alloc<Span>();
-    if (!stamp) return NULL;
-
     memcpy(stamp, span, sizeof(Span));
 
     return stamp;
-
 }
 
 static inline SpanEx markSpanStart(Span* span) {

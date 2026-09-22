@@ -1,5 +1,5 @@
-#include "test_core.h"
-#include "../src/print_format.h"
+#include "../test_core.h"
+#include "../../src/print_format.h"
 #include <cstdint>
 
 
@@ -7,20 +7,20 @@
 thread_local PrintFormat::Info info;
 thread_local uint64_t idx;
 
-inline void gPrintFormatPreSuite() {
+inline void gPrintFormatPreSuite(bool visualize) {
 
 }
 
-inline void gPrintFormatPostSuite() {
+inline void gPrintFormatPostSuite(bool visualize) {
     //Arena::release(&arena);
 }
 
-inline void gPrintFormatPreCase() {
+inline void gPrintFormatPreCase(bool visualize) {
     idx = 0;
     info = PrintFormat::Info {};
 }
 
-inline void gPrintFormatPostCase() {
+inline void gPrintFormatPostCase(bool visualize) {
 }
 
 PrintFormat::Err parse(const char* fmt, uint64_t* idx) {

@@ -1,5 +1,5 @@
-#include "test_core.h"
-#include "../src/set.h"
+#include "../test_core.h"
+#include "../../src/set.h"
 #include <cstdint>
 
 const Test::Case gSetCases[] = {
