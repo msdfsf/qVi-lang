@@ -89,7 +89,7 @@ namespace Logger {
     void flush(IO::Stream* stream) {
         uint32_t currentLen = getBufferIndex();
         if (currentLen > 0) {
-            if constexpr (Config::LOGGING_ENABLED) {
+            if (Config::opt.loggingEnabled) {
                 IO::write(stream, gBuffer, currentLen);
             }
         }
@@ -102,7 +102,7 @@ namespace Logger {
         uint32_t currentLen = getBufferIndex();
         if (currentLen == 0) return;
 
-        if constexpr (Config::LOGGING_ENABLED) {
+        if (Config::opt.loggingEnabled) {
             for (uint32_t i = 0; i < flushStreamCount; i++) {
                 IO::write(&flushStreams[i], gBuffer, currentLen);
             }

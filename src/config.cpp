@@ -1,3 +1,5 @@
+#include "config.h"
+
 namespace Config {
     int maxErrorCount = 100;
 

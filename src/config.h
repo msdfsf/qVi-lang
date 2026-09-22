@@ -1,11 +1,8 @@
 namespace Config {
 
-    // Set to true for LSP/Library builds
-    #if defined(CONFIG_ERROR_RECOVERY)
-        constexpr bool ERROR_RECOVERY_ENABLED = true;
-    #else
-        constexpr bool ERROR_RECOVERY_ENABLED = false;
-    #endif
+    struct Options {
+        // Set to true for LSP/Library builds
+        bool errorRecoveryEnabled = false;
 
     // Set to true to enable logging
     #if defined(CONFIG_DISABLE_LOGGING)

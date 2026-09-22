@@ -206,14 +206,16 @@ namespace Diag {
     }
 
     void commit(AstContext* ctx, Span* span, Severity sev, uint32_t code) {
-        if constexpr (Config::LOGGING_ENABLED) {
+        if (Config::opt.loggingEnabled) {
             Logger::flush();
         }
 
         if (sev == SEV_ERROR) {
-            if constexpr (Config::ERROR_RECOVERY_ENABLED) {
-                if (ctx->errorCount > 0 && ctx->errorCount <= Config::maxErrorCount) {
-                    AstError* err = &ctx->errors[ctx->errorCount - 1];
+            recordErrorFile(ctx);
+
+            if (Config::opt.errorRecoveryEnabled) {
+                if (ctx->errorCount <= Config::opt.maxErrorCount) {
+                    AstError* err = &ctx->errors[ctx->errorCount];
                     err->severity = sev;
                     err->err = code;
                     err->span = getSpanStamp(span);
@@ -242,7 +244,7 @@ namespace Diag {
     }
 
     void report(AstContext* ctx, Span* span, Severity sev, uint32_t code, const char* const format, va_list args) {
-        if constexpr (Config::LOGGING_ENABLED) {
+        if (Config::opt.loggingEnabled) {
             Logger::Level level = toLoggerLevel(sev);
             Logger::vlogNoFlush({ .level = level, .tag = ctx->tag }, format, span, args);
         }

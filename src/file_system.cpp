@@ -338,8 +338,8 @@ namespace FileSystem {
     }
 
     void init() {
-        DArray::init(&filesData, Config::fileCount, sizeof(File));
-        Set::init(&filesSet, Config::fileCount * 2);
+        DArray::init(&filesData, Config::opt.initFileCount, sizeof(File));
+        Set::init(&filesSet, Config::opt.initFileCount * 2);
         filesSet.hashMethod = Set::HM_STRING_FNV1A;
         filesSet.keyOffset = offsetof(File, info) +
                              offsetof(FileInfo, absPath) +

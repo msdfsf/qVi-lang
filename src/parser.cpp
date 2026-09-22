@@ -336,19 +336,17 @@ namespace Parser {
 
     Lex::Token sync(Span* span, Lex::Token tokenA, Lex::Token tokenB = { Lex::TK_END }, Lex::TokenValue* val = NULL) {
         // Recovery mode
-        if constexpr (Config::ERROR_RECOVERY_ENABLED) {
+        if (Config::opt.errorRecoveryEnabled) {
             return Lex::syncToken(span, tokenA, tokenB);
         }
 
-        // Strict mode, we just act as a dumb function and pray
-        // that we get optimized away.
+        // Strict mode
         return { Lex::TK_END };
     }
 
     Lex::Token sync(Span* span, SyncType type, Lex::TokenValue* val = NULL) {
-        // Strict mode, we just act as a dumb function and pray
-        // that we get optimized away.
-        if constexpr (!Config::ERROR_RECOVERY_ENABLED) {
+        // Strict mode
+        if (!Config::opt.errorRecoveryEnabled) {
             return { Lex::TK_END };
         }
 

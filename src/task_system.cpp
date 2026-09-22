@@ -29,8 +29,8 @@ namespace TaskSystem {
             worker->hasWork.store(false);
             worker->thread = std::thread(Core::runWorker, worker);
 
-            DArray::init(&worker->stack, Config::threadWorkQueueSize, sizeof(Core::Task));
-            DArray::init(&worker->localStack, Config::threadWorkQueueSize, sizeof(Core::Task));
+            DArray::init(&worker->stack, Config::opt.threadWorkQueueSize, sizeof(Core::Task));
+            DArray::init(&worker->localStack, Config::opt.threadWorkQueueSize, sizeof(Core::Task));
 
             Parser::init(&worker->state.p);
             Validator::init(&worker->state.v);
