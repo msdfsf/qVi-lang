@@ -5,6 +5,7 @@
 #include "task_system_core.h"
 #include "config.h"
 #include "validator.h"
+#include <atomic>
 #include <cstdint>
 
 
@@ -27,7 +28,6 @@ namespace TaskSystem {
 
             worker->id = i;
             worker->hasWork.store(false);
-            worker->thread = std::thread(Core::runWorker, worker);
 
             DArray::init(&worker->stack, Config::opt.threadWorkQueueSize, sizeof(Core::Task));
             DArray::init(&worker->localStack, Config::opt.threadWorkQueueSize, sizeof(Core::Task));
@@ -36,7 +36,7 @@ namespace TaskSystem {
             Validator::init(&worker->state.v);
             Interpreter::init(&worker->state.c);
 
-            worker->thread.detach();
+            worker->thread = std::thread(Core::runWorker, worker);
         }
     }
 
@@ -50,13 +50,19 @@ namespace TaskSystem {
             DArray::release(&worker->stack);
             DArray::release(&worker->localStack);
 
-            Parser::release(&worker->state.p);
-            Validator::release(&worker->state.v);
             Interpreter::release(&worker->state.c);
+            Validator::release(&worker->state.v);
+            Parser::release(&worker->state.p);
 
-            // TODO: do a proper thing
-            worker->amIAlive = false;
-            worker->hasWork.notify_one();
+            worker->amIAlive.store(false, std::memory_order_release);
+            worker->hasWork.store(true, std::memory_order_release);
+            worker->hasWork.notify_all();
+        }
+
+        for (int i = 0; i < workerCount; i++) {
+            if (workers[i].thread.joinable()) {
+                workers[i].thread.join();
+            }
         }
     }
 

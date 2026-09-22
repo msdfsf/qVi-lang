@@ -233,8 +233,9 @@ namespace TaskSystem::Core {
 
             gCheckList.fetch_or(1ULL << worker->id);
             gCheckList.notify_all();
-
         }
+
+        allocRelease();
     }
 
     void enqueue(Task task) {

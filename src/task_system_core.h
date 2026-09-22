@@ -61,7 +61,7 @@ namespace TaskSystem::Core {
 
     struct Worker {
         int id;
-        bool amIAlive;
+        std::atomic_bool amIAlive;
 
         std::thread thread;
         std::atomic<bool> hasWork;
