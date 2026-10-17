@@ -42,7 +42,8 @@ extern const Test::Suite gSuiteEtEStructs;
 
 extern const Test::Suite gSuiteEtESync;
 
-
+extern const Test::BenchCase gBench[];
+extern const int gBenchReps;
 
 enum OptionId {
     OPT_HELP      = 0,
@@ -50,6 +51,7 @@ enum OptionId {
     OPT_UNIT,
     OPT_VISUALIZE,
     OPT_FILTER,
+    OPT_BENCH,
 
     OPT_COUNT,
 };
@@ -60,6 +62,7 @@ CLI::Option options[OPT_COUNT] = {
     { OPT_UNIT,      "u", "unit",      "Run unit tests",               },
     { OPT_VISUALIZE, "v", "visualize", "Visualize failure diagnostics" },
     { OPT_FILTER,    "f", "filter",    "Filter tests by pattern",      },
+    { OPT_BENCH,     "b", "bench",     "Run benchmarks",               },
 };
 static_assert(OPT_COUNT == sizeof(options) / sizeof(CLI::Option));
 
@@ -208,11 +211,31 @@ int main(int argc, const char** argv) {
         }
     }
 
+
+
+    if (options[OPT_BENCH].encountered) {
+        printf(AC_BOLD_MAGENTA "Welcome to the club, buddy" AC_RESET ", lets bench some iron to see whose the boss of this gym" AC_BOLD_MAGENTA "<3\n");
+        printf(AC_BRIGHT_BLACK "====================================================================================\n\n" AC_RESET);
+
+        for (int i = 0; i < gBenchReps; i++) {
+            const Test::BenchCase* bench = gBench + i;
+
+            // TODO: move directly to the Test::run?
+            if (!Test::filterMatches(&filter, Test::FK_SUITE, bench->name)) {
+                continue;
+            }
+
+            Test::BenchResult result = Test::run(bench);
+            Test::_writeBenchResult(&result);
+        }
+
+        return 0;
+    }
+
+
+
     printf(AC_BOLD_MAGENTA "Greetings" AC_RESET ", lets chill and wait for test results " AC_BOLD_MAGENTA ":3\n");
     printf(AC_BRIGHT_BLACK "==================================================\n\n" AC_RESET);
-
-    printf(AC_BRIGHT_BLACK "Options: ");
-    // TODO:
 
     Test::gResult = { 0 };
     Test::Context ctx = { .filter = &filter, .visualize = visualize };

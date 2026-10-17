@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <cstring>
 #include <stdio.h>
+#include <chrono>
+#include <algorithm>
 #include <stdlib.h>
 #include <setjmp.h>
 #include "../src/ansi_colors.h"
@@ -156,6 +158,37 @@ namespace Test {
         bool    visualize;
     };
 
+    struct BenchData {
+        void*    data;
+        uint32_t size;
+    };
+
+    struct BenchCase {
+        const char* name;
+        int         iterCount;
+        void        (*run)     (BenchData* data);
+        BenchData   (*prep)    ();
+        void        (*release) (BenchData* data);
+    };
+
+    struct BenchResult {
+        Result result;
+
+        const char* name;
+        int64_t     iterCount;
+        double      secElapsed; // Total elapsed time in seconds
+
+        // Timing stats in nanoseconds
+        double nsMin;
+        double nsMax;
+        double nsMed;
+        double nsAvg;
+
+        double mbPerSec;
+    };
+
+    using BenchFcn = void (void*);
+
     inline thread_local Result gResult;
 
     constexpr int gExpectedDiagnosticCount = 32;
@@ -166,6 +199,14 @@ namespace Test {
     inline thread_local char gStdoutBuffer[1024 * 10];
 
 
+
+    inline void _clearCurrentResult(Test::Result* result) {
+        result->currentAssertMask   = 0;
+        result->currentTestFailed   = 0;
+        result->currentAssertFailed = 0;
+        result->currentAssertPassed = 0;
+        gResult.currentTestFailedHard = false;
+    }
 
     inline int _writeStatusLine(const char* status, String name, const char* color) {
         printf("%s[%-5s]%s %.*s\n", color, status, AC_RESET, (int) name.len, name.buff);
@@ -180,10 +221,14 @@ namespace Test {
         uint32_t mask = result->currentAssertMask;
 
         const int assertCount = result->currentAssertFailed + result->currentAssertPassed;
+
+        if (result->currentAssertPassed == assertCount) {
+            printf(AC_BOLD_GREEN "[%2i|%-2i] " AC_RESET, result->currentAssertPassed, assertCount);
+        } else {
+            printf(AC_BOLD_RED "[%2i|%-2i] " AC_RESET, result->currentAssertPassed, assertCount);
+        }
+
         const int count = min(maxAssertToDisplay, assertCount);
-
-        printf(AC_BOLD_RED "[%2i|%-2i] " AC_RESET, result->currentAssertPassed, count);
-
         for (int i = 0; i < count; i++, mask >>= 1) {
             if (mask & 1) {
                 printf(AC_BOLD_RED "%i " AC_RESET, i + 1);
@@ -212,6 +257,43 @@ namespace Test {
             printf(AC_BOLD_RED "WE WORK: " AC_RESET "%u|%u tests passed.\n",
                     res->testsPassed, testCount);
         }
+    }
+
+    inline void _formatTime(char* out, size_t outSize, double ns) {
+        if (ns < 1000.0) {
+            snprintf(out, outSize, "%.2f ns", ns);
+        } else if (ns < 1000000.0) {
+            snprintf(out, outSize, "%.2f us", ns / 1000.0);
+        } else {
+            snprintf(out, outSize, "%.2f ms", ns / 1000000.0);
+        }
+    }
+
+    inline void _writeBenchResult(const Test::BenchResult* res) {
+        char bufMed[32], bufMin[32], bufMax[32], bufAvg[32];
+        _formatTime(bufMed, sizeof(bufMed), res->nsMed);
+        _formatTime(bufMin, sizeof(bufMin), res->nsMin);
+        _formatTime(bufMax, sizeof(bufMax), res->nsMax);
+        _formatTime(bufAvg, sizeof(bufAvg), res->nsAvg);
+
+        _writeStatusLine("BENCH", res->name, AC_BOLD_CYAN);
+        printf("  Iterations : %lld\n", res->iterCount);
+        printf("  Total Time : %.4f s\n", res->secElapsed);
+        printf("  Median     : \033[1;36m%s\033[0m\n", bufMed);
+        printf("  Best (Min) : %s\n", bufMin);
+        printf("  Worst (Max): %s\n", bufMax);
+        printf("  Average    : %s\n", bufAvg);
+        printf("  Rate (Med) : %.0f iters/sec\n", 1e9 / res->nsMed);
+
+        if (res->mbPerSec > 0.0) {
+            if (res->mbPerSec >= 1024.0) {
+                printf("  Data Rate  : \033[1;32m%.2f GB/s\033[0m (%.1f MB/s)\n", res->mbPerSec / 1024.0, res->mbPerSec);
+            } else {
+                printf("  Data Rate  : \033[1;32m%.2f MB/s\033[0m\n", res->mbPerSec);
+            }
+        }
+        _writeAssertLine(&gResult);
+        printf("\n");
     }
 
 
@@ -403,6 +485,80 @@ namespace Test {
     }
 
 
+    inline BenchResult run(const Test::BenchCase* const benchCase, uint64_t iterCount = 0, uint64_t warmupIter = 3) {
+        double* nsTimes = new double[iterCount];
+
+        BenchData data = benchCase->prep();
+        uint64_t bytesPerIter = data.size;
+        iterCount = iterCount == 0 ? benchCase->iterCount : iterCount;
+
+        // Warmup
+        for (int64_t i = 0; i < warmupIter; i++) {
+            benchCase->run(&data);
+        }
+
+        _clearCurrentResult(&gResult); // TODO
+
+        // Collect times
+        auto totalStart = std::chrono::high_resolution_clock::now();
+
+        for (int64_t i = 0; i < iterCount; i++) {
+            auto start = std::chrono::high_resolution_clock::now();
+
+            benchCase->run(&data);
+
+            auto end = std::chrono::high_resolution_clock::now();
+            double elapsed = std::chrono::duration<double, std::nano>(end - start).count();
+
+            nsTimes[i] = elapsed;
+        }
+
+        auto totalEnd = std::chrono::high_resolution_clock::now();
+        double totalElapsedSec = std::chrono::duration<double>(totalEnd - totalStart).count();
+
+        // Resolve result
+        std::sort(nsTimes, nsTimes + iterCount);
+
+        double nsMin = nsTimes[0];
+        double nsMax = nsTimes[iterCount - 1];
+
+        double nsMed = 0.0;
+        if (iterCount % 2 == 1) {
+            nsMed = nsTimes[iterCount / 2];
+        } else {
+            nsMed = (nsTimes[(iterCount / 2) - 1] + nsTimes[iterCount / 2]) / 2.0;
+        }
+
+        double nsSum = 0.0;
+        for (int64_t i = 0; i < iterCount; i++) {
+            nsSum += nsTimes[i];
+        }
+        double nsAvg = nsSum / (double) (iterCount);
+
+        if (gResult.assertFailed > 0) gResult.testsFailed += 1;
+        else gResult.testsPassed += 1;
+
+        // Populate Result
+        BenchResult res;
+        res.result     = gResult;
+        res.name       = benchCase->name;
+        res.iterCount  = iterCount;
+        res.secElapsed = totalElapsedSec;
+        res.nsMin      = nsMin;
+        res.nsMax      = nsMax;
+        res.nsMed      = nsMed;
+        res.nsAvg      = nsAvg;
+        res.mbPerSec   = 0.0;
+
+        if (bytesPerIter > 0) {
+            double bytesPerSec = ((double) (bytesPerIter) * 1e9) / nsMed;
+            res.mbPerSec       = bytesPerSec / (1024.0 * 1024.0);
+        }
+
+        benchCase->release(&data);
+        delete[] nsTimes;
+        return res;
+    }
 
     inline bool captureStdoutBegin() {
         std::fflush(stdout);
@@ -711,13 +867,6 @@ namespace Test {
 
 
 
-    inline void _clearCurrentResult(Test::Result* result) {
-        result->currentAssertMask   = 0;
-        result->currentTestFailed   = 0;
-        result->currentAssertFailed = 0;
-        result->currentAssertPassed = 0;
-        gResult.currentTestFailedHard = false;
-    }
 
     inline void runTestCase(Context* ctx, const Test::Case* testCase, Test::Result* result) {
         _clearCurrentResult(result);
