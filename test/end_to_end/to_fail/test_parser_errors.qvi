@@ -1,0 +1,269 @@
+// =============================================================================
+// 1. Unterminated Constructs (UNEXPECTED_END_OF_FILE)
+// =============================================================================
+
+// 1.1 Unterminated code block at end of file (parser.cpp:426)
+f: () {
+    return 1;
+#test "E2"
+
+// 1.2 Unterminated foreign scope at end of file (parser.cpp:660)
+[C] ucrtbase: {
+#test "E2"
+
+
+// =============================================================================
+// 2. Stray Tokens at Global Scope (UNEXPECTED_SYMBOL)
+// =============================================================================
+
+// 2.1 Extra closing brace at global scope (parser.cpp:452)
+x: i32 = 1;
+}
+#test "E7"
+
+// 2.2 Stray tokens between declarations, with line tracking
+x: i32 = 10;
+)
+y: i32 = 20;
+)
+#test "E7@4,E7@6"
+
+
+// =============================================================================
+// 3. Function Declaration and Body Errors (UNEXPECTED_SYMBOL)
+// =============================================================================
+
+// 3.1 Body does not start with '{' or ':' (parser.cpp:1354)
+f: () ;
+#test "E7"
+
+// 3.2 Qualifier on function return type (parser.cpp:865)
+f: () -> const i32 {
+    return 1;
+}
+#test "E7"
+
+// 3.3 Function pointer type: '(' expected after '(' (parser.cpp:903,
+//     INVALID_FUNCTION_POINTER)
+f: () -> (i32) {
+    return 1;
+}
+#test "E77"
+
+// 3.4 Function pointer type: broken argument list (parser.cpp:928,
+//     INVALID_FUNCTION_POINTER)
+f: () -> ((i32 i32) -> i32) {
+    return 1;
+}
+#test "E77"
+
+// 3.5 Function pointer type: ')' expected for return type (parser.cpp:946,
+//     INVALID_FUNCTION_POINTER)
+f: () -> ((i32) -> i32 {
+    return 1;
+}
+#test "E77"
+
+// 3.6 Branch statement does not end with ';' (parser.cpp:546)
+if 1 > 0 : "text" )
+#test "E7"
+
+
+// =============================================================================
+// 4. Label and Declaration Errors
+// =============================================================================
+
+// 4.1 Label followed by an unexpected token (parser.cpp:767)
+x: )
+#test "E7"
+
+// 4.2 Assignment missing '=' (parser.cpp:800)
+x y;
+#test "E7"
+
+// 4.3 Struct declaration without '{' (parser.cpp:2126)
+p: struct ;
+#test "E7"
+
+// 4.4 Struct member followed by a stray token (parser.cpp:2142)
+p: struct {
+    x: i32 ) ;
+}
+#test "E7"
+
+// 4.5 Non-identifier label inside a struct (parser.cpp:687)
+p: struct {
+    )
+}
+#test "E7"
+
+
+// =============================================================================
+// 5. Enum Declaration Errors
+// =============================================================================
+
+// 5.1 Enum without member type and without '{' (parser.cpp:2046)
+broken: enum ;
+#test "E7"
+
+// 5.2 Enum member type is not a keyword (parser.cpp:2030)
+broken: enum : notatype {
+    A
+}
+#test "E7"
+
+// 5.3 Enum member type is not an integer (parser.cpp:2035, UNKNOWN_DATA_TYPE)
+broken: enum : f64 {
+    A
+}
+#test "E16"
+
+// 5.4 Enum member not followed by ',' or '}' (parser.cpp:2089)
+broken: enum {
+    A B
+}
+#test "E7"
+
+
+// =============================================================================
+// 6. Initializations and RValues
+// =============================================================================
+
+// 6.1 Named initialization: attribute name expected (parser.cpp:1046)
+p: struct {
+    x: i32;
+    y: i32;
+}
+q: p = { 5: 1 };
+#test "E7"
+
+// 6.2 Named initialization: ':' expected after attribute name (parser.cpp:1054)
+p: struct {
+    x: i32;
+    y: i32;
+}
+q: p = { x 1 };
+#test "E7"
+
+// 6.3 Named initialization: fill symbol used twice (parser.cpp:1021)
+p: struct {
+    x: i32;
+    y: i32;
+}
+q: p = { ..., x: 1, ... };
+#test "E7"
+
+// 6.4 alloc with a generic keyword type (parser.cpp:1121, INVALID_DATA_TYPE)
+p: struct {
+    x: i32;
+}
+q: p = alloc enum;
+#test "E17"
+
+// 6.5 alloc followed by an unexpected symbol (parser.cpp:1142)
+p: struct {
+    x: i32;
+}
+q: p = alloc )
+#test "E7"
+
+// 6.6 Slice qualifier missing ']' (parser.cpp:1188)
+x: i32[const = 1;
+#test "E7"
+
+// 6.7 Expression ended with an unexpected token (parser.cpp:2798)
+x: i32 = 1 2;
+#test "E7"
+
+// 6.8 catch on a non-function-call expression (parser.cpp:2782,
+//     UNEXPECTED_END_OF_EXPRESSION)
+x: i32 = 1 + 2 catch return;
+#test "E3"
+
+
+// =============================================================================
+// 7. Loop and Control Flow Statement Errors
+// =============================================================================
+
+// 7.1 Unexpected token in loop declaration (parser.cpp:1802)
+loop ) {
+}
+#test "E7"
+
+// 7.2 ';' expected after continue statement (parser.cpp:1850)
+continue 5;
+#test "E7"
+
+// 7.3 ';' expected after break statement (parser.cpp:1882)
+break 5;
+#test "E7"
+
+// 7.4 Return value not followed by ';' (parser.cpp:1994)
+f: () -> i32 {
+    return 1 2;
+}
+#test "E7"
+
+
+// =============================================================================
+// 8. Imports and Foreign Scopes
+// =============================================================================
+
+// 8.1 Language tag is not an identifier (parser.cpp:617, INVALID_LANGUAGE_TAG)
+import [5] ucrtbase as L: {
+    rand: () -> i32;
+}
+#test "E76"
+
+// 8.2 Language tag is a qualified name (parser.cpp:622, QUALIFIED_NAME_NOT_ALLOWED)
+import [a::b] ucrtbase as L: {
+    rand: () -> i32;
+}
+#test "E65"
+
+// 8.3 Language tag missing ']' (parser.cpp:633, INVALID_LANGUAGE_TAG)
+import [C ucrtbase as L: {
+    rand: () -> i32;
+}
+#test "E76"
+
+// 8.4 Bare foreign scope missing '{' (parser.cpp:651)
+[C] ucrtbase
+#test "E7"
+
+// 8.5 Import of a file that does not exist (parser.cpp:2280, FILE_LOAD_FAILED)
+import no_such_file_qwe123 as L;
+#test "E61"
+
+
+// =============================================================================
+// 9. Directives
+// =============================================================================
+
+// 9.1 Unsupported language directive (parser.cpp:2352, UNKNOWN_DIRECTIVE)
+#unknown_directive_xyz
+#test "E56"
+
+
+// =============================================================================
+// 10. Complex Mix (multiple independent errors, parser must sync and continue)
+// =============================================================================
+
+// 10.1 Parse error first, then validation errors in declaration order
+x: i32 = 10;
+)
+arr: i32[4] = [1, 2, 3];
+undefinedFnc();
+#test "E7,E11,E69"
+
+// 10.2 Errors across constructs: global scope, function body, loop body, validation
+x: i32 = 10;
+)
+f: () {
+    a: i32 = ;
+}
+loop 0 : 10 at i {
+    b: i32 = ;
+}
+undefinedFnc();
+#test "E7,E7,E7,E69"

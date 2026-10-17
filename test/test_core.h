@@ -486,11 +486,11 @@ namespace Test {
 
 
     inline BenchResult run(const Test::BenchCase* const benchCase, uint64_t iterCount = 0, uint64_t warmupIter = 3) {
-        double* nsTimes = new double[iterCount];
-
         BenchData data = benchCase->prep();
         uint64_t bytesPerIter = data.size;
         iterCount = iterCount == 0 ? benchCase->iterCount : iterCount;
+
+        double* nsTimes = new double[iterCount];
 
         // Warmup
         for (int64_t i = 0; i < warmupIter; i++) {
@@ -682,6 +682,9 @@ namespace Test {
         *writer = '\0';
     }
 
+    // The value after '#test' is the expected diagnostic list: comma separated
+    // 'E<code>' / 'W<code>', order matters. Optional '@line' asserts the 1-based
+    // line number counted from the first line of the section.
     // TODO: handle errors
     inline File parseTestFile(const char* filepath) {
         File result = { NULL, NULL, NULL, 0 };

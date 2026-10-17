@@ -38,9 +38,8 @@ static void assertDecorators(TypeSpecifier* type, Kinds... expectedKinds) {
 #define PARSE_VARDEF(var_name, src_code)                                             \
     initQName(var_name);    \
     initSpanTest(src_code); \
-    Lex::TokenValue tokenVal; \
-    Lex::Token token = Lex::nextToken(&span, &tokenVal); \
-    Parser::parseVarDefinition(&ctx, &span, { token, tokenVal } , &name, { Lex::TK_STATEMENT_END });       \
+    Lex::TokenEx tex = Lex::nextToken(&span); \
+    Parser::parseVarDefinition(&ctx, &span, tex, &name, { Lex::TK_STATEMENT_END });       \
     VariableDefinition* def = *(VariableDefinition**)DArray::get(&ctx.nodeStack, 0); \
     Test::assertOrDie(def != NULL);
 

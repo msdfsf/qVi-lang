@@ -9,17 +9,13 @@
 
 #define STR(lit) (String { (char*) lit, sizeof(lit) - 1 })
 
-static thread_local Span  span;
-// thread_local Arena::Container arena;
+static thread_local Span span;
 
 inline void gLexerPreSuite(bool visualize) {
-    //initAlloc(&a);
-    //alc = &arena;
     nallocInit();
 }
 
 inline void gLexerPostSuite(bool visualize) {
-    //Arena::release(&arena);
 }
 
 inline void gLexerPreCase(bool visualize) {
@@ -35,62 +31,71 @@ inline void gLexerPostCase(bool visualize) {
 static void initSpanTest(Span* span, const char* input) {
     span->str = input;
     span->start = { 0, 0 };
-    span->end = { -1, 0 };
+    span->end = { 0, 0 };
     span->fileInfo = NULL;
 }
 
-static void assertToken(Lex::Token token, Lex::TokenKind expectedKind, Lex::TokenDetail expectedDetail = Lex::TD_NONE) {
-    Test::assert(token.kind, expectedKind);
-    if (expectedDetail != Lex::TD_NONE) {
-        Test::assert(token.detail, expectedDetail);
-    }
+// Asserts that token text (as pointed to by 'value') equals expected
+static void assertText(Lex::TokenEx tex, const char* expected) {
+    Test::assert(tex.token.size, (uint32_t) strlen(expected));
+    Test::assert(strncmp(tex.value.str, expected, tex.token.size), 0);
+}
+
+// Asserts that raw content of a string token equals expected;
+// 'overhead' is the count of syntax bytes the token spans besides its content
+static void assertStringContent(Lex::TokenEx tex, const char* expected, uint32_t overhead) {
+    const uint32_t len = (uint32_t) strlen(expected);
+    Test::assert(tex.token.size, len + overhead);
+    Test::assert(strncmp(tex.value.str, expected, len), 0);
 }
 
 
 
 inline Test::Case gLexerCases[] = {
 
-    TEST_CASE(test_keywords) {
-        initSpanTest(&span,
-            "i8 i16 i32 i64 u8 u16 u32 u64 f32 f64");
+    TEST_CASE(test_keywords_type) {
+        initSpanTest(&span, "i8 i16 i32 i64 u8 u16 u32 u64 f32 f64");
 
-        Lex::Token token;
-
-        while ((token = Lex::nextToken(&span, NULL)).kind != Lex::TK_END) {
-            if (!Lex::isDtype(token)) {
-                Test::assert(false);
-            }
-        }
-
-        initSpanTest(&span,
-            "const embed fluid alloc struct union if else loop "
-            "when case enum return continue break using "
-            "free error catch import from true false as at null");
-
-        while ((token = Lex::nextToken(&span, NULL)).kind != Lex::TK_END) {
-            if (token.kind != Lex::TK_KEYWORD) {
+        Lex::TokenEx tex;
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (!Lex::isType(tex.token)) {
                 Test::assert(false);
             }
         }
     }},
 
-    TEST_CASE(test_identifiers) {
+    TEST_CASE(test_keywords_regular) {
         initSpanTest(&span,
-            "foo foo_boo _private camelCase PascalCase foo123 _123");
+            "type const embed alloc struct union if else loop when case enum "
+            "return continue break using error catch defer import as at true false null");
 
-        Lex::Token token;
-        Lex::TokenValue val;
+        Lex::TokenEx tex;
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        }
+    }},
+
+    TEST_CASE(test_void_is_identifier) {
+        // 'void' is an internal sentinel and is not spelled in source
+        initSpanTest(&span, "void");
+        Test::assert(Lex::nextToken(&span).token.kind, Lex::TK_IDENTIFIER);
+    }},
+
+    TEST_CASE(test_identifiers) {
+        initSpanTest(&span, "foo foo_boo _private camelCase PascalCase foo123 _123");
+
+        Lex::TokenEx tex;
         const char* expected[] = {
             "foo", "foo_boo", "_private", "camelCase", "PascalCase", "foo123", "_123"
         };
 
         int i = 0;
-        while ((token = Lex::nextToken(&span, &val)).kind != Lex::TK_END) {
-            if (token.kind != Lex::TK_IDENTIFIER) {
-                Test::assert(false);
-            }
-            Test::assert(cstrcmp(*val.str, expected[i++]));
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            Test::assert(tex.token.kind, Lex::TK_IDENTIFIER);
+            assertText(tex, expected[i++]);
         }
+
+        Test::assert(i, sizeof(expected) / sizeof(expected[0]));
     }},
 
     TEST_CASE(test_numeric_literals) {
@@ -153,23 +158,21 @@ inline Test::Case gLexerCases[] = {
 
         const int expectedCount = sizeof(expected) / sizeof(expected[0]);
 
-        Lex::Token token;
-        Lex::TokenValue val;
+        Lex::TokenEx tex;
         int count = 0;
 
-        while ((token = Lex::nextToken(&span, &val)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_NUMBER) {
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (tex.token.kind == Lex::TK_NUMBER) {
                 ExpectedNumber exp = expected[count++];
 
-                Test::assert(token.detail, exp.detail);
+                Test::assert(tex.token.detail, exp.detail);
 
-                if (token.detail == Lex::TD_DT_I64) {
-                    Test::assert(val.ival, exp.rawIntVal);
-                } else if (token.detail == Lex::TD_DT_F64) {
-                    double actual = *(double*)&val.ival;
-                    Test::assert(actual, exp.floatVal);
-                } else if (token.detail == Lex::TD_DT_F32) {
-                    Test::assert(token.detail, Lex::TD_DT_F32);
+                if (tex.token.detail == Lex::TD_DT_I64) {
+                    Test::assert(tex.value.i64, exp.rawIntVal);
+                } else if (tex.token.detail == Lex::TD_DT_F64) {
+                    Test::assert(tex.value.f64, exp.floatVal);
+                } else if (tex.token.detail == Lex::TD_DT_F32) {
+                    Test::assert((float) tex.value.f32, (float) exp.floatVal);
                 }
             }
         }
@@ -193,84 +196,60 @@ inline Test::Case gLexerCases[] = {
             "\"\""
         );
 
-        String expected[] = {
-            STR("hello"),
-            STR("world"),
-            STR(""),
-            STR("with spaces"),
-            STR("with\nescape"),
-            STR("raw"),
-            STR("path\\to\\file"),
-            STR("1234567890"),
-            STR("!@#$%^&*()_+-=[]{}|;:,.<>?"),
-            STR("   "),
-            STR("multiline\ntext\nhere"),
-            STR("")
+        // Content of a string literal token is raw: escapes are not
+        // resolved by the lexer and are preserved as written
+        const char* expected[] = {
+            "hello",
+            "world",
+            "",
+            "with spaces",
+            "with\\nescape",
+            "raw",
+            "path\\\\to\\\\file",
+            "1234567890",
+            "!@#$%^&*()_+-=[]{}|;:,.<>?",
+            "   ",
+            "multiline\\ntext\\nhere",
+            ""
         };
 
         const int expectedCount = sizeof(expected) / sizeof(expected[0]);
 
-        Lex::Token token;
-        Lex::TokenValue val;
-
+        Lex::TokenEx tex;
         int i = 0;
-        while ((token = Lex::nextToken(&span, &val)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_STRING) {
-                StringInitialization* init = (StringInitialization*) val.any;
-                Test::assert(cstrcmp(expected[i++], init->rawData));
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (tex.token.kind == Lex::TK_STRING) {
+                assertStringContent(tex, expected[i++], 2);
             }
         }
+
         Test::assert(i, expectedCount);
     }},
 
-    TEST_CASE(test_string_literals_escape) {
-        initSpanTest(&span,
-            "\"\\a\""
-            "\"\\b\""
-            "\"\\f\""
-            "\"\\n\""
-            "\"\\r\""
-            "\"\\t\""
-            "\"\\v\""
-            "\"\\\\\""
-            "\"\\'\""
-            "\"\\\"\""
-            "\"\\?\""
-            "\"\\0\""
-            "\"\\x41\""
-            "\"\\a\\b\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\\0\\x41\""
-        );
+    TEST_CASE(test_string_literal_escapes_are_raw) {
+        initSpanTest(&span, "\"\\a\\b\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\\0\\x41\"");
 
-        String expected[] = {
-            STR("\a"),
-            STR("\b"),
-            STR("\f"),
-            STR("\n"),
-            STR("\r"),
-            STR("\t"),
-            STR("\v"),
-            STR("\\"),
-            STR("\'"),
-            STR("\""),
-            STR("\?"),
-            STR("\0"),
-            STR("A"),          // \x41
-            STR("\a\b\f\n\r\t\v\\\'\"\?\0A")
-        };
+        Lex::TokenEx tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_STRING);
+        assertStringContent(tex, "\\a\\b\\f\\n\\r\\t\\v\\\\\\'\\\"\\?\\0\\x41", 2);
+    }},
 
-        const int expectedCount = sizeof(expected) / sizeof(expected[0]);
+    TEST_CASE(test_string_infer) {
+        initSpanTest(&span, ".\"hello\" u16.\"\xC4\x8Dus\"");
 
-        Lex::Token token;
-        Lex::TokenValue val;
+        Lex::TokenEx tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_STRING_INFER);
+        assertStringContent(tex, "hello", 3);
 
-        int i = 0;
-        while ((token = Lex::nextToken(&span, &val)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_STRING) {
-                StringInitialization* init = (StringInitialization*) val.any;
-                Test::assert(cstrcmp(expected[i++], init->rawData));
-            }
-        }
-        Test::assert(i, expectedCount);
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        Test::assert(tex.token.detail, KW_U16);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_STRING_INFER);
+        assertStringContent(tex, "\xC4\x8Dus", 3);
+
+        Test::assert(Lex::nextToken(&span).token.kind, Lex::TK_END);
     }},
 
     TEST_CASE(test_char_literals) {
@@ -291,35 +270,52 @@ inline Test::Case gLexerCases[] = {
             "'\\0'"
         );
 
-        const uint64_t expected[] = {
-            'a',
-            'Z',
-            '0',
-            ' ',
-            '!',
-            'BA',
-            'CBA',
-            'DCBA',
-            '\n',
-            '\t',
-            '\\',
-            '\'',
-            '\x41',
-            '\0'
+        struct ExpectedChar {
+            uint64_t value;
+            uint16_t width;
+        };
+
+        // Code points pack big-endian, by the byte width of every
+        // code point ('AB' -> 0x4142, 'ABCD' -> 0x41424344)
+        const ExpectedChar expected[] = {
+            { 'a', 1 },
+            { 'Z', 1 },
+            { '0', 1 },
+            { ' ', 1 },
+            { '!', 1 },
+            { 0x4142, 2 },
+            { 0x414243, 3 },
+            { 0x41424344, 4 },
+            { '\n', 1 },
+            { '\t', 1 },
+            { '\\', 1 },
+            { '\'', 1 },
+            { '\x41', 1 },
+            { '\0', 1 }
         };
 
         const int expectedCount = sizeof(expected) / sizeof(expected[0]);
 
-        Lex::Token token;
-        Lex::TokenValue val;
-
+        Lex::TokenEx tex;
         int i = 0;
-        while ((token = Lex::nextToken(&span, &val)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_CHAR) {
-                Test::assert(val.ival == expected[i++]);
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (tex.token.kind == Lex::TK_CHAR) {
+                Test::assert(tex.value.i64, expected[i].value);
+                Test::assert(tex.token.detail, (Lex::TokenDetail) expected[i].width);
+                i++;
             }
         }
+
         Test::assert(i, expectedCount);
+    }},
+
+    TEST_CASE(test_char_literals_multibyte) {
+        // Multi-byte code points are decoded and span accordingly wide
+        initSpanTest(&span, "'\xC4\x8D'");
+        Lex::TokenEx tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_CHAR);
+        Test::assert(tex.value.i64, 0x10D);
+        Test::assert(tex.token.detail, 2);
     }},
 
     TEST_CASE(test_char_escape_sequences) {
@@ -331,6 +327,7 @@ inline Test::Case gLexerCases[] = {
             "'\\r' "
             "'\\t' "
             "'\\v' "
+            "'\\e' "
             "'\\\\' "
             "'\\'' "
             "'\\\"' "
@@ -340,13 +337,14 @@ inline Test::Case gLexerCases[] = {
         );
 
         const uint64_t expected[] = {
-            '\a',
+            0x07,
             '\b',
             '\f',
             '\n',
             '\r',
             '\t',
             '\v',
+            0x1B,
             '\\',
             '\'',
             '\"',
@@ -357,23 +355,19 @@ inline Test::Case gLexerCases[] = {
 
         const int expectedCount = sizeof(expected) / sizeof(expected[0]);
 
-        Lex::Token token;
-        Lex::TokenValue val;
-
+        Lex::TokenEx tex;
         int i = 0;
-        while ((token = Lex::nextToken(&span, &val)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_CHAR) {
-                Test::assert(val.ival == expected[i++]);
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (tex.token.kind == Lex::TK_CHAR) {
+                Test::assert(tex.value.i64, expected[i++]);
             }
         }
+
         Test::assert(i, expectedCount);
     }},
 
     TEST_CASE(test_operators) {
-        initSpanTest(&span, "+ - * / % ++ -- == != < > <= >= && || ! & | ^ ~ << >> .. .");
-
-        Lex::Token token;
-        int count = 0;
+        initSpanTest(&span, "+ - * / % == != < > <= >= && || ! & | ^ ~ << >> .. . ^( -> =>");
 
         Lex::TokenKind expected[] = {
             // Arithmetic
@@ -382,8 +376,6 @@ inline Test::Case gLexerCases[] = {
             Lex::TK_OP_MULTIPLICATION,
             Lex::TK_OP_DIVISION,
             Lex::TK_OP_MODULO,
-            Lex::TK_OP_INCREMENT,
-            Lex::TK_OP_DECREMENT,
 
             // Comparison
             Lex::TK_OP_BOOL_EQUAL,
@@ -410,24 +402,28 @@ inline Test::Case gLexerCases[] = {
 
             // Concat & Member
             Lex::TK_OP_CONCATENATION,
-            Lex::TK_OP_MEMBER_SELECTION
+            Lex::TK_OP_MEMBER_SELECTION,
+
+            // Callable signature, return & lambda
+            Lex::TK_SIGNATURE_BEGIN,
+            Lex::TK_OP_ARROW,
+            Lex::TK_OP_ARROW_FAT,
         };
 
         const int expectedCount = sizeof(expected) / sizeof(expected[0]);
 
-        while ((token = Lex::nextToken(&span, NULL)).kind != Lex::TK_END) {
-            Test::assert(token.kind, expected[count++]);
+        Lex::TokenEx tex;
+        int count = 0;
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            Test::assert(tex.token.kind, expected[count++]);
         }
 
-        // Verify that the lexer produced the exact total number of expected tokens
         Test::assert(count, expectedCount);
     }},
 
     TEST_CASE(test_punctuation) {
         initSpanTest(&span, "; : :: , ( ) { } [ ]");
 
-        Lex::Token token;
-        int count = 0;
         Lex::TokenKind expected[] = {
             Lex::TK_STATEMENT_END,
             Lex::TK_STATEMENT_BEGIN,
@@ -441,19 +437,104 @@ inline Test::Case gLexerCases[] = {
             Lex::TK_ARRAY_END
         };
 
-        while ((token = Lex::nextToken(&span, NULL)).kind != Lex::TK_END) {
-            Test::assert(token.kind, expected[count++]);
+        const int expectedCount = sizeof(expected) / sizeof(expected[0]);
+
+        Lex::TokenEx tex;
+        int count = 0;
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            Test::assert(tex.token.kind, expected[count++]);
         }
+
+        Test::assert(count, expectedCount);
+    }},
+
+    TEST_CASE(test_colon_equal_separates) {
+        // ':=' is not a token, it lexes as ':' followed by '='
+        initSpanTest(&span, ":=");
+        Test::assert(Lex::nextToken(&span).token.kind, Lex::TK_STATEMENT_BEGIN);
+        Test::assert(Lex::nextToken(&span).token.kind, Lex::TK_EQUAL);
+    }},
+
+    TEST_CASE(test_compound_tokens) {
+        initSpanTest(&span, ".{ .[ .\"x\" ^( ... -> =>");
+
+        Lex::TokenEx tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_SCOPE_LITERAL_BEGIN);
+        Test::assert(tex.token.size, 2);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_ARRAY_LITERAL_BEGIN);
+        Test::assert(tex.token.size, 2);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_STRING_INFER);
+        Test::assert(tex.token.size, 4);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_SIGNATURE_BEGIN);
+        Test::assert(tex.token.size, 2);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_VARIADIC);
+        Test::assert(tex.token.size, 3);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_OP_ARROW);
+        Test::assert(tex.token.size, 2);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_OP_ARROW_FAT);
+        Test::assert(tex.token.size, 2);
+
+        Test::assert(Lex::nextToken(&span).token.kind, Lex::TK_END);
+    }},
+
+    TEST_CASE(test_directives) {
+        initSpanTest(&span, "#if #loop #");
+
+        Lex::TokenEx tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_DIRECTIVE);
+        Test::assert(tex.token.detail, Lex::TD_NONE);
+        Test::assert(tex.token.size, 1);
+
+        // The word after '#' lexes as a regular token; the parser
+        // is the one resolving directive names
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        Test::assert(tex.token.detail, KW_IF);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_DIRECTIVE);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        Test::assert(tex.token.detail, KW_LOOP);
+
+        tex = Lex::nextToken(&span);
+        Test::assert(tex.token.kind, Lex::TK_DIRECTIVE);
+
+        Test::assert(Lex::nextToken(&span).token.kind, Lex::TK_END);
+
+        // Directive lookup packs a TK_DIRECTIVE core on a hit
+        Test::assert(Lex::lookupDirective("if", 2).kind,   Lex::TK_DIRECTIVE);
+        Test::assert(Lex::lookupDirective("if", 2).detail, Lex::TD_CD_IF);
+        Test::assert(Lex::lookupDirective("loop", 4).detail,   Lex::TD_CD_LOOP);
+        Test::assert(Lex::lookupDirective("packed", 6).detail, Lex::TD_CD_PACKED);
+        Test::assert(Lex::lookupDirective("reorder", 7).detail, Lex::TD_CD_REORDER);
+        Test::assert(Lex::lookupDirective("format", 6).detail,  Lex::TD_CD_FORMAT);
+
+        // ... and falls back to an identifier on a miss
+        Test::assert(Lex::lookupDirective("qwe", 3).kind,   Lex::TK_IDENTIFIER);
+        Test::assert(Lex::lookupDirective("qwe", 3).detail, Lex::TD_NONE);
     }},
 
     TEST_CASE(test_skip_token) {
         initSpanTest(&span, "_ __ ___ _ _foo _bar");
 
-        Lex::Token token;
-
+        Lex::TokenEx tex;
         int count = 0;
-        while ((token = Lex::nextToken(&span, NULL)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_SKIP) count++;
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (tex.token.kind == Lex::TK_SKIP) count++;
         }
         Test::assert(count, 2);
     }},
@@ -461,24 +542,35 @@ inline Test::Case gLexerCases[] = {
     TEST_CASE(test_qualified_names) {
         initSpanTest(&span, "foo::bar baz::qux::quux");
 
-        Lex::Token token;
-        Lex::TokenValue val;
-        int count = 0;
+        Lex::TokenKind expected[] = {
+            Lex::TK_IDENTIFIER,
+            Lex::TK_SCOPE_RESOLUTION,
+            Lex::TK_IDENTIFIER,
+            Lex::TK_IDENTIFIER,
+            Lex::TK_SCOPE_RESOLUTION,
+            Lex::TK_IDENTIFIER,
+            Lex::TK_SCOPE_RESOLUTION,
+            Lex::TK_IDENTIFIER
+        };
 
-        while ((token = Lex::nextToken(&span, &val)).kind != Lex::TK_END) {
-            if (token.kind != Lex::TK_IDENTIFIER) {
-                Test::assert(false);
-            }
+        const int expectedCount = sizeof(expected) / sizeof(expected[0]);
+
+        Lex::TokenEx tex;
+        int count = 0;
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            Test::assert(tex.token.kind, expected[count++]);
         }
+
+        Test::assert(count, expectedCount);
     }},
 
     TEST_CASE(test_comments_single_line) {
         initSpanTest(&span, "foo // comment\nbar");
 
-        Lex::Token token;
+        Lex::TokenEx tex;
         int count = 0;
-        while ((token = Lex::nextToken(&span, NULL)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_IDENTIFIER) {
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (tex.token.kind == Lex::TK_IDENTIFIER) {
                 count++;
             }
         }
@@ -490,10 +582,10 @@ inline Test::Case gLexerCases[] = {
     TEST_CASE(test_comments_multi_line) {
         initSpanTest(&span, "foo /{ comment /} bar /{ nested /{ comment /} /} baz");
 
-        Lex::Token token;
+        Lex::TokenEx tex;
         int count = 0;
-        while ((token = Lex::nextToken(&span, NULL)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_IDENTIFIER) {
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (tex.token.kind == Lex::TK_IDENTIFIER) {
                 count++;
             }
         }
@@ -503,10 +595,10 @@ inline Test::Case gLexerCases[] = {
     TEST_CASE(test_newlines) {
         initSpanTest(&span, "foo\nbar\n\nbaz");
 
-        Lex::Token token;
+        Lex::TokenEx tex;
         int count = 0;
-        while ((token = Lex::nextToken(&span, NULL)).kind != Lex::TK_END) {
-            if (token.kind == Lex::TK_IDENTIFIER) {
+        while ((tex = Lex::nextToken(&span)).token.kind != Lex::TK_END) {
+            if (tex.token.kind == Lex::TK_IDENTIFIER) {
                 count++;
             }
         }
@@ -516,8 +608,7 @@ inline Test::Case gLexerCases[] = {
     TEST_CASE(test_eof) {
         initSpanTest(&span, "");
 
-        Lex::Token token = Lex::nextToken(&span, NULL);
-        Test::assert(token.kind, Lex::TK_END);
+        Test::assert(Lex::nextToken(&span).token.kind, Lex::TK_END);
     }},
 
     TEST_CASE(test_large_token_buffers) {
@@ -528,62 +619,82 @@ inline Test::Case gLexerCases[] = {
         largeIdentifier[2000] = '\0';
 
         initSpanTest(&span, largeIdentifier);
-        Test::assert(Lex::nextToken(&span, NULL).kind, Lex::TK_IDENTIFIER);
+        Test::assert(Lex::nextToken(&span).token.kind, Lex::TK_IDENTIFIER);
     }},
-
-    /*
-    TEST_CASE(test_unclosed_literals) {
-        //initSpanTest(&span, "\"unclosed string");
-        //Test::assert(Lex::nextToken(&span, NULL).kind, Lex::TK_NONE);
-
-        //initSpanTest(&span, "/{ unclosed comment");
-        //Test::assert(Lex::nextToken(&span, NULL).kind, Lex::TK_NONE);
-
-        //initSpanTest(&span, "'a");
-        //Test::assert(Lex::nextToken(&span, NULL).kind, Lex::TK_NONE);
-        Test::assert(false);
-    }},
-    */
 
     TEST_CASE(test_try_token) {
-        initSpanTest(&span, "foo bar");
+        initSpanTest(&span, "foo if");
 
-        Lex::Token token = Lex::tryToken(&span, Lex::toToken(Lex::TK_IDENTIFIER), NULL);
-        Test::assert(token.kind, Lex::TK_IDENTIFIER);
+        // Matching compares both kind and detail, so detail matters
+        // even for kinds that do not carry any
+        Lex::TokenEx tex = Lex::tryToken(&span, { .kind = Lex::TK_IDENTIFIER, .detail = Lex::TD_NONE });
+        Test::assert(tex.token.kind, Lex::TK_IDENTIFIER);
 
-        token = Lex::tryToken(&span, Lex::toToken(Lex::TK_KEYWORD), NULL);
-        Test::assert(token.kind, Lex::TK_NONE);
+        tex = Lex::tryToken(&span, Lex::toToken(Lex::TK_KEYWORD));
+        Test::assert(tex.token.kind, Lex::TK_NONE);
+
+        tex = Lex::tryToken(&span, { .kind = Lex::TK_KEYWORD, .detail = KW_LOOP });
+        Test::assert(tex.token.kind, Lex::TK_NONE);
+
+        tex = Lex::tryToken(&span, { .kind = Lex::TK_KEYWORD, .detail = KW_IF });
+        Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        Test::assert(tex.token.detail, KW_IF);
     }},
 
     TEST_CASE(test_peek_token) {
-        initSpanTest(&span, "foo bar");
+        initSpanTest(&span, "foo bar baz");
 
-        Lex::Token peeked = Lex::peekToken(&span, NULL);
-        Test::assert(peeked.kind, Lex::TK_IDENTIFIER);
+        Lex::TokenEx peeked = Lex::peekToken(&span);
+        Test::assert(peeked.token.kind, Lex::TK_IDENTIFIER);
+        assertText(peeked, "foo");
 
-        Lex::Token consumed = Lex::nextToken(&span, NULL);
-        Test::assert(consumed.kind, Lex::TK_IDENTIFIER);
+        Lex::TokenEx second = Lex::peekNthToken(&span, 2);
+        Test::assert(second.token.kind, Lex::TK_IDENTIFIER);
+        assertText(second, "bar");
+
+        Lex::TokenEx consumed = Lex::nextToken(&span);
+        Test::assert(consumed.token.kind, Lex::TK_IDENTIFIER);
+        assertText(consumed, "foo");
     }},
 
     TEST_CASE(test_sync_token) {
-        initSpanTest(&span, "foo bar baz qux");
+        initSpanTest(&span, "foo bar if baz");
 
-        Lex::Token token = Lex::syncToken(&span, Lex::toToken(Lex::TK_IDENTIFIER), Lex::toToken(Lex::TK_KEYWORD), NULL);
-        Test::assert(token.kind, Lex::TK_IDENTIFIER);
+        Lex::TokenEx tex = Lex::syncToken(&span, Lex::TK_KEYWORD, Lex::TK_STATEMENT_END);
+        Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        Test::assert(tex.token.detail, KW_IF);
+    }},
 
-        token = Lex::syncToken(&span, Lex::toToken(Lex::TK_IDENTIFIER), Lex::toToken(Lex::TK_KEYWORD), NULL);
-        Test::assert(token.kind, Lex::TK_IDENTIFIER);
+    TEST_CASE(test_sync_token_match) {
+        initSpanTest(&span, "42 if");
+
+        Lex::TokenEx tex = Lex::syncToken(&span,
+            Lex::Token { .kind = Lex::TK_IDENTIFIER, .detail = Lex::TD_NONE },
+            Lex::Token { .kind = Lex::TK_KEYWORD,    .detail = KW_IF });
+        Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        Test::assert(tex.token.detail, KW_IF);
+    }},
+
+    TEST_CASE(test_sync_token_until_end) {
+        initSpanTest(&span, "foo bar");
+
+        Lex::TokenEx tex = Lex::syncToken(&span, Lex::TK_STATEMENT_END, Lex::TK_SCOPE_END);
+        Test::assert(tex.token.kind, Lex::TK_END);
     }},
 
     TEST_CASE(test_try_keyword) {
         initSpanTest(&span, "if else");
 
-        Lex::Token token = Lex::tryKeyword(&span, KW_IF);
-        Test::assert(token.kind, Lex::TK_KEYWORD);
-        Test::assert(token.detail, KW_IF);
+        Lex::TokenEx tex = Lex::tryKeyword(&span, KW_IF);
+        Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        Test::assert(tex.token.detail, KW_IF);
 
-        token = Lex::tryKeyword(&span, KW_LOOP);
-        Test::assert(token.kind, Lex::TK_NONE);
+        tex = Lex::tryKeyword(&span, KW_LOOP);
+        Test::assert(tex.token.kind, Lex::TK_NONE);
+
+        tex = Lex::tryKeyword(&span, KW_ELSE);
+        Test::assert(tex.token.kind, Lex::TK_KEYWORD);
+        Test::assert(tex.token.detail, KW_ELSE);
     }},
 
 };

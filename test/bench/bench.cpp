@@ -17,9 +17,9 @@ struct BenchDataLex {
 
 const int gBenchLexIterCount = 32;
 
-Test::BenchData gBenchPrepBigFile() {
+Test::BenchData gBenchPrepLexFile(const char* path) {
     char* buffer;
-    int64_t len = FileDriver::readFile("test/bench/big_random_file.qvi", &buffer);
+    int64_t len = FileDriver::readFile(path, &buffer);
     if (len < 0) return { .data = NULL };
 
     BenchDataLex* meta = (BenchDataLex*) malloc(sizeof(BenchDataLex));
@@ -29,16 +29,16 @@ Test::BenchData gBenchPrepBigFile() {
     return { .data = meta, .size = (uint32_t) len };
 }
 
+Test::BenchData gBenchPrepBigFile() {
+    return gBenchPrepLexFile("test/bench/big_random_file.qvi");
+}
+
 Test::BenchData gBenchPrepNumbersAll() {
-    char* buffer;
-    int64_t len = FileDriver::readFile("test/bench/numbers_all.qvi", &buffer);
-    if (len < 0) return { .data = NULL };
+    return gBenchPrepLexFile("test/bench/numbers_all.qvi");
+}
 
-    BenchDataLex* meta = (BenchDataLex*) malloc(sizeof(BenchDataLex));
-    meta->buffer = buffer;
-    meta->tokenCount = (uint64_t) len;
-
-    return { . data = meta, .size = (uint32_t) len };
+Test::BenchData gBenchPrepStringsAll() {
+    return gBenchPrepLexFile("test/bench/strings_all.qvi");
 }
 
 void gBenchReleaseDataLex(Test::BenchData* data) {
@@ -102,17 +102,15 @@ inline void gBenchParseNumber(Test::BenchData* data) {
 
     uint64_t num;
     uint32_t pos = 0;
-    uint32_t numCount = 0;
     Lex::TokenDetail detail = Lex::TD_NONE;
 
     while (str[pos] != '\0' && detail != Lex::TD_DT_VOID) {
         uint32_t len = 0;
         detail = Lex::parseNumber(str + pos, &len, &num);
         pos += len + 1;
-        numCount++;
     }
 
-    Test::assert(meta->tokenCount == numCount);
+    Test::assert(pos == meta->tokenCount);
 }
 
 inline void gBenchParseDigitScan(Test::BenchData* data) {
@@ -261,6 +259,14 @@ extern const Test::BenchCase gBench[] = {
         gBenchLexIterCount,
         gBenchParseNumber,
         gBenchPrepNumbersAll,
+        gBenchReleaseDataLex
+    },
+
+    {
+        "[Lex] Strings",
+        gBenchLexIterCount,
+        gBenchNextToken,
+        gBenchPrepStringsAll,
         gBenchReleaseDataLex
     },
 

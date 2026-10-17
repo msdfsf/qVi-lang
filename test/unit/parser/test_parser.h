@@ -48,6 +48,8 @@ inline void gParserPostSuite(bool visualize) {
 }
 
 inline void gParserPreCase(bool visualize) {
+    // Batch state is per-thread, and every case brings its own source
+    Lex::init();
 }
 
 inline void gParserPostCase(bool visualize) {
@@ -66,8 +68,8 @@ inline void assertSpan(const Span& actualSpan, Pos start, Pos end) {
 
 inline void initSpanTest(const char* input) {
     span.str = input;
-    span.start = { 0, 1 };
-    span.end = { -1, 1 };
+    span.start = { 0, 0 };
+    span.end = { 0, 0 };
     span.fileInfo = NULL;
 }
 

@@ -12,7 +12,7 @@ extern const Test::Suite gSuiteEtESync = {
     &gSuiteSyncCase,
     NULL,
     0,
-    gEtEFailPreCase,
+    gEtEFailSyncPreCase,
     gEtEPostCase,
     gEtEPreSuite,
     gEtEPostSuite,

@@ -40,6 +40,13 @@ inline void gEtEPassPreCase(bool visualize) {
     gEtEPreCase(visualize);
 }
 
+inline void gEtEFailSyncPreCase(bool visualize) {
+    Config::opt = eteDefaultOptions;
+    Config::opt.maxErrorCount = 16;
+    Config::opt.errorRecoveryEnabled = true;
+    gEtEPreCase(visualize);
+}
+
 inline void gEtEFailPreCase(bool visualize) {
     Config::opt = eteDefaultOptions;
     Config::opt.maxErrorCount = 16;
