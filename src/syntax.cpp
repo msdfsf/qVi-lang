@@ -8,7 +8,6 @@
 #include "data_types.h"
 #include "dynamic_arena.h"
 #include "globals.h"
-#include "io.h"
 #include "keywords.h"
 #include "lexer.h"
 #include "logger.h"

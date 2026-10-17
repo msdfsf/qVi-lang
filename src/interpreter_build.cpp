@@ -1336,7 +1336,7 @@ namespace Interpreter {
             pushOperand(state, mType->offset);
             pushOpcode(state, OC_ADD_U64);
 
-            if (flags ^ IS_LVALUE) {
+            if (!(flags & IS_LVALUE)) {
                 pushLoadOpcode(state, mType->type);
             }
         } else if (Type::isStructLike(pType->base.kind)) {
@@ -1373,7 +1373,7 @@ namespace Interpreter {
 
             // TODO: If we are gonna keep this, try to compute length with parent and swap the
             //       value here
-            if (flags ^ IS_LVALUE && Type::isArrayLike(mType->type->kind) && flags & FORCE_ARRAY_LENGTH) {
+            if (!(flags & IS_LVALUE) && Type::isArrayLike(mType->type->kind) && flags & FORCE_ARRAY_LENGTH) {
                 if (mType->type->kind == Type::DT_ARRAY) {
                     Type::ArrayInfo* aType = (Type::ArrayInfo*) mType->type;
                     pushOpcode(state, OC_PUSH_U64);
@@ -1463,7 +1463,7 @@ namespace Interpreter {
         }
 
         if (lType->base.kind == Type::DT_ARRAY) {
-            if (flags ^ IS_ROOT) {
+            if (!(flags & IS_ROOT)) {
                 pushOpcode(state, OC_PUSH_U64);
                 pushOperand(state, lType->arr.elementCount);
                 pushOpcode(state, OC_VEC_ALLOC);

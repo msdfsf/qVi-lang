@@ -28,7 +28,10 @@ namespace PrintFormat {
     uint64_t parseInt(const char* str, uint64_t* idx) {
         uint64_t startIdx = *idx;
 
-        uint64_t num = Lex::parseInt(str, idx);
+        uint32_t lexIdx = (uint32_t) *idx;
+        uint64_t num = Lex::parseInt(str, &lexIdx);
+        *idx = lexIdx;
+
         const char ch = str[*idx];
         if (ch != ':' && ch != '}') {
             return INVALID_INT;

@@ -176,11 +176,6 @@ namespace TaskSystem::Core {
         allocInit();
         nallocInit();
 
-        // TODO: lexer has two thread_local dynamic containers, therefore
-        //       we need to make sure its initiated per thread...
-        //       we dont need to care about releasing it, as its not a
-        //       big deal for now, but we have to get rid of these thread_locals
-        //       or make them static...
         Lex::init();
 
         while (worker->amIAlive) {

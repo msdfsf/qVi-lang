@@ -14,6 +14,7 @@
 //   b : Binary
 //   r : Raw
 //   # : Pretty
+//   < : Crop
 //
 // - All sub-fields are optional: "%{x::16}" (hex, width 16), "%{::20}" (width 20).
 // - String requires no escaping of '{' or '}'

@@ -26,17 +26,17 @@ namespace IO {
         };
     };
 
-    void write  (Stream* stream, const char* const str);
-    void write  (Stream* stream, const char* str, uint32_t len);
-    void writef (Stream* stream, const char* fmt, ...);
-    void writefv(Stream* stream, const char* fmt, va_list args);
+    void write  (Stream* const stream, const char* const str);
+    void write  (Stream* const stream, const char* str, uint32_t len);
+    void writef (Stream* const stream, const char* fmt, ...);
+    void writefv(Stream* const stream, const char* fmt, va_list args);
 
-    void write(Stream* stream, String str);
-    void write(Stream* stream, String* str);
+    void write(Stream* const stream, String str);
+    void write(Stream* const stream, String* str);
 
-    void write(Stream* stream, char ch);
-    void write(Stream* stream, uint8_t ch);
-    void write(Stream* stream, char ch, uint32_t count);
-    void write(Stream* stream, uint8_t ch, uint32_t count);
+    void write(Stream* const stream, char ch);
+    void write(Stream* const stream, uint8_t ch);
+    void write(Stream* const stream, char ch, uint32_t count);
+    void write(Stream* const stream, uint8_t ch, uint32_t count);
 
 }

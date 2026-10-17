@@ -169,9 +169,9 @@ if /i "%TARGET_COMPILER%"=="clang-cl" (
     )
 
     if /i "%TARGET_MODE%"=="debug" (
-        set "FLAGS=!FLAGS! /Zi /Od /Fe"%OUT_BIN%""
+        set "FLAGS=!FLAGS! /MP /Z7 /Od /Fe"%OUT_BIN%""
     ) else (
-        set "FLAGS=!FLAGS! /O2 /Fe"%OUT_BIN%""
+        set "FLAGS=!FLAGS! /O2 /Zi /Fe"%OUT_BIN%""
     )
 ) else (
 
@@ -209,7 +209,9 @@ if !errorlevel! neq 0 (
     exit /b !errorlevel!
 )
 
-del *.obj >nul 2>&1
+if /i "%TARGET_MODE%" neq "debug" (
+    del *.obj >nul 2>&1
+)
 
 popd
 

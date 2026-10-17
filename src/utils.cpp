@@ -65,7 +65,7 @@ namespace Utils {
         }
     }
 
-    static void insertionSort(void* data, uint32_t count, uint32_t stride, uint32_t keyOffset) {
+    void insertionSort(void* data, uint32_t count, uint32_t stride, uint32_t keyOffset) {
         uint8_t* bytes = (uint8_t*) data;
 
         for (uint32_t i = 1; i < count; i++) {
@@ -126,7 +126,7 @@ namespace Utils {
         }
     }
 
-    static void quickSort(void* data, uint32_t count, uint32_t stride, uint32_t keyOffset) {
+    void quickSort(void* data, uint32_t count, uint32_t stride, uint32_t keyOffset) {
         qsortRecursive((uint8_t*) data, count, stride, keyOffset);
     }
 
