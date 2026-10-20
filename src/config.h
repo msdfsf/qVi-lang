@@ -22,6 +22,7 @@ namespace Config {
 
     constexpr int LINEAR_SEARCH_THRESHOLD = 16;
 
+    constexpr int TOKEN_BATCH_BUFFER_SIZE = 1024;
     // TODO: For now global, but there may be need to apply different options
     //       for different compilations within the very same program...
     extern Options opt;

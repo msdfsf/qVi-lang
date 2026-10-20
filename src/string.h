@@ -29,6 +29,7 @@ struct String {
 
     inline void operator = (char* str) {
         buff = str;
+        len = cstrlen(str);
     }
 
     inline void operator += (int offset) {

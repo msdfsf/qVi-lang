@@ -164,6 +164,12 @@ const char* const Err::str(Err code) { switch (code) {
         return "Invalid 'continue' target!";
     case Err::INVALID_RETURN_TARGET:
         return "Invalid 'return' target!";
+    case UNEXPECTED_KEYWORD:
+        return "Unexpected keyword '%s'!";
+    case INVALID_LANGUAGE_TAG:
+        return "Invalid language tag!";
+    case INVALID_FUNCTION_POINTER:
+        return "Invalid function pointer type!";
     default:
         return "Unknown error!";
 

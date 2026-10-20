@@ -45,117 +45,175 @@ namespace Strings {
     }
 
 
-    // returns array of utf8 chars
-    // where lenOut returns length of array and byteOut size of the filed in bytes
-    // so, bytesOut can be 1, 2, 3, 4
-    // copyWhenAscii is bool which determine if in case of pure ascii str
-    // new string should be allocated and data copied.
+
+    // decodeUtf8
     // https://en.wikipedia.org/wiki/UTF-8
-    // expects valid utf8 string with start at the begining of code point
-    char* encodeUtf8(String str, int* lenOut, int* bytesOut, int copyWhenAscii) {
+    //
+    // USAGE MODES:
+    // 1. Dry-Run Only (out == NULL):
+    //    Calculates required buffer length, optimal integer width (elementBytesOut),
+    //    and fully validates the UTF-8 sequence. Does not write anything.
+    //
+    // 2. Safe Decode (out != NULL, dryRun == true):
+    //    Executes the dry-run first to validate bounds and catch errors. If successful,
+    //    it proceeds to decode. Perfect for untrusted inputs.
+    //
+    // 3. Fast Decode (out != nullptr, dryRun == false):
+    //    Skips the pre-validation pass and decodes directly into the buffer.
+    //    Use this when you have pre-validated text and a guaranteed large enough buffer.
+    //
+    UTFInfo decodeUtf8(UTFInfo info, String str, void* out) {
+        UTFInfo result = info;
+        result.err = UTFInfo::E_NONE;
+        result.length = 0;
+        result.elementBytesOut = 1; // Assume ASCII minimum until proven otherwise
 
-        const int mask1 = 0b01111111;
-        const int mask2 = 0b11011111;
-        const int mask3 = 0b11101111;
+        if (str.len <= 0 || !str.buff) return result;
 
-        int len = 0;
-        int bytes = 1;
-        for (int i = 0; i < str.len; i++) {
+        // --- PHASE 1: DRY RUN ---
+        if (info.dryRun || !out) {
+            uint32_t i = 0;
+            while (i < str.len) {
+                uint8_t ch = str.buff[i];
 
-            const unsigned char ch = str.buff[i];
-            if (ch <= mask1) {
+                if (ch < 0x80) {
+                    // 1-byte
+                    i += 1;
+                } else if ((ch & 0xE0) == 0xC0) {
+                    // 2-byte
+                    if (i + 1 >= str.len) {
+                        result.length = i;
+                        result.err = UTFInfo::E_INVALID_UTF8;
+                        return result;
+                    }
 
-            } else if (ch <= mask2) {
-                i++;
-                bytes = 2;
-            } else if (ch <= mask3) {
-                i += 2;
-                bytes = 3;
-            } else {
-                i += 3;
-                bytes = 4;
+                    // Any 2-byte UTF-8 sequence demands at least a 2-byte integer array
+                    if (result.elementBytesOut < 2) {
+                        result.elementBytesOut = 2;
+                    }
+
+                    i += 2;
+                } else if ((ch & 0xF0) == 0xE0) {
+                    // 3-byte
+                    if (i + 2 >= str.len) {
+                        result.length = i;
+                        result.err = UTFInfo::E_INVALID_UTF8;
+                        return result;
+                    }
+
+                    // 3-byte UTF-8 sequences demand at least a 2-byte integer array
+                    if (result.elementBytesOut < 2) {
+                        result.elementBytesOut = 2;
+                    }
+
+                    i += 3;
+                } else if ((ch & 0xF8) == 0xF0) {
+                    // 4-byte
+                    if (i + 3 >= str.len) {
+                        result.length = i;
+                        result.err = UTFInfo::E_INVALID_UTF8;
+                        return result;
+                    }
+
+                    // 4-byte UTF-8 sequences always result in Codepoints > 0xFFFF
+                    // Demands a 4-byte integer array
+                    result.elementBytesOut = 4;
+                    i += 4;
+                } else {
+                    result.err = UTFInfo::E_INVALID_UTF8;
+                    return result;
+                }
+
+                result.length++;
             }
 
-            len++;
-
+            if (!out) return result;
         }
 
+        // --- PHASE 2: DECODING ---
+        uint32_t i = 0;
 
-        char* arr = (!copyWhenAscii && bytes == 1) ? NULL : alloc<char>(bytes * len);
-        switch (bytes) {
+        // Reset length to 0 so we can use it as our array index during decoding
+        result.length = 0;
 
+        switch (info.elementBytesIn) {
             case 1: {
-                if (copyWhenAscii) memcpy(arr, str.buff, len);
-                else arr = (char*) str.buff;
+                // 8-bit output stride
+                uint8_t* const arr = (uint8_t*) out;
+
+                while (i < str.len) {
+                    uint8_t ch = str.buff[i];
+                    if (ch < 0x80) {
+                        // ASCII
+                        arr[result.length++] = ch;
+                        i += 1;
+                    } else {
+                        // Any multibyte UTF-8 sequence requires at least 16-bit integers
+                        result.err = UTFInfo::E_MISMATCH_ALIGN;
+                        return result;
+                    }
+                }
                 break;
             }
 
             case 2: {
+                // 16-bit output stride
+                uint16_t* const arr = (uint16_t*) out;
+                result.elementBytesOut = 2;
 
-                uint16_t* arr16 = (uint16_t*)arr;
-
-                for (int i = 0; i < str.len; i++) {
-
-                    const unsigned char ch = str.buff[i];
-                    if (ch <= mask1) {
-                        *arr16 = ch;
-                    }
-                    else if (ch <= mask2) {
-                        *arr16 = *((uint16_t*)(str.buff + i));
-                        i++;
-                    }
-
-                    arr16++;
-
-                }
-
-                break;
-
-            }
-
-            case 3:
-            case 4: {
-
-                uint32_t* arr32 = (uint32_t*)arr;
-
-                for (int i = 0; i < str.len; i++) {
-
-                    const unsigned char ch = str.buff[i];
-                    if (ch <= mask1) {
-                        *arr32 = ch;
-                    }
-                    else if (ch <= mask2) {
-                        *arr32 = *((uint16_t*) (str.buff + i));
-                        i++;
-                    }
-                    else if (ch <= mask3) {
-                        *arr32 = 0;
-                        memcpy(arr32, str.buff + i, 3);
+                while (i < str.len) {
+                    const uint8_t ch = str.buff[i];
+                    if (ch < 0x80) {
+                        arr[result.length++] = ch;
+                        i += 1;
+                    } else if ((ch & 0xE0) == 0xC0) {
+                        arr[result.length++] = ((ch & 0x1F) << 6) | (str.buff[i + 1] & 0x3F);
                         i += 2;
-                    }
-                    else {
-                        memcpy(arr32, str.buff + i, 4);
+                    } else if ((ch & 0xF0) == 0xE0) {
+                        arr[result.length++] = ((ch & 0x0F) << 12) | ((str.buff[i + 1] & 0x3F) << 6) | (str.buff[i + 2] & 0x3F);
                         i += 3;
+                    } else {
+                        // Cannot fit a 4-byte UTF-8 character (>0xFFFF) into a 16-bit stride
+                        result.err = UTFInfo::E_MISMATCH_ALIGN;
+                        return result;
                     }
-
-                    arr32++;
-
                 }
-
                 break;
-
             }
 
-            default:
-                break;
+            case 4: { // 32-bit output stride
+                uint32_t* const arr = (uint32_t*) out;
+                result.elementBytesOut = 4;
 
+                while (i < str.len) {
+                    const uint8_t ch = str.buff[i];
+                    if (ch < 0x80) {
+                        arr[result.length++] = ch;
+                        i += 1;
+                    } else if ((ch & 0xE0) == 0xC0) {
+                        arr[result.length++] = ((ch & 0x1F) << 6) | (str.buff[i + 1] & 0x3F);
+                        i += 2;
+                    } else if ((ch & 0xF0) == 0xE0) {
+                        arr[result.length++] = ((ch & 0x0F) << 12) | ((str.buff[i + 1] & 0x3F) << 6) | (str.buff[i + 2] & 0x3F);
+                        i += 3;
+                    } else if ((ch & 0xF8) == 0xF0) {
+                        arr[result.length++] = ((ch & 0x07) << 18) | ((str.buff[i + 1] & 0x3F) << 12) | ((str.buff[i + 2] & 0x3F) << 6) | (str.buff[i + 3] & 0x3F);
+                        i += 4;
+                    } else {
+                        result.err = UTFInfo::E_INVALID_UTF8;
+                        return result;
+                    }
+                }
+                break;
+            }
+
+            default: {
+                result.err = UTFInfo::E_MISMATCH_ALIGN;
+                break;
+            }
         }
 
-        *lenOut = len;
-        *bytesOut = bytes;
-
-        return arr;
-
+        return result;
     }
 
     wchar_t* encodeUtf16(String str, int* lenOut, int nullTerminate) {

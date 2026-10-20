@@ -156,7 +156,7 @@ namespace Logger {
 
         if (idx - prevIdx > 0) {
             IO::writef(stream, AC_BOLD_CYAN "%*llu | ", maxLineDigits, lineNum);
-            IO::write(stream, str + prevIdx, idx - prevIdx + 1);
+            IO::write(stream, str + prevIdx, idx - prevIdx);
         }
 
         IO::writef(stream, AC_RESET "\n");
@@ -243,9 +243,9 @@ namespace Logger {
             }
 
             if (idx == span->end.idx) {
-                IO::write(stream, str + (lastCommitedIdx + 1), idx - lastCommitedIdx);
+                IO::write(stream, str + (lastCommitedIdx + 1), idx - lastCommitedIdx - 1);
                 IO::write(stream, style->colorText);
-                lastCommitedIdx = idx;
+                lastCommitedIdx = idx - 1;
             }
 
             idx++;

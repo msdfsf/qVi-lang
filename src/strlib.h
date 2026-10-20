@@ -4,11 +4,26 @@
 
 namespace Strings {
 
+    struct UTFInfo {
+        uint32_t length;          // In/Out: Number of decoded characters
+        uint8_t  elementBytesIn;  // In:     Requested alignment/stride (1, 2, or 4). 0 defaults to max needed.
+        uint8_t  elementBytesOut; // Out:    Actual alignment needed (1, 2, or 4).
+
+        enum Error : uint8_t {
+            E_NONE = 0,
+            E_INVALID_UTF8,
+            E_MISMATCH_ALIGN
+        } err;                    // Out:    Error state
+
+        bool dryRun;              // In:     true = validate and calculate sizes; false = decode directly
+    };
+
     long toInt(String str, int* endIdx);
     void replace(String str, String rstr, const int idx, const int len);
 
     char* encodeUtf8(String str, int* lenOut, int* bytesOut, int copyWhenAscii);
     wchar_t* encodeUtf16(String str, int* lenOut, int nullTerminate);
+    UTFInfo decodeUtf8(UTFInfo info, String str, void* out);
 
     inline constexpr bool isLowercase(const char ch) {
         return ('a' <= ch && ch <= 'z');

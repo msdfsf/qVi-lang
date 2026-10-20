@@ -103,11 +103,11 @@ enum State : uint64_t {
 };
 
 struct Pos {
-    int idx;
-    int ln;
+    uint32_t idx;
+    uint32_t ln;
 };
 
-static const Pos INVALID_POS = { -1, -1 };
+static const Pos INVALID_POS = { (uint32_t) -1, (uint32_t) -1 };
 static const uint64_t NULL_FLAG = (uint64_t) (0);
 
 struct Span {
@@ -187,7 +187,7 @@ static inline Span* finalizeSpan(SpanEx* lspan, Span* span) {
 }
 
 static inline void syncStartToEnd(Span* const span) {
-    span->start = { span->end.idx + 1, span->end.ln};
+    span->start = { span->end.idx, span->end.ln};
 }
 
 static inline void syncEnd(Span* const dest, Span* const src) {

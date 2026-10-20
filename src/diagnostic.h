@@ -86,7 +86,10 @@ namespace Err {
         INVALID_BREAK_TARGET            = -71,
         INVALID_CONTINUE_TARGET         = -72,
         INVALID_RETURN_TARGET           = -73,
-        COUNT                           = 74,
+        UNEXPECTED_KEYWORD              = -75,
+        INVALID_LANGUAGE_TAG            = -76,
+        INVALID_FUNCTION_POINTER        = -77,
+        COUNT                           = 77,
     };
     const char* const str(Err code);
     bool isFatal(Err err);
