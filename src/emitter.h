@@ -21,6 +21,7 @@ namespace Emitter {
 
     struct Style {
         Format   format       = Format::PRETTY;
+        bool     color        = true;
         uint8_t  indentStep   = 4;
     };
 
