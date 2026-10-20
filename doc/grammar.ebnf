@@ -8,27 +8,52 @@
  *)
 
 Letter          = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
-                | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" |"Z"
-                | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" |"m"
+                | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+                | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m"
                 | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" .
+
+NewLine                 = "\n" | "\r\n" .
+
+OctalDigit      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" .
+EscapeSequence  = "\" ( "a" | "b" | "f" | "n" | "r" | "t" | "v" | "e" | "?"
+                  | "\" | '"' | "'"
+                  | "x" HexDigit HexDigit
+                  | OctalDigit [ OctalDigit [ OctalDigit ] ] ) .
+
+SymbolCharacter         = " " | "!" | "#" | "$" | "%" | "&" | "(" | ")" | "*" | "+" | ","
+                        | "-" | "." | "/" | ":" | ";" | "<" | "=" | ">" | "?" | "@" | "["
+                        | "]" | "^" | "_" | "`" | "{" | "|" | "}" | "~" .
+
+UnicodeCodePoint        = "ж" . (* Any non-ASCII UTF-8 code point, we emit only sample
+
+StringCharacter         = Letter | Digit | SymbolCharacter | "'" | UnicodeCodePoint | EscapeSequence .
+CharCharacter           = Letter | Digit | SymbolCharacter | '"' | UnicodeCodePoint | EscapeSequence .
+LineCommentCharacter    = Letter | Digit | SymbolCharacter | '"' | "'" | "\" | "\t" | UnicodeCodePoint .
+NestedCommentCharacter  = Letter | Digit | SymbolCharacter | '"' | "'" | "\" | "\t" | NewLine | UnicodeCodePoint .
 
 Digit           = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" .
 HexDigit        = Digit | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C" | "D" | "E" | "F" .
 BinaryDigit     = "0" | "1" .
 
+(* A lone "_" never an Identifier. *)
 Identifier      = ( Letter | "_" ) { Letter | Digit | "_" } .
-QualifiedName   = Identifier { "::" Identifier } .
-FileName        = ( Letter | Digit | "_" | "." | "/" | "-" ) { Letter | Digit | "_" | "." | "/" | "-" } .
+Placeholder     = "_" .
+
+(* Leading "::" addresses the root namespace (::allocator, ::TypeKind, ...). *)
+QualifiedName   = [ "::" ] Identifier { "::" Identifier } .
 
 IntegerLiteral  = ( "0x" HexDigit { HexDigit | "_" } )
                 | ( "0b" BinaryDigit { BinaryDigit | "_" } )
                 | ( Digit { Digit | "_" } ) .
 
-FloatLiteral    = Digit { Digit | "_" } "." Digit { Digit | "_" } [ ( "f" | "F" ) ]
+Exponent        = ( "e" | "E" ) [ "+" | "-" ] Digit { Digit | "_" } .
+
+FloatLiteral    = Digit { Digit | "_" } "." [ Digit { Digit | "_" } ] [ Exponent ] [ "f" | "F" ]
+                | Digit { Digit | "_" } Exponent [ "f" | "F" ]
                 | Digit { Digit | "_" } ( "f" | "F" ) .
 
 Number          = FloatLiteral | IntegerLiteral .
-StringLiteral   = '"' { StringCharacter } '"' [ "b" ] .
+StringLiteral   = '"' { StringCharacter } '"' .
 CharLiteral     = "'" { CharCharacter } "'" .
 
 LineComment     = "//" { LineCommentCharacter } NewLine .
@@ -38,34 +63,44 @@ NestedComment   = "/{" { NestedComment | NestedCommentCharacter } "/}" .
 (*
  * Top-Level Declarations
  * --------------------------------------------------------------------------
+ *
+ * Declaration forms:
+ *   name : type = expr ;            value (initializer optional)
+ *   name : (params) -> ret { };     function (or foreign, no body)
+ *   name : { ... }                  namespace / labeled scope (ends at "}")
+ *   name := type-expression ;       type definition (struct/enum/union/error, aliases)
+ *
  *)
 
 SourceFile          = { TopLevelItem } .
 
-TopLevelItem        = Directive
-                    | Declaration
+TopLevelItem        = Declaration
                     | Statement
                     | ";" .
 
-Directive           = "#test" | "#[" Identifier "]" .
+Declaration         = QualifiedName ":" DeclarationBody
+                    | TypeDefinition .
 
-Declaration         = QualifiedName ":" [ LanguageTag ] Definition ";".
+TypeDefinition      = QualifiedName ":=" TypeExpression ";" .
 
-Definition          = VariableDefinition
-                    | FunctionDefinition
-                    | TypeDefinition
-                    | EnumDefinition
-                    | Block .
+DeclarationBody     = Block
+                    | DataType [ "=" Expression [ CatchClause ] ] ";"
+                    | [ LanguageTag ] FunctionSignature Block ";"
+                    | [ LanguageTag ] FunctionSignature ";" .
 
+FunctionSignature   = "(" [ ParameterList ] ")" [ "using" QualifiedName ] [ "->" TypeExpression ] .
+ParameterList       = [ Parameter { "," Parameter } ] .
+Parameter           = Identifier ":" DataType [ "=" Expression ]
+                    | Identifier ":" "..." .
 
-VariableDeclaration = QualifiedName ":" VariableDefinition .
-VariableDefinition  = DataType [ "=" Expression ]
+TypeExpression      = DataType
+                    | CompositeDefinition .
 
-TypeDefinition      = ( "struct" | "union" ) "{" { FieldDeclaration } "}" .
-FieldDeclaration    = Identifier ":" DataType [ "=" Expression ] ";" .
+CompositeDefinition = StructType
+                    | EnumType
+                    | ErrorType .
 
-FunctionDefinition  = "(" [ ParameterList ] ")" [ "using" Identifier ] [ "->" DataType ] Block .
-ParameterList     = [ VariableDeclaration { "," VariableDeclaration } ] .
+ErrorType           = "error" "{" { Identifier [ "=" Expression ] ";" } "}" .
 
 
 (*
@@ -77,27 +112,47 @@ IntType         = "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64" .
 
 FloatType       = "f32" | "f64" .
-BaseType        = IntType | FloatType | "bool" | "void" .
 
-Qualifier       = "const" | "embed" | "fluid" | "alloc" .
+BaseType        = IntType | FloatType | "type" | "error" .
+                  (* `type`: the metatype. `error`: the unified error type (Section 9.6.1).
+                   * No bool, no void. *)
 
-DataType        = [ Qualifier ] ( TypeConstructor ) { TypeDecorator } .
+TypeOperator    = "const" | "embed" .
 
-TypeConstructor = BaseType
-                | QualifiedName
+BracketQualifier = "const" | "alloc" .
+
+AnnotationList  = "[" "#" Identifier { "," "#" Identifier } "]" .
+
+LanguageTag     = "[" Identifier "]" .
+
+TypeDecorator   = "^"
+                | "[" [ Expression | "_" | BracketQualifier ] "]" .
+
+DataType        = [ AnnotationList ] [ TypeOperator ] { TypeDecorator } TypeCore .
+
+TypeCore        = BaseType
+                | QualifiedName [ FunctionCall ]        (* instantiated constructors: Vec2(i32) *)
                 | StructType
                 | EnumType
+                | ErrorType
                 | FunctionType .
 
-StructType      = ( "struct" | "union" ) "{" { Binding ";" } "}" .
+StructType      = ( "struct" | "union" ) [ "(" ParameterList ")" ]   (* constructor sugar *)
+                  [ AnnotationList ]                                 (* layout: [#packed], [#reorder] *)
+                  "{" { StructItem } "}" .
 
-EnumType        = "enum" [ ":" IntType ] "{" [ EnumMember { "," EnumMember } [ "," ] ] "}" .
+StructItem      = FieldDeclaration
+                | TypeDefinition
+                | "using" [ Identifier ":" ] QualifiedName ";"
+                | ( "struct" | "union" ) "{" { StructItem } "}" ";" .
+
+FieldDeclaration = Identifier ":" DataType [ "=" Expression ] ";" .
+
+EnumType        = "enum" [ IntType ] "{" [ EnumMember { "," EnumMember } [ "," ] ] "}" .
 EnumMember      = Identifier [ "=" Expression ] .
 
-TypeDecorator   = "^"                                (* Pointer *)
-                | "[" [ Expression | Qualifier ] "]" (* Array or Slice *) .
-
-FunctionType    = "(" [ DataType { "," DataType } ] ")" "->" DataType .
+FunctionParam   = [ Identifier ":" ] ( DataType | "..." ) .
+FunctionType    = "(" [ FunctionParam { "," FunctionParam } ] ")" [ "->" DataType ] .
 
 
 (*
@@ -105,36 +160,56 @@ FunctionType    = "(" [ DataType { "," DataType } ] ")" "->" DataType .
  * --------------------------------------------------------------------------
  *)
 
-Statement       = Block
-                | IfStatement
+Statement       = IfStatement
                 | LoopStatement
                 | CaseStatement
                 | ReturnStatement
                 | FlowControlStatement
+                | DeferStatement
                 | ImportStatement
                 | PrintStatement
                 | ExpressionStatement .
 
-Block           = "{" { TopLevelItem } "}"
-                | ":" Statement .
+Block           = "{" { TopLevelItem } "}" .
 
-IfStatement     = "if" Expression Block { "else" "if" Expression Block } [ "else" Block ] .
+Label           = Identifier ":" .
 
-LoopStatement   = "loop" Iterable [ "as" [ "&" ] Identifier ] [ "at" [ "&" ] Identifier [ ":" DataType ] ] Block .
+IfStatement     = [ "#" ] "if" Expression Block
+                  { "else" [ "#" ] "if" Expression Block } [ "else" Block ] .
+                  (* "#if": compile-time conditional (Section 15.2.1). *)
 
-CaseStatement   = "case" Expression "{" { CaseClause } "}" .
+LoopStatement   = [ Label ] [ "#" ] "loop" [ Iterable ]
+                  [ "as" Identifier ]
+                  [ "at" [ "&" ] Identifier [ ":" DataType ] ]
+                  Block .
+
+CaseStatement   = [ Label ] "case" Expression "{" { CaseClause } "}" .
 CaseClause      = ( "when" Expression | "else" ) Block .
 
 ReturnStatement = "return" [ Expression { "," Expression } ] ";" .
 FlowControlStatement = ( "break" | "continue" ) [ Identifier ] ";" .
 
-ImportStatement = "import" [ LanguageTag ] FileName "as" Identifier [ ":" Definition | ";" ] .
+DeferStatement  = "defer" ( Block | Statement ) .
+
+CatchClause     = "catch" ( "return" | Identifier [ Block ] ) .
+
+ImportStatement = "import" [ LanguageTag ] QualifiedName "as" ImportTarget .
+ImportTarget    = QualifiedName ";"
+                | "_" ";"
+                | QualifiedName ":" DeclarationBody .
+
 PrintStatement  = StringLiteral [ Expression ] { "," Expression } ";" .
-ExpressionStatement = Expression [ "=" Expression ] ";" .
+
+ExpressionStatement = Expression [ AssignOperator Expression ] [ CatchClause ] ";" .
+
+AssignOperator  = "="
+                | "+" "=" | "-" "=" | "*" "=" | "/" "=" | "%" "="
+                | "<<" "=" | ">>" "=" | "&" "=" | "|" "=" | "^" "=" .
+
 
 
 (*
- * MATLAB-style Ranges
+ * Ranges
  * --------------------------------------------------------------------------
  *)
 
@@ -159,32 +234,40 @@ BitAnd          = Equality     { "&" Equality } .
 Equality        = Relational   { ( "==" | "!=" ) Relational } .
 Relational      = Shift        { ( "<" | "<=" | ">" | ">=" ) Shift } .
 Shift           = Additive     { ( "<<" | ">>" ) Additive } .
-Additive        = Multiplicative { ( "+" | "-" ) Multiplicative } .
+Additive        = Multiplicative { ( "+" | "-" | ".." ) Multiplicative } .
 Multiplicative  = CastExpr     { ( "*" | "/" | "%" ) CastExpr } .
-CastExpr        = Unary        { ( "->" | "=>" ) DataType } .
 
-Unary           = ( "+" | "-" | "&" | "^" | "!" | "~" | "++" | "--" ) Unary
+CastExpr        = Unary { ( "->" | "=>" ) ( DataType | "_" ) } .
+
+Unary           = ( "+" | "-" | "&" | "!" | "~" ) Unary
                 | Postfix .
 
-Postfix         = Primary { Selector | SliceOrIndex | FunctionCall } .
+Postfix         = Primary { Selector | SliceOrIndex | FunctionCall | "^" } .
 
 Selector        = "." Identifier .
-SliceOrIndex    = "[" SliceElement { "," SliceElement } "]" .  (* Multi-dimensional slicing *)
+SliceOrIndex    = "[" SliceElement { "," SliceElement } "]" .
 SliceElement    = Range | Expression .
-
 FunctionCall    = "(" [ Expression { "," Expression } ] ")" .
 
 Primary         = QualifiedName
+                | Placeholder
+                | BaseType
                 | Number
                 | StringLiteral
                 | CharLiteral
                 | "true" | "false" | "null"
                 | "(" Expression ")"
-                | ArrayLiteral
-                | StructLiteral .
+                | CompositeDefinition
+                | Literal .
+
+Literal         = [ LiteralBase ] "." ( StructLiteral | ArrayLiteral | StringLiteral ) .
+
+LiteralBase     = "_"
+                | DataType .
+
+StructLiteral   = "{" [ FieldInit { "," FieldInit } [ "," ] ] "}" .
+FieldInit       = [ "." ] Identifier ( ":" | "=" ) Expression
+                | ".." ":" Expression
+                | Expression .
 
 ArrayLiteral    = "[" [ Expression { "," Expression } [ "," ] ] "]" .
-StructLiteral   = "{" [ FieldInit { "," FieldInit } [ "," ] ] "}" .
-FieldInit       = [ Identifier "=" ] Expression .
-
-LanguageTag     = "[" Identifier "]" .
