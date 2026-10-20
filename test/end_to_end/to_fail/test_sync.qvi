@@ -1,16 +1,4 @@
 // =============================================================================
-// Parser-sync (error recovery) end-to-end tests.
-//
-// Each section contains independent errors; the parser is expected to sync
-// and keep parsing after each one, so all of them accumulate in the
-// AstContext. The quoted value after '#test' is the expected diagnostic
-// list: comma separated 'E<code>' / 'W<code>' entries (E = error, W =
-// warning, code = positive magnitude of the Err/Wrn value), order matters.
-// Optional '@line' asserts the 1-based line number counted from the first
-// line of the section (the blank line after the previous '#test' is line 1).
-// =============================================================================
-
-// =============================================================================
 // 1. Global Scope Recovery (simple)
 // =============================================================================
 

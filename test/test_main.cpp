@@ -1,5 +1,7 @@
 #pragma once
-#include "test_core.h"
+
+// #include "test_core.h"
+#include "test_harness.h"
 #include <cassert>
 #include <cstdint>
 #include <stdio.h>
@@ -16,31 +18,10 @@ extern const Test::Suite gOrderedDictSuite;
 extern const Test::Suite gTypeSystemSuite;
 extern const Test::Suite gLexerSuite;
 
-extern const Test::Suite gParserSuiteVardef;
-extern const Test::Suite gParserSuiteLoop;
-extern const Test::Suite gParserSuiteCase;
-extern const Test::Suite gParserSuiteTypedef;
-extern const Test::Suite gParserSuiteIf;
-extern const Test::Suite gParserSuiteFunction;
-extern const Test::Suite gParserSuitePrecedence;
-extern const Test::Suite gParserSuiteExpression;
-extern const Test::Suite gParserSuiteEnum;
-extern const Test::Suite gParserSuiteMisc;
+extern const Test::Suite gStringLiteralSuite;
 
 extern const Test::Suite gVecKernel;
 extern const Test::Suite gPrintFormatSuite;
-
-extern const Test::Suite gSuiteEtEArraySlices;
-extern const Test::Suite gSuiteEtELoops;
-extern const Test::Suite gSuiteEtEGetAddr;
-extern const Test::Suite gSuiteEtECasts;
-extern const Test::Suite gSuiteEtEFunctions;
-extern const Test::Suite gSuiteEtEControlFlow;
-extern const Test::Suite gSuiteEtEPrintf;
-extern const Test::Suite gSuiteEtEEnums;
-extern const Test::Suite gSuiteEtEStructs;
-
-extern const Test::Suite gSuiteEtESync;
 
 extern const Test::BenchCase gBench[];
 extern const int gBenchReps;
@@ -49,39 +30,47 @@ enum OptionId {
     OPT_HELP      = 0,
     OPT_E2E,
     OPT_UNIT,
+    OPT_SNAPSHOT,
     OPT_VISUALIZE,
     OPT_FILTER,
     OPT_BENCH,
+    OPT_GOLDEN,
+    OPT_AUTO_GOLDEN,
 
     OPT_COUNT,
 };
 
 CLI::Option options[OPT_COUNT] = {
-    { OPT_HELP,      "h", "help",      "Print this help menu",         },
-    { OPT_E2E,       "e", "e2e",       "Run end-to-end tests",         },
-    { OPT_UNIT,      "u", "unit",      "Run unit tests",               },
-    { OPT_VISUALIZE, "v", "visualize", "Visualize failure diagnostics" },
-    { OPT_FILTER,    "f", "filter",    "Filter tests by pattern",      },
-    { OPT_BENCH,     "b", "bench",     "Run benchmarks",               },
+    { OPT_HELP,        "h", "help",             "Print this help menu",         },
+    { OPT_E2E,         "e", "e2e",              "Run end-to-end tests",         },
+    { OPT_UNIT,        "u", "unit",             "Run unit tests",               },
+    { OPT_SNAPSHOT,    "s", "snapshot",         "Run snapshot tests",           },
+    { OPT_VISUALIZE,   "v", "visualize",        "Visualize failure diagnostics" },
+    { OPT_FILTER,      "f", "filter",           "Filter tests by pattern",      },
+    { OPT_BENCH,       "b", "bench",            "Run benchmarks",               },
+    { OPT_GOLDEN,      "gg", "generate-golden", "Generate golden files",        },
+    { OPT_AUTO_GOLDEN, "ag", "autogen-golden",  "Auto Generate golden files",   },
 };
 static_assert(OPT_COUNT == sizeof(options) / sizeof(CLI::Option));
 
 enum TestKind : uint8_t {
-    TK_NONE     = 0,
+    TK_NONE          = 0,
 
-    TK_UNIT     = 1 << 0,
-    TK_E2E_PASS = 1 << 1,
-    TK_E2E_FAIL = 1 << 2,
+    TK_UNIT          = 1 << 0,
+    TK_E2E_PASS      = 1 << 1,
+    TK_E2E_FAIL      = 1 << 2,
+    TK_SNAPSHOT      = 1 << 3,
 
-    TK_COUNT = 3,
+    TK_COUNT = 5,
 };
 
 const char* str(TestKind kind) {
     switch (kind) {
-        case TK_UNIT:     return "Unit";
-        case TK_E2E_PASS: return "E2E:Pass";
-        case TK_E2E_FAIL: return "E2E:Fail";
-        default:          return "<unknown>";
+        case TK_UNIT:          return "Unit";
+        case TK_E2E_PASS:      return "E2E:Pass";
+        case TK_E2E_FAIL:      return "E2E:Fail";
+        case TK_SNAPSHOT:      return "Snapshot";
+        default:               return "<unknown>";
     }
 }
 
@@ -173,6 +162,14 @@ int main(int argc, const char** argv) {
         testKind = (TestKind) (testKind | TK_UNIT);
     }
 
+    if (options[OPT_GOLDEN].encountered) {
+        Test::gGenerateGoldens = true;
+    }
+
+    if (options[OPT_AUTO_GOLDEN].encountered) {
+        Test::gAutoGenerateGoldens = true;
+    }
+
     if (options[OPT_E2E].encountered) {
         if (options[OPT_E2E].hasValue) {
             CLI::Value* value = &options[OPT_E2E].value;
@@ -192,8 +189,12 @@ int main(int argc, const char** argv) {
         }
     }
 
+    if (options[OPT_SNAPSHOT].encountered) {
+        testKind = (TestKind) (testKind | TK_SNAPSHOT);
+    }
+
     if (testKind == TestKind::TK_NONE) {
-        testKind = (TestKind) (TK_UNIT | TK_E2E_PASS | TK_E2E_FAIL);
+        testKind = (TestKind) (TK_UNIT | TK_E2E_PASS | TK_E2E_FAIL | TK_SNAPSHOT);
     }
 
     if (options[OPT_VISUALIZE].encountered) {
@@ -248,19 +249,8 @@ int main(int argc, const char** argv) {
         Test::runTestSuite(&ctx, &gOrderedDictSuite, &Test::gResult);
 
         Test::runTestSuite(&ctx, &gLexerSuite, &Test::gResult);
-
-        //Test::runTestSuite(&gParserSuiteVardef, &filter, &Test::gResult);
-        //Test::runTestSuite(&gParserSuiteTypedef, &filter, &Test::gResult);
-        //Test::runTestSuite(&gParserSuiteIf, &filter, &Test::gResult);
-        //Test::runTestSuite(&gParserSuiteCase, &filter, &Test::gResult);
-        //Test::runTestSuite(&gParserSuiteLoop, &filter, &Test::gResult);
-        //Test::runTestSuite(&gParserSuiteExpression, &filter, &Test::gResult);
-        //Test::runTestSuite(&gParserSuitePrecedence, &filter, &Test::gResult);
-        //Test::runTestSuite(&gParserSuiteFunction, &filter, &Test::gResult);
-        //Test::runTestSuite(&gParserSuiteMisc, &filter, &Test::gResult);
-
+        Test::runTestSuite(&ctx, &gStringLiteralSuite, &Test::gResult);
         Test::runTestSuite(&ctx, &gTypeSystemSuite, &Test::gResult);
-
         Test::runTestSuite(&ctx, &gVecKernel, &Test::gResult);
         Test::runTestSuite(&ctx, &gPrintFormatSuite, &Test::gResult);
 
@@ -268,19 +258,18 @@ int main(int argc, const char** argv) {
     }
 
     if (testKind & TK_E2E_PASS) {
-        Test::runTestSuite(&ctx, &gSuiteEtEPrintf, &Test::gResult);
-        Test::runTestSuite(&ctx, &gSuiteEtEEnums, &Test::gResult);
-        Test::runTestSuite(&ctx, &gSuiteEtEStructs, &Test::gResult);
-        Test::runTestSuite(&ctx, &gSuiteEtELoops, &Test::gResult);
-        Test::runTestSuite(&ctx, &gSuiteEtEArraySlices, &Test::gResult);
-        Test::runTestSuite(&ctx, &gSuiteEtEGetAddr, &Test::gResult);
-        Test::runTestSuite(&ctx, &gSuiteEtECasts, &Test::gResult);
-        Test::runTestSuite(&ctx, &gSuiteEtEFunctions, &Test::gResult);
-        Test::runTestSuite(&ctx, &gSuiteEtEControlFlow, &Test::gResult);
+        Test::runDirectorySuites("test/end_to_end/to_pass", Test::CK_RUN_PASS, false,
+            gTestRunPass, gPreCaseE2E, gTestPostCase, &ctx, &Test::gResult);
     }
 
     if (testKind & TK_E2E_FAIL) {
-        Test::runTestSuite(&ctx, &gSuiteEtESync, &Test::gResult);
+        Test::runDirectorySuites("test/end_to_end/to_fail", Test::CK_RUN_FAIL, false,
+            gTestRunFail, gPreCaseE2E, gTestPostCase, &ctx, &Test::gResult);
+    }
+
+    if (testKind & TK_SNAPSHOT) {
+        runDirectorySuites("test/snapshots", Test::CK_SNAPSHOT, true,  gTestSnapshotAst,
+            gPreCaseFrontend, gTestPostCase, &ctx, &Test::gResult);
     }
 
     Test::_writeResult(&Test::gResult);

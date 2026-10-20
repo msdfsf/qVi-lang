@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <ostream>
 #include <type_traits>
 
@@ -18,8 +19,6 @@
 
 
 inline jmp_buf gJumpBuffer;
-
-#define min(a, b) ((a) < (b) ? (a) : (b))
 
 #define TEST_CASE(name) \
     Test::Case{ #name, [](Test::Result* res)
@@ -74,6 +73,7 @@ namespace Test {
             int                 count;
             ExpectedDiagnostic* data;
         } diag;
+        FILE* outStream; // For snapshots
     };
 
     using CaseFcn = void (*)(Result* res);
@@ -81,6 +81,8 @@ namespace Test {
 
     using PreFcn  = void (*) (bool visualize);
     using PostFcn = void (*) (bool visualize);
+
+    using GoldenFcn = void (*) (FILE* file, const char* input);
 
     struct Case {
         const char* name;
@@ -94,7 +96,9 @@ namespace Test {
 
     enum FileCaseKind : uint8_t {
         CK_RUN_PASS = 0,
-        CK_RUN_FAIL = 1
+        CK_RUN_FAIL = 1,
+
+        CK_SNAPSHOT,
     };
 
     struct Suite {
@@ -111,16 +115,18 @@ namespace Test {
         PostFcn       postSuiteFcn = NULL;
 
         FileCaseKind  fileKind;
+        bool          useGolden = false;
     };
 
     struct File {
         String name;
         char*  buffer;
+        char*  bufferGolden;
 
         struct Test {
             String      name;
             const char* data;
-            const char* result;
+            const char* result; // points to buffer or bufferGolden chunk
         }* tests;
         uint64_t testCount;
     };
@@ -156,6 +162,7 @@ namespace Test {
     struct Context {
         Filter* filter;
         bool    visualize;
+        bool    useGolden;
     };
 
     struct BenchData {
@@ -198,6 +205,8 @@ namespace Test {
     inline int gPipe[2] = { -1, -1 };
     inline thread_local char gStdoutBuffer[1024 * 10];
 
+    inline bool gGenerateGoldens = false;
+    inline bool gAutoGenerateGoldens = false; // Auto-generate if _golden.txt is missing
 
 
     inline void _clearCurrentResult(Test::Result* result) {
@@ -228,7 +237,7 @@ namespace Test {
             printf(AC_BOLD_RED "[%2i|%-2i] " AC_RESET, result->currentAssertPassed, assertCount);
         }
 
-        const int count = min(maxAssertToDisplay, assertCount);
+        const int count = maxAssertToDisplay < assertCount ? maxAssertToDisplay : assertCount;
         for (int i = 0; i < count; i++, mask >>= 1) {
             if (mask & 1) {
                 printf(AC_BOLD_RED "%i " AC_RESET, i + 1);
@@ -687,7 +696,7 @@ namespace Test {
     // line number counted from the first line of the section.
     // TODO: handle errors
     inline File parseTestFile(const char* filepath) {
-        File result = { NULL, NULL, NULL, 0 };
+        File result = { { 0 }, NULL, NULL, NULL, 0 };
 
         FILE* file = std::fopen(filepath, "rb");
         if (!file) return result;
@@ -857,17 +866,416 @@ namespace Test {
         return *count > 0;
     }
 
+    // Golden file has same name, but appends _golden.txt
+    // ex: test_types.qvi -> test_types_golden.txt
+    inline FILE* openGoldenFile(const char* fname, const char* mode = "r") {
+        if (!fname || !mode) return NULL;
+
+        const char* sep = strrchr(fname, '/');
+        const char* backslash = strrchr(fname, '\\');
+
+        if (backslash && (!sep || backslash > sep)) {
+            sep = backslash;
+        }
+
+        const char* dot = strrchr(fname, '.');
+        size_t nameLen = strlen(fname);
+
+        if (dot && (!sep || dot > sep)) {
+            nameLen = (size_t)(dot - fname);
+        }
+
+        static const char suffix[] = "_golden.txt";
+
+        char* goldenName = (char*) malloc(nameLen + sizeof(suffix));
+        if (!goldenName) return NULL;
+
+        memcpy(goldenName, fname, nameLen);
+        memcpy(goldenName + nameLen, suffix, sizeof(suffix));
+
+        FILE* file = fopen(goldenName, mode);
+        free(goldenName);
+
+        return file;
+    }
+
+    inline bool parseGoldenFile(FILE* golden, File* file, const char* fname) {
+        std::fseek(golden, 0, SEEK_END);
+        long size = std::ftell(golden);
+        std::fseek(golden, 0, SEEK_SET);
+
+        if (size <= 0) {
+            std::fclose(golden);
+            return false;
+        }
+
+        char* buf = (char*) std::malloc(size + 1);
+        size_t bytesRead = std::fread(buf, 1, size, golden);
+        buf[bytesRead] = '\0';
+        std::fclose(golden);
+
+        file->bufferGolden = buf;
+
+        char* cur = strstr(buf, "===");
+
+        for (size_t i = 0; i < file->testCount; i++) {
+            file->tests[i].result = NULL;
+            if (!cur) continue;
+
+            // Skip past the "=== [...] ==="
+            char* lineEnd = strchr(cur, '\n');
+            if (!lineEnd) break;
+            char* start = lineEnd + 1;
+
+            // Find the next section and advance cursor
+            char* next = strstr(start, "===");
+            char* end = next ? next : (start + strlen(start));
+            cur = next;
+
+            while (end > start && (*(end - 1) == '\n' || *(end - 1) == '\r')) {
+                end--;
+            }
+
+            if (end == start) {
+                static char empty[] = "";
+                file->tests[i].result = empty;
+            }
+            else {
+                *end = '\0';
+                file->tests[i].result = start;
+            }
+        }
+
+        return true;
+    }
+
+    inline bool parseGoldenFile(File* file, const char* fname) {
+        FILE* golden = openGoldenFile(fname, "rb");
+        if (!golden) return false;
+
+        parseGoldenFile(golden, file, fname);
+    }
+
+    inline bool generateGoldenFile(FILE* golden, const Test::Suite* suite, const Test::File* file, Test::Result* result) {
+        for (size_t i = 0; i < file->testCount; i++) {
+            FILE* tmpStream = std::tmpfile();
+            TestArgument arg;
+            arg.outStream = tmpStream;
+
+            _clearCurrentResult(result);
+
+            if (suite->preCaseFcn) suite->preCaseFcn(false);
+            if (setjmp(gJumpBuffer) == 0) {
+                suite->file->fcn(file->tests[i].data, arg, result);
+            }
+            if (suite->postCaseFcn) suite->postCaseFcn(false);
+
+            long size = std::ftell(tmpStream);
+            if (size > 0) {
+                fprintf(golden, "=== [%.*s] ===\n", (int) file->tests[i].name.len, file->tests[i].name.buff);
+                std::rewind(tmpStream);
+                char buf[1024];
+                size_t bytes;
+                while ((bytes = std::fread(buf, 1, sizeof(buf), tmpStream)) > 0) {
+                    std::fwrite(buf, 1, bytes, golden);
+                }
+                fprintf(golden, "\n");
+            }
+            std::fclose(tmpStream);
+        }
+
+        if (std::fclose(golden) != 0) {
+            _writeStatusLine(":FAIL", file->name, AC_BOLD_RED);
+            return false;
+        } else {
+            _writeStatusLine(":GEN", file->name, AC_BOLD_YELLOW);
+            return true;
+        }
+    }
+
+    inline bool generateGoldenFile(const Test::Suite* suite, const Test::File* file, Test::Result* result) {
+        FILE* golden = openGoldenFile(suite->file->fname, "wb");
+        if (!golden) {
+            _writeStatusLine(":FAIL", file->name, AC_BOLD_RED);
+            return false;
+        }
+
+        return generateGoldenFile(golden, suite, file, result);
+    }
+
+    struct _LineSlice {
+        const char* ptr;
+        size_t      len;
+    };
+
+    inline size_t _extractLineSlices(const char* start, const char* end, _LineSlice* out, size_t maxCount) {
+        size_t count = 0;
+        const char* cur = start;
+        while (cur < end && count < maxCount) {
+            const char* next = (const char*) memchr(cur, '\n', end - cur);
+            size_t len = next ? (size_t)(next - cur) : (size_t)(end - cur);
+            if (len > 0 && cur[len - 1] == '\r') len--;
+            out[count++] = { cur, len };
+            if (!next) break;
+            cur = next + 1;
+        }
+        return count;
+    }
+
+    // Highlights only the +/- marker and the differing characters within the lines
+    inline void _printPairDiff(_LineSlice del, _LineSlice add) {
+        size_t cp = 0;
+        while (cp < del.len && cp < add.len && del.ptr[cp] == add.ptr[cp]) {
+            cp++;
+        }
+
+        size_t cs = 0;
+        while (cs < (del.len - cp) && cs < (add.len - cp) &&
+                del.ptr[del.len - 1 - cs] == add.ptr[add.len - 1 - cs]) {
+            cs++;
+        }
+
+        // DELETED line: [-] red, common prefix plain, diff bold red, common suffix plain
+        printf(AC_BOLD_RED "-" AC_RESET " %.*s", (int)cp, del.ptr);
+        if (del.len > cp + cs) {
+            printf(AC_BOLD_RED "%.*s" AC_RESET, (int)(del.len - cp - cs), del.ptr + cp);
+        }
+        printf("%.*s\n", (int)cs, del.ptr + del.len - cs);
+
+        // ADDED line: [+] green, common prefix plain, diff bold green, common suffix plain
+        printf(AC_BOLD_GREEN "+" AC_RESET " %.*s", (int)cp, add.ptr);
+        if (add.len > cp + cs) {
+            printf(AC_BOLD_GREEN "%.*s" AC_RESET, (int)(add.len - cp - cs), add.ptr + cp);
+        }
+        printf("%.*s\n", (int)cs, add.ptr + add.len - cs);
+    }
+
+    // TODO: whatever vibed thing, too sleepy to think, maybe reread and stuff
+    inline void printUnifiedDiff(const char* exp, const char* act,
+                                 const char* expectedLabel = "Golden",
+                                 const char* actualLabel = "Actual")
+    {
+        if (!exp || !act) return;
+
+        size_t expLen = strlen(exp);
+        size_t actLen = strlen(act);
+        while (expLen > 0 && (exp[expLen - 1] == '\n' || exp[expLen - 1] == '\r')) expLen--;
+        while (actLen > 0 && (act[actLen - 1] == '\n' || act[actLen - 1] == '\r')) actLen--;
+
+        const char* eEnd = exp + expLen;
+        const char* aEnd = act + actLen;
+
+        // 1. Walk common prefix and track up to 3 context lines
+        const char* ctxBefore[3] = { nullptr, nullptr, nullptr };
+        const char* curLineStart = exp;
+        const char* e = exp;
+        const char* a = act;
+
+        while (e < eEnd && a < aEnd && *e == *a) {
+            if (*e == '\n') {
+                ctxBefore[0] = ctxBefore[1];
+                ctxBefore[1] = ctxBefore[2];
+                ctxBefore[2] = curLineStart;
+                curLineStart = e + 1;
+            }
+            e++;
+            a++;
+        }
+
+        const char* pExp = curLineStart;
+        const char* pAct = a - (e - curLineStart);
+
+        // 2. Walk common suffix backwards
+        const char* eBack = eEnd;
+        const char* aBack = aEnd;
+        const char* sExp = eEnd;
+        const char* sAct = aEnd;
+
+        while (eBack > pExp && aBack > pAct && *(eBack - 1) == *(aBack - 1)) {
+            eBack--;
+            aBack--;
+            if (*eBack == '\n') {
+                sExp = eBack + 1;
+                sAct = aBack + 1;
+            }
+        }
+
+        if (eBack == pExp && (pExp == exp || *(pExp - 1) == '\n')) {
+            sExp = pExp;
+            sAct = aBack;
+        } else if (aBack == pAct && (pAct == act || *(pAct - 1) == '\n')) {
+            sExp = eBack;
+            sAct = pAct;
+        }
+
+        printf("\n" AC_BOLD_CYAN "--- %s" AC_RESET "\n", expectedLabel);
+        printf(AC_BOLD_CYAN "+++ %s" AC_RESET "\n", actualLabel);
+
+        // Leading Context (up to 3 lines)
+        for (int k = 0; k < 3; k++) {
+            if (ctxBefore[k]) {
+                const char* next = (const char*) memchr(ctxBefore[k], '\n', pExp - ctxBefore[k]);
+                size_t len = next ? (size_t)(next - ctxBefore[k]) : (size_t)(pExp - ctxBefore[k]);
+                if (len > 0 && ctxBefore[k][len - 1] == '\r') len--;
+                printf(AC_BRIGHT_BLACK "  %.*s" AC_RESET "\n", (int)len, ctxBefore[k]);
+            }
+        }
+
+        // 3. Middle Slice
+        const char* midEndE = sExp;
+        if (sExp < eEnd && midEndE > pExp && *(midEndE - 1) == '\n') {
+            midEndE--;
+            if (midEndE > pExp && *(midEndE - 1) == '\r') midEndE--;
+        }
+
+        const char* midEndA = sAct;
+        if (sAct < aEnd && midEndA > pAct && *(midEndA - 1) == '\n') {
+            midEndA--;
+            if (midEndA > pAct && *(midEndA - 1) == '\r') midEndA--;
+        }
+
+        constexpr size_t MAX_DIFF_LINES = 64;
+        _LineSlice expLines[MAX_DIFF_LINES];
+        _LineSlice actLines[MAX_DIFF_LINES];
+
+        size_t expCount = _extractLineSlices(pExp, midEndE, expLines, MAX_DIFF_LINES);
+        size_t actCount = _extractLineSlices(pAct, midEndA, actLines, MAX_DIFF_LINES);
+
+        if (expCount >= MAX_DIFF_LINES || actCount >= MAX_DIFF_LINES) {
+            // Fallback for large block
+            size_t pairs = expCount < actCount ? expCount : actCount;
+            for (size_t i = 0; i < pairs; i++) _printPairDiff(expLines[i], actLines[i]);
+            for (size_t i = pairs; i < expCount; i++) printf(AC_BOLD_RED "- %.*s" AC_RESET "\n", (int)expLines[i].len, expLines[i].ptr);
+            for (size_t j = pairs; j < actCount; j++) printf(AC_BOLD_GREEN "+ %.*s" AC_RESET "\n", (int)actLines[j].len, actLines[j].ptr);
+        } else {
+            // Stack-allocated DP Table
+            uint16_t dp[MAX_DIFF_LINES + 1][MAX_DIFF_LINES + 1] = {};
+
+            for (size_t i = 0; i < expCount; i++) {
+                for (size_t j = 0; j < actCount; j++) {
+                    bool match = (expLines[i].len == actLines[j].len &&
+                                  memcmp(expLines[i].ptr, actLines[j].ptr, expLines[i].len) == 0);
+                    if (match) {
+                        dp[i + 1][j + 1] = dp[i][j] + 1;
+                    } else {
+                        dp[i + 1][j + 1] = dp[i + 1][j] > dp[i][j + 1] ? dp[i + 1][j] : dp[i][j + 1];
+                    }
+                }
+            }
+
+            // Backtrack
+            enum DiffKind : uint8_t { DIFF_SAME, DIFF_DEL, DIFF_ADD };
+            struct Action { DiffKind kind; _LineSlice line; };
+            Action actions[MAX_DIFF_LINES * 2];
+            size_t actionCount = 0;
+
+            size_t i = expCount, j = actCount;
+            while (i > 0 || j > 0) {
+                bool match = (i > 0 && j > 0 &&
+                              expLines[i - 1].len == actLines[j - 1].len &&
+                              memcmp(expLines[i - 1].ptr, actLines[j - 1].ptr, expLines[i - 1].len) == 0);
+                if (i > 0 && j > 0 && match) {
+                    actions[actionCount++] = { DIFF_SAME, expLines[i - 1] };
+                    i--; j--;
+                } else if (j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+                    actions[actionCount++] = { DIFF_ADD, actLines[j - 1] };
+                    j--;
+                } else if (i > 0) {
+                    actions[actionCount++] = { DIFF_DEL, expLines[i - 1] };
+                    i--;
+                }
+            }
+
+            // Print in forward order, pairing contiguous DELs and ADDs
+            size_t k = actionCount;
+            while (k > 0) {
+                if (actions[k - 1].kind == DIFF_SAME) {
+                    printf(AC_BRIGHT_BLACK "  %.*s" AC_RESET "\n", (int)actions[k - 1].line.len, actions[k - 1].line.ptr);
+                    k--;
+                } else {
+                    // Collect contiguous DELs and ADDs from reversed actions
+                    size_t delCount = 0, addCount = 0;
+                    size_t scan = k;
+                    while (scan > 0 && actions[scan - 1].kind == DIFF_DEL) { delCount++; scan--; }
+                    while (scan > 0 && actions[scan - 1].kind == DIFF_ADD) { addCount++; scan--; }
+
+                    size_t pairs = delCount < addCount ? delCount : addCount;
+                    for (size_t p = 0; p < pairs; p++) {
+                        _printPairDiff(actions[k - 1 - p].line, actions[k - 1 - delCount - p].line);
+                    }
+                    for (size_t p = pairs; p < delCount; p++) {
+                        printf(AC_BOLD_RED "- %.*s" AC_RESET "\n", (int)actions[k - 1 - p].line.len, actions[k - 1 - p].line.ptr);
+                    }
+                    for (size_t p = pairs; p < addCount; p++) {
+                        printf(AC_BOLD_GREEN "+ %.*s" AC_RESET "\n", (int)actions[k - 1 - delCount - p].line.len, actions[k - 1 - delCount - p].line.ptr);
+                    }
+                    k = scan;
+                }
+            }
+        }
+
+        // Trailing Context (up to 3 lines)
+        const char* s = sExp;
+        for (int k = 0; k < 3 && s < eEnd; k++) {
+            const char* next = (const char*) memchr(s, '\n', eEnd - s);
+            size_t len = next ? (size_t)(next - s) : (size_t)(eEnd - s);
+            if (len > 0 && s[len - 1] == '\r') len--;
+            printf(AC_BRIGHT_BLACK "  %.*s" AC_RESET "\n", (int)len, s);
+            if (!next) break;
+            s = next + 1;
+        }
+        printf("\n");
+    }
+
     inline void freeTestFile(File* file) {
         if (!file) return;
 
         std::free(file->buffer);
+        std::free(file->bufferGolden);
         std::free(file->tests);
 
-        file->buffer    = NULL;
-        file->tests     = NULL;
-        file->testCount = 0;
+        file->buffer       = NULL;
+        file->bufferGolden = NULL;
+        file->tests        = NULL;
+        file->testCount    = 0;
     }
 
+
+
+    inline void _verifyGoldenStream(FILE* tmpStream, const char* expectedGolden, bool visualize) {
+        if (!tmpStream) return;
+        long size = std::ftell(tmpStream);
+        if (size == 0 && !expectedGolden) return;
+
+        if (!expectedGolden) {
+            printf(AC_BOLD_RED "  -> Missing golden data. Run with golden generation enabled!" AC_RESET "\n");
+            assert(false);
+            return;
+        }
+
+        std::rewind(tmpStream);
+        char* actual = (char*) std::malloc(size + 1);
+        size_t readCount = std::fread(actual, 1, size, tmpStream);
+        actual[readCount] = '\0';
+
+        char* actualEnd = actual + readCount;
+        while (actualEnd > actual && (*(actualEnd - 1) == '\n' || *(actualEnd - 1) == '\r')) actualEnd--;
+        *actualEnd = '\0';
+
+        // TODO: Do we keep this as we have diffs?
+        if (visualize) {
+            printf(actual);
+        }
+
+        if (std::strcmp(actual, expectedGolden) != 0) {
+            printUnifiedDiff(expectedGolden, actual, "Golden", "Actual");
+            assert(false);
+        } else {
+            assert(true);
+        }
+
+        std::free(actual);
+    }
 
 
 
@@ -897,15 +1305,22 @@ namespace Test {
         const char* output = testFile->tests[idx].result;
 
         if (setjmp(gJumpBuffer) == 0) {
-            // TODO: do something if these fails
-            captureStdoutBegin();
-            fcn(input, { .output = output }, result);
-            captureStdoutEnd();
-            assert((const char*) gStdoutBuffer, (const char*) output);
-        }
+            if (ctx->useGolden) {
+                // TODO: do something if these fails
+                FILE* stream = std::tmpfile();
+                fcn(input, { .outStream = stream}, result);
+                _verifyGoldenStream(stream, testFile->tests[idx].result, ctx->visualize);
+                std::fclose(stream);
+            } else {
+                captureStdoutBegin();
+                fcn(input, { .output = output }, result);
+                captureStdoutEnd();
+                assert((const char*) gStdoutBuffer, (const char*) output);
 
-        if (ctx->visualize) {
-            printf("%s", gStdoutBuffer);
+                if (ctx->visualize) {
+                    printf("%s", gStdoutBuffer);
+                }
+            }
         }
 
         if (result->currentTestFailed) {
@@ -918,6 +1333,7 @@ namespace Test {
         }
     }
 
+    // TODO: ? for now we dont do anything about golden files ? Do we even want to care ?
     inline void runTestFileToFail(Context* ctx, const Test::File* testFile, FileFcn fcn, const int idx, Test::Result* result) {
         _clearCurrentResult(result);
         const String name = testFile->tests[idx].name;
@@ -951,10 +1367,49 @@ namespace Test {
         if (suite->preSuiteFcn) suite->preSuiteFcn(ctx->visualize);
 
         if (suite->file) {
+            ctx->useGolden = suite->useGolden;
+
             File file = parseTestFile(suite->file->fname);
             file.name.buff = (char*) suite->file->fname;
             file.name.len = strlen(suite->file->fname);
 
+
+
+            // Golden generation
+            // ---
+
+            FILE* golden = NULL;
+            if (suite->useGolden) {
+                if (gGenerateGoldens) {
+                    generateGoldenFile(suite, &file, result);
+                    freeTestFile(&file);
+                    return;
+                }
+
+                golden = openGoldenFile(suite->file->fname);
+                if (!golden) {
+                    _writeStatusLine(":WARN", file.name, AC_BOLD_YELLOW);
+
+                    if (gAutoGenerateGoldens) {
+                        printf(AC_BOLD_YELLOW "  -> Golden file missing. Auto-generating baseline...\n" AC_RESET);
+                        generateGoldenFile(suite, &file, result);
+                        freeTestFile(&file);
+                    } else {
+                        printf(AC_BOLD_RED "  -> Golden file does not exist! Run with -gg to generate.\n" AC_RESET);
+                    }
+
+                    return;
+                }
+            }
+
+
+
+            // Standard run
+            // ---
+
+            if (suite->useGolden) {
+                parseGoldenFile(golden, &file, suite->file->fname);
+            }
 
             for (size_t i = 0; i < file.testCount; i++) {
                 if (!filterMatches(ctx->filter, FK_CASE, file.tests[i].name)) continue;
@@ -964,12 +1419,17 @@ namespace Test {
                     if (suite->preCaseFcn) suite->preCaseFcn(false);
                     runTestFileToPass(ctx, &file, suite->file->fcn, i, result);
                     if (suite->postCaseFcn) suite->postCaseFcn(false);
-                } else {
+                } else if (suite->fileKind == CK_RUN_FAIL) {
                     if (suite->preCaseFcn) suite->preCaseFcn(ctx->visualize);
                     runTestFileToFail(ctx, &file, suite->file->fcn, i, result);
                     if (suite->postCaseFcn) suite->postCaseFcn(ctx->visualize);
+                } else {
+                    if (suite->preCaseFcn) suite->preCaseFcn(ctx->visualize);
+                    runTestFileToPass(ctx, &file, suite->file->fcn, i, result);
+                    if (suite->postCaseFcn) suite->postCaseFcn(ctx->visualize);
                 }
             }
+
             freeTestFile(&file);
         }
 
@@ -982,6 +1442,48 @@ namespace Test {
         if (suite->postSuiteFcn) suite->postSuiteFcn(false);
 
         putchar('\n');
+    }
+
+    inline void runDirectorySuites(
+        const char* dir,
+        Test::FileCaseKind kind,
+        bool useGolden,
+        Test::FileFcn fcn,
+        Test::PreFcn preCase,
+        Test::PostFcn postCase,
+        Test::Context* ctx,
+        Test::Result* res
+    ) {
+        if (!std::filesystem::exists(dir)) return;
+
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(dir)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".qvi") {
+
+                std::string pathStr = entry.path().string();
+                std::string nameStr = entry.path().stem().string(); // e.g. "ast_expr"
+
+                // Drop the redundant leading "test_" (e.g. test_casts -> casts)
+                const std::string prefix = "test_";
+                if (nameStr.compare(0, prefix.size(), prefix) == 0) {
+                    nameStr.erase(0, prefix.size());
+                }
+
+                Test::FileCase fileCase = { pathStr.c_str(), fcn };
+                Test::Suite suite = {
+                    nameStr.c_str(),
+                    &fileCase,
+                    NULL, 0,
+                    preCase,
+                    postCase,
+                    NULL,
+                    NULL,
+                    kind,
+                    useGolden
+                };
+
+                Test::runTestSuite(ctx, &suite, res);
+            }
+        }
     }
 
 }
