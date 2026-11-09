@@ -170,12 +170,18 @@ namespace Test {
         uint32_t size;
     };
 
+    using BenchHook = void (*)(BenchData* data);
+
     struct BenchCase {
         const char* name;
         int         iterCount;
         void        (*run)     (BenchData* data);
         BenchData   (*prep)    ();
         void        (*release) (BenchData* data);
+
+        // Optional per-iteration hooks. They run outside the timed region.
+        BenchHook   pre;
+        BenchHook   post;
     };
 
     struct BenchResult {
@@ -503,7 +509,9 @@ namespace Test {
 
         // Warmup
         for (int64_t i = 0; i < warmupIter; i++) {
+            if (benchCase->pre) benchCase->pre(&data);
             benchCase->run(&data);
+            if (benchCase->post) benchCase->post(&data);
         }
 
         _clearCurrentResult(&gResult); // TODO
@@ -512,11 +520,16 @@ namespace Test {
         auto totalStart = std::chrono::high_resolution_clock::now();
 
         for (int64_t i = 0; i < iterCount; i++) {
+            if (benchCase->pre) benchCase->pre(&data);
+
             auto start = std::chrono::high_resolution_clock::now();
 
             benchCase->run(&data);
 
             auto end = std::chrono::high_resolution_clock::now();
+
+            if (benchCase->post) benchCase->post(&data);
+
             double elapsed = std::chrono::duration<double, std::nano>(end - start).count();
 
             nsTimes[i] = elapsed;
@@ -953,7 +966,7 @@ namespace Test {
         FILE* golden = openGoldenFile(fname, "rb");
         if (!golden) return false;
 
-        parseGoldenFile(golden, file, fname);
+        return parseGoldenFile(golden, file, fname);
     }
 
     inline bool generateGoldenFile(FILE* golden, const Test::Suite* suite, const Test::File* file, Test::Result* result) {

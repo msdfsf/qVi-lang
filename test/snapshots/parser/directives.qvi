@@ -1,0 +1,81 @@
+// =============================================================================
+// Parser snapshots: directives
+// =============================================================================
+//
+// Scope: imports and ABI tags — doc.md 'Imports' and 'Native
+// Interoperability'. Namespace wrapping, '_' flattening, structural builders,
+// function bodies, explicit interfaces and foreign library linking.
+// Malformed forms last.
+
+// import_namespace
+import math_utils as Math;   // wraps the file into an opaque namespace
+r: i64 = 1;
+#test ""
+
+// import_flatten
+import math_constants as _;   // dumps the AST directly into the current scope
+area: i64 = 1;
+#test ""
+
+// import_struct_builder
+import tcp_header as TcpPacket: struct '#packed';   // the file becomes the struct body
+import vec_file as Vec: struct;                     // plain struct builder
+#test ""
+
+// import_function_body
+import process_data as process: (data: []u8, factor: f64) -> u64;   // file becomes the body
+r: u64 = process(my_buffer, 1.5);
+#test ""
+
+// import_interface
+import physics as Sim: {
+    step: (delta: f64);
+    gravity: Vec3;
+}
+r: i64 = 1;
+#test ""
+
+// import_foreign
+import '#abi(C)' ucrtbase as LibC: {
+    pow: (x: f64, y: f64) -> f64;
+    floor: (x: f64) -> f64;
+    srand: (seed: u32);
+}
+r: i64 = 1;
+#test ""
+
+// abi_tag
+native_callback: (id: i64) '#abi(C)' {
+    "Callback triggered for: %v" id;
+};
+#test ""
+
+// import_tag_only
+import '#abi(C)' foo as F;   // tagged import with no builder body
+r: i64 = 1;
+#test ""
+
+// import_builder_params
+import geometry as Vec: struct(T : type);   // generic struct builder
+v: Vec(i64);
+#test ""
+
+// import_builder_annotations
+import tcp as Packet: struct '#packed', '#reorder';   // both layout annotations
+p: Packet;
+#test ""
+
+// import_no_anchor
+import math_utils as Math;   // the import itself is a scope statement
+#test ""
+
+// recovery_import
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+import missing as;    // import target never arrives
+#test ""
+
+// recovery_import_builder
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+import foo as F: blah;   // unknown builder form recovers as a plain declaration
+after: i64 = 2;
+#test ""

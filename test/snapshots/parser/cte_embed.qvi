@@ -1,0 +1,82 @@
+// =============================================================================
+// Parser snapshots: cte_embed
+// =============================================================================
+//
+// Scope: compile-time execution and meta — doc.md 'Compile-Time Execution'
+// and 'Meta'. The 'embed' qualifier, compile-time calls, '#' prefixed
+// control flow, type reflection and the compiler root namespace.
+// Malformed forms last.
+
+// embed_variable
+x: i64 = 5 + 3 * 9 - 2;          // runtime
+y: embed i64 = 5 + 3 * 9 - 2;   // embedded into the binary
+z: embed i64 = 10 * 0x10;
+#test ""
+
+// embed_call
+add: (a: i64, b: i64) -> i64 { return a + b; }
+ans: embed i64 = add(4, 2);   // the compiler runs 'add' and hardcodes 6
+r: i64 = add(1, 2);           // the same function still works at runtime
+#test ""
+
+// compile_time_if
+T := i32;
+EMBEDDED: embed i64 = 1;
+#if EMBEDDED {
+    a: i64 = 1;   // only the true branch is compiled in
+} else {
+    b: i64 = 2;
+}
+#if T.size == 4 {
+    c: i64 = 3;
+} else #if T.is_pointer {
+    d: i64 = 4;
+} else {
+    e: i64 = 5;
+}
+#test ""
+
+// compile_time_loop
+HttpStatus := enum { Ok, NotFound, };
+print_status: (status: HttpStatus) {
+    #loop HttpStatus.members as member {   // unrolled per enum member
+        if status == member.value {
+            return;
+        }
+    }
+    #loop 0:4 at i {   // plain range unrolling
+        n: i64 = i;
+    }
+}
+#test ""
+
+// type_reflection
+k: i64 = i32.size;    // size in bytes
+a: i64 = i32.align;   // alignment requirement
+r: i64 = i32.rank;    // internal numeric rank
+Entity := struct { id: u64; };
+name: [_]u8 = Entity.name;     // the struct's identifier as a string
+members: i64 = Entity.members; // field list reference
+#test ""
+
+// compiler_namespace
+buf: ^i64 = null;
+p: ^i64 = malloc(_, i64.align);   // '_' defaults solve from the destination
+t: type = ::type(buf);            // the static type of an expression
+alloc_data: ^u8 = ::allocator.data;   // the default allocator is an ordinary value
+#test ""
+
+// any_type
+x: f32 = 3.14;
+dyn: ::Any = .{
+    data = &x => ^u8,   // reinterpret the pointer payload
+    info = f32,         // type values implicitly cast to ^::TypeInfo
+};
+#test ""
+
+// recovery_hash_statement
+ok: i64 = 1;    // anchor statement, keeps the golden section non-empty
+#if {          // compile-time condition never arrives
+    a: i64 = 2;
+}
+#test ""

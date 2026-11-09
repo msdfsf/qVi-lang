@@ -1,0 +1,70 @@
+// =============================================================================
+// Parser snapshots: casts
+// =============================================================================
+//
+// Scope: explicit conversions — doc.md 'Type Casts and Conversions'.
+// Value casts, '_' destination inference, layout casts, bit-casts, enum
+// casts and the ':=' typeinfo path. Malformed forms last.
+
+// value_cast
+pi: f32 = 3.14159;
+x: i32 = pi -> i32;      // float to int truncation
+big: i64 = 1000;
+small: i16 = big -> i16; // narrowing
+tiny: u8 = big -> _;      // '_' infers the destination type
+wide: f64 = big -> f64;   // integer to float promotion
+neg: i64 = -big;
+sgn: i32 = neg -> i32;
+#test ""
+
+// cast_binding
+a: i64 = 1; b: i64 = 2;
+r1: i64 = a + b -> i64;      // docs example: parses as a + (b -> i64)
+r2: i64 = a -> f64 -> i64;   // casts chain left to right
+r3: i64 = a -> u8 + b;       // cast binds to 'a' before the binary '+'
+#test ""
+
+// layout_cast
+Vec2 := struct { x: f32; y: f32; };
+Vec3 := struct { x: f32; y: f32; z: f32; };
+vec3: Vec3 = .{ 1.0, 2.0, 3.0 };
+vec2: Vec2 = vec3 -> Vec2;   // target fields match a prefix of the source
+Meters := struct { value: i64; };   // single-field struct, distinct type
+m: Meters = 100 -> Meters;
+v: i64 = m -> i64;
+bad: Vec3 = vec2 -> Vec3;    // not a prefix, compile-time error
+ok: i64 = 1;                 // anchor keeps the section alive
+#test ""
+
+// bitcast
+f: f32 = 1.0;
+raw_bits: u32 = f => u32;          // exact same byte width
+g: f64 = 2.0;
+wide_bits: u64 = g => u64;
+ok: i64 = 1;                       // anchor keeps the section alive
+mismatch: u64 = f => u64;          // f32 and u64 differ in size, compile-time error
+#test ""
+
+// pointer_bitcast
+Header := struct { magic: u32; len: u32; };
+raw_packet: ^u8 = null;
+header: ^Header = raw_packet => ^Header;   // pointer reinterpretation
+#test ""
+
+// enum_cast
+HttpStatus := enum u16 { Ok = 200, NotFound = 404, };
+ok: HttpStatus = 200 -> HttpStatus;      // member-checked at compile time
+value: i64 = 999;
+restored: HttpStatus = value -> HttpStatus; // runtime values are trusted
+#test ""
+
+// typeinfo_cast
+info: ^::TypeInfo = i32;   // any type value implicitly casts to its RTTI
+other: ^::TypeInfo = f64;
+#test ""
+
+// recovery_cast_target
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+a: i64 = 2;
+r: i64 = a -> ;   // cast target never arrives
+#test ""

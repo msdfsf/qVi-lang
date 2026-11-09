@@ -1,0 +1,121 @@
+// =============================================================================
+// Parser snapshots: types
+// =============================================================================
+//
+// Scope: data type syntax — the refreshed grammar.ebnf 'Types'. Primitive
+// types, left-oriented decorators, type operators, ':=' type definitions and
+// aliases, function, struct, union and enum types. Legacy right-oriented and
+// removed forms are kept as bad tests, plus malformed forms.
+
+// primitive_types
+v1: i8;
+v2: i16;
+v3: i32;
+v4: i64;
+v5: u8;
+v6: u16;
+v7: u32;
+v8: u64;
+v9: f32;
+v10: f64;
+#test ""
+
+// pointer_decorator
+x: i64 = 5;
+p: ^i64 = &x;  // decorators sit on the left of the base type
+v: i64 = p^;   // dereference is postfix at usage
+#test ""
+
+// array_decorator
+n: i64 = 4;
+inferred: [_]i64 = .[1, 2, 3]; // length deduced from the initializer
+fixed: [16]i64;
+sized: [n]i64;    // expression as the size term
+m2: [2][2]i64;    // stacked decorators
+#test ""
+
+// slice_qualifiers
+arr: [5]i64 = .[10, 20, 30, 40, 50];
+s: []i64 = arr[1:3];        // rebindable handle
+locked: [const]i64 = arr;   // fixed handle
+owner: [alloc]i64 = .[1, 2, 3]; // owning descriptor
+#test ""
+
+// slice_stacks
+grid: [][]i64;          // slice of slice
+rows: [][const]i64;     // slice of frozen slices
+#test ""
+
+// type_qualifiers
+c: const i64 = 1;          // data frozen for modification
+e: embed i64 = 2 + 3 * 4;  // compile-time evaluated
+cp: const ^i64;            // qualifier composes with the decorator
+cc: const [const]i64;      // frozen data plus frozen handle
+#test ""
+
+// function_type
+multiply: (a: i64, b: i64) -> i64 { return a * b; }
+noop: () { }                       // no return type means no arrow
+op: ^(i64, i64) -> i64 = multiply; // pointer to a function, names omitted
+r: i64 = op(6, 7);                 // implicit dereference on call
+bar: (x: i32) -> i32;              // abstract signature, no body
+#test ""
+
+// struct_types
+Vec2 := struct { x: i64; y: i64; };
+v: Vec2;
+anon: struct { a: i64; b: i64; };  // anonymous struct type as a variable
+Node := struct {
+    val: i64;
+    next: ^Node;  // self-referential pointer field
+};
+n: Node;
+Buffer := struct {
+    data: [4]i64;  // fixed array field
+};
+buf: Buffer;
+#test ""
+
+// union_types
+Value := union {
+    i: i64;
+    f: f64;
+    bytes: [8]u8;
+};
+u: Value;
+#test ""
+
+// enum_types
+Color := enum { Red, Green, Blue };        // defaults to underlying i64
+Fruit := enum { Apple, Banana, };           // trailing comma is allowed
+Http := enum u8 { Ok = 200, Created };     // backing type right after 'enum'
+c: Color = Color::Red;                    // members are scoped with '::'
+#test ""
+
+// decorator_stacks
+pa: ^[4]i64;  // pointer to a fixed array
+ap: [4]^i64;  // array of pointers
+pp: ^^i64;    // pointer to pointer
+#test ""
+
+// type_alias
+Integer: type = i32;  // explicit: types are values of the metatype 'type'
+Short := i16;         // ':=' collapses ': type ='
+x: Short = 10;        // aliases are interchangeable with the base type
+#test ""
+
+// struct_annotations
+Raw := struct '#packed' { magic: u32; kind: u16; };        // no padding bytes
+Opt := struct '#reorder' { a: u8; big: i64; b: u8; };      // fields may reorder
+Both := struct '#packed' '#reorder' { a: u8; b: i64; };    // reorder first, pack after
+#test ""
+
+// keyword_size_slot
+a: [struct]i64;   // keywords can not serve as the size or the slot qualifier
+ok: i64 = 3;
+#test ""
+
+// unclosed_decorator
+ok: i64 = 3;  // anchor statement, the swallow below must not eat it
+a: [16;      // decorator bracket never closes, swallows the rest of the chunk
+#test ""

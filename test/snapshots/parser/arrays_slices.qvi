@@ -1,0 +1,86 @@
+// =============================================================================
+// Parser snapshots: arrays_slices
+// =============================================================================
+//
+// Scope: fixed arrays and descriptors — doc.md 'Arrays And Descriptors'.
+// [N]T and [_]T inference, typed literals, the three descriptor kinds and
+// their struct-like construction, per-element math, slice assignment and
+// logical indexing. Malformed forms last.
+
+// fixed_arrays
+numbers: [3]i64 = .[1, 2, 3];
+inferred: [_]i64 = .[1, 2, 3];      // deduced as [3]i64
+typed: [3]i64 = i64.[1, 2, 3];      // typed literal pins the element type
+inf: [3]i64 = _.[10, 20, 30];       // '_' base resolves from the destination
+empty: [_]i64 = .[];
+#test ""
+
+// descriptor_kinds
+arr: [5]i64 = .[10, 20, 30, 40, 50];
+s_const: [const]i64 = arr;      // fixed handle
+s: []i64 = arr[1:4];            // rebindable handle
+s = arr[2:5];                   // rebinding is allowed
+v_alloc: [alloc]i64 = .[1, 2, 3]; // owning descriptor
+#test ""
+
+// descriptor_construction
+buf: ^i64 = null;
+v: [const]i64 = .{ data: buf, length: 7 };   // descriptor built like a struct
+o: [alloc]i64 = [alloc]i64.{
+    data: buf,
+    length: 0,
+    capacity: 16,
+};
+empty: []i64 = .{};   // unset fields default to null/0
+#test ""
+
+// per_element_ops
+arr1: [_]i64 = .[1, 2, 3] + .[1, 2, 3];   // index-by-index
+arr2: [_]i64 = .[1, 2, 3] * 10;           // scalar applies to every element
+mixed: [_]i64 = arr1 - arr2;
+#test ""
+
+// slice_assignment
+arr: [5]i64 = .[1, 2, 3, 4, 5];
+a: []i64 = arr[1:4];
+a[:] = .[9, 8, 7];    // overwrites the data the handle represents
+a[0:2] = .[1, 2];     // overwrites a window
+a = arr[2:5];         // rebinds the handle itself
+fixed: [3]i64 = .[7, 8, 9];
+fixed[:] = .[4, 5, 6];   // for fixed arrays handle and data coincide
+#test ""
+
+// logical_indexing
+values: [_]i64 = .[10, -5, 20, -1, 30];
+values[values < 0] = 0;   // conditions index arrays element-wise
+#test ""
+
+// interface_fields
+arr: [5]i64 = .[1, 2, 3, 4, 5];
+d: []i64 = arr[:];
+data: ^i64 = d.data;                 // pointer to the first element
+len: i64 = d.length;                 // element count
+own: [alloc]i64 = .[1];
+cap: i64 = own.capacity;             // [alloc] only
+al_data: ^u8 = own.allocator.data;   // the allocator carries its own state
+#test ""
+
+// half_open_bounds
+buffer: [10]i64;
+all: []i64 = buffer[0:10];
+none: []i64 = buffer[0:0];   // empty slice evaluates to length 0
+mid: i64 = buffer.length / 2;
+left: []i64 = buffer[0:mid];   // runtime expressions in bounds
+right: []i64 = buffer[mid:buffer.length];
+#test ""
+
+// recovery_unclosed_bracket
+x: [3
+ok: i64 = 1;   // anchor statement, the swallow below must not eat it
+#test ""
+
+// recovery_dangling_slice
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+arr: [3]i64 = .[1, 2, 3];
+r: i64 = arr[1:;   // slice range never finishes
+#test ""

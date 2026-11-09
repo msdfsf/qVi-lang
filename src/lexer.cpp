@@ -137,7 +137,7 @@ namespace Lex {
             case TK_OP_BOOL_AND: return "&&";
             case TK_OP_OR: return "|";
             case TK_OP_BOOL_OR: return "||";
-            case TK_OP_XOR: return "^";
+            // no TK_OP_XOR case: it aliases TK_OP_NEGATION ('~') since XOR moved to '~'
             case TK_OP_NEGATION: return "~";
 
             case TK_DIRECTIVE: return "#";
@@ -479,6 +479,10 @@ namespace Lex {
     void release() {
     }
 
+    TokenEx currentToken() {
+        return batchBuffer[batchRead].base;
+    }
+
     void batchRefill(const char* const str) {
         uint32_t unreadCount = 0;
 
@@ -494,6 +498,10 @@ namespace Lex {
             pos = { .idx = 0, .ln = 1 };
         }
 
+        // We simulate rollback to always preserve tokens for rollback
+        const uint32_t historyToKeep = min(batchRead, Config::TOKEN_BATCH_SAFE_ZONE);
+        batchRead -= historyToKeep;
+
         // Shift remaining tokens
         if (batchRead < batchSize) {
             unreadCount = batchSize - batchRead;
@@ -502,7 +510,7 @@ namespace Lex {
             }
         }
 
-        batchRead = 0;
+        batchRead = historyToKeep;
         batchSize = unreadCount;
 
         while (batchSize < Config::TOKEN_BATCH_BUFFER_SIZE) {
@@ -622,6 +630,9 @@ namespace Lex {
                 if (str[idx + 1] == '=') {
                     len = 2;
                     token.kind = TK_OP_BOOL_NOT_EQUAL;
+                } else if (str[idx + 1] == '(') {
+                    len = 2;
+                    token.kind = TK_STRICT_CALL;
                 } else {
                     token.kind = TK_OP_BOOL_NEGATION;
                 }
@@ -708,7 +719,7 @@ namespace Lex {
                     len = 2;
                     token.kind = TK_SIGNATURE_BEGIN;
                 } else {
-                    token.kind = TK_OP_XOR;
+                    token.kind = TK_OP_POINTER;
                 }
 
                 break;
@@ -968,76 +979,134 @@ namespace Lex {
         return batchRead + n > batchSize ? toTokenEx(TK_END) : batchBuffer[batchRead + (n - 1)].base;
     }
 
+    // Supposed to be called after the first identifier has been consumed.
+    TokenEx peekTokenAfterQualifiedName(Span* const span) {
+        bool expectScopeResolution = true;
+
+        // 1. scan the tokens already sitting in the batch
+        for (int i = batchRead; i < batchSize; i++) {
+            const TokenEx token = batchBuffer[i].base;
+
+            if (expectScopeResolution) {
+                if (token.token.kind != Lex::TK_SCOPE_RESOLUTION) {
+                    return token;
+                }
+            } else {
+                if (token.token.kind != Lex::TK_IDENTIFIER) {
+                    return token;
+                }
+            }
+
+            if (token.token.kind == Lex::TK_ERROR || token.token.kind == Lex::TK_END) {
+                return token;
+            }
+
+            expectScopeResolution = !expectScopeResolution;
+        }
+
+        // 2. fallback to stateless scanning
+        Pos fallbackPos = batchBuffer[batchSize - 1].pos;
+        fallbackPos.idx += batchBuffer[batchSize - 1].base.token.size;
+
+        while (true) {
+            TokenEx token = nextToken(span->str, &fallbackPos);
+
+            if (token.token.kind == Lex::TK_ERROR || token.token.kind == Lex::TK_END) {
+                return token;
+            }
+
+            if (expectScopeResolution) {
+                if (token.token.kind != Lex::TK_SCOPE_RESOLUTION) return token;
+            } else {
+                if (token.token.kind != Lex::TK_IDENTIFIER) return token;
+            }
+
+            expectScopeResolution = !expectScopeResolution;
+            fallbackPos.idx += (token.token.size > 0) ? token.token.size : 1;
+        }
+    }
+
 
 
     // Sync Functions
     // ---
 
-    // TODO : optimize
     TokenEx syncToken(Span* const span, Token tokenA, Token tokenB, bool stopOnNewline) {
-        TokenEx token = toTokenEx(TK_END);
+        uint32_t startLine = span ? span->start.ln : 0;
 
-        uint32_t startLine = span->end.ln;
+        // NOTE: shall be always safe
+        TokenEx tex = batchBuffer[batchRead - 1].base;
+
         while (true) {
-            token = nextToken(span);
-            if (match(token.token, tokenA) ||
-                match(token.token, tokenB) ||
-                token.token.kind == Lex::TK_END
-            ) {
-                break;
+            if (match(tex.token, tokenA) ||
+                match(tex.token, tokenB) ||
+                tex.token.kind == Lex::TK_END)
+            {
+                return tex;
             }
+
+            tex = nextToken(span);
 
             if (stopOnNewline && span && span->start.ln > startLine) {
-                return token;
+                return tex;
             }
         }
-
-        return token;
     }
 
-    // TODO : optimize
     TokenEx syncToken(Span* const span, const Token* tokens, uint32_t tokenCount, bool stopOnNewline) {
-        TokenEx token;
+        uint32_t startLine = span ? span->start.ln : 0;
 
-        uint32_t startLine = span->start.ln;
+        // NOTE: shall be always safe
+        TokenEx tex = batchBuffer[batchRead - 1].base;
+
         while (true) {
-            token = nextToken(span);
-            if (token.token.kind == Lex::TK_END) break;
+            if (tex.token.kind == Lex::TK_END) return tex;
 
             for (uint32_t i = 0; i < tokenCount; i++) {
-                if (match(token.token, tokens[i])) {
-                    return token;
+                if (match(tex.token, tokens[i])) {
+                    return tex;
                 }
             }
 
+            tex = nextToken(span);
+
             if (stopOnNewline && span && span->start.ln > startLine) {
-                return token;
+                return tex;
             }
         }
-
-        return token;
     }
 
-    // TODO: optimize
     TokenEx syncToken(Span* const span, TokenKind tokenA, TokenKind tokenB, bool stopOnNewline) {
-        TokenEx token;
+        uint32_t startLine = span ? span->start.ln : 0;
 
-        uint32_t startLine = span->start.ln;
+        // NOTE: shall be always safe
+        TokenEx tex = batchBuffer[batchRead - 1].base;
+
         while (true) {
-            token = nextToken(span);
-            if (token.token.kind == tokenA ||
-                token.token.kind == tokenB ||
-                token.token.kind == Lex::TK_END
-            ) {
-                break;
+            if (tex.token.kind == tokenA ||
+                tex.token.kind == tokenB ||
+                tex.token.kind == Lex::TK_END)
+            {
+                return tex;
             }
+
+            tex = nextToken(span);
 
             if (stopOnNewline && span && span->start.ln > startLine) {
-                return token;
+                return tex;
             }
         }
+    }
 
-        return token;
+
+
+    // === Rollback ======
+    // -----
+
+    void rollback(Span* const span) {
+        // TODO: do we even need to care about pos?
+        span->end = batchBuffer[batchRead].pos;
+        batchRead--;
     }
 
 

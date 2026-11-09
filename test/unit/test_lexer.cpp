@@ -1,4 +1,3 @@
-#include "../../src/syntax.h"
 #include "../../src/lexer.h"
 #include "../../src/globals.h"
 #include "../test_core.h"
@@ -12,7 +11,6 @@
 static thread_local Span span;
 
 inline void gLexerPreSuite(bool visualize) {
-    nallocInit();
 }
 
 inline void gLexerPostSuite(bool visualize) {

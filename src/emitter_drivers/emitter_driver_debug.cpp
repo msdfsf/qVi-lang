@@ -12,6 +12,7 @@
 #include "../registry.h"
 #include "../ansi_colors.h"
 #include <cstdarg>
+#include <cstdint>
 
 #define AC_KEYWORD AC_BOLD_MAGENTA
 
@@ -23,6 +24,13 @@ static void emitTerm      (Emitter::Context* ctx, IO::Stream* out, Variable* var
 static void emitScopeBlock(Emitter::Context* ctx, IO::Stream* out, Scope* scope);
 static void emitVariableDefinition(Emitter::Context* ctx, IO::Stream* out, VariableDefinition* def);
 static void emitDeclarationInline(Emitter::Context* ctx, IO::Stream* out, VariableDefinition* def);
+static void emitVariable(Emitter::Context* ctx, IO::Stream* out, Variable* var);
+static void emitVariableInline(Emitter::Context* ctx, IO::Stream* out, Variable* var);
+static void emitRecordExpression(Emitter::Context* ctx, IO::Stream* out, RecordExpression* exp);
+static void emitFunction(Emitter::Context* ctx, IO::Stream* out, Function* fcn);
+static void emitFunctionSignature(Emitter::Context* ctx, IO::Stream* out, FunctionPrototype* prototype, QualifiedName* errorSet = NULL);
+
+static void writeTypeRef(Emitter::Context* ctx, IO::Stream* out, Type::TypeInfo* type);
 
 
 
@@ -89,23 +97,18 @@ static void writeName(Emitter::Context* ctx, IO::Stream* out, INamed* name) {
 }
 
 static void writeQualifiedName(Emitter::Context* ctx, IO::Stream* out, QualifiedName* name) {
-    if (!name) {
-        writeColored(ctx, out, AC_DIM, "<none>");
-        return;
-    }
-
-    if (!name->buff && name->pathSize == 0) {
+    if (!name || (!name->buff && name->pathSize == 0)) {
         writeColored(ctx, out, AC_DIM, "<none>");
         return;
     }
 
     if (ctx->style.color) IO::write(out, AC_VAR);
 
+    if (name->buff) writeName(out, (INamed*) name);
     for (uint16_t i = 0; i < name->pathSize; i++) {
-        writeName(out, &name->path[i]);
         IO::write(out, "::", 2);
+        writeName(out, &name->path[i]);
     }
-    writeName(out, (INamed*) name);
 
     if (ctx->style.color) IO::write(out, AC_RESET);
 }
@@ -122,17 +125,59 @@ static void writeValue(Emitter::Context* ctx, IO::Stream* out, Value* val) {
     }
 
     switch (val->type ? val->type->kind : Type::DT_UNDEFINED) {
-        case Type::DT_I8:  writeColored(ctx, out, AC_NUMBER, "%i",   (int) val->i8);        break;
-        case Type::DT_I16: writeColored(ctx, out, AC_NUMBER, "%i",   (int) val->i16);       break;
-        case Type::DT_I32: writeColored(ctx, out, AC_NUMBER, "%i",   val->i32);             break;
-        case Type::DT_I64: writeColored(ctx, out, AC_NUMBER, "%lli", (long long) val->i64); break;
-        case Type::DT_U8:  writeColored(ctx, out, AC_NUMBER, "%u",   (unsigned) val->u8);   break;
-        case Type::DT_U16: writeColored(ctx, out, AC_NUMBER, "%u",   (unsigned) val->u16);  break;
-        case Type::DT_U32: writeColored(ctx, out, AC_NUMBER, "%u",   val->u32);             break;
-        case Type::DT_U64: writeColored(ctx, out, AC_NUMBER, "%llu", (unsigned long long) val->u64); break;
-        case Type::DT_F32: writeColored(ctx, out, AC_NUMBER, "%g",   (double) val->f32);    break;
-        case Type::DT_F64: writeColored(ctx, out, AC_NUMBER, "%g",   val->f64);             break;
-        default:           writeColored(ctx, out, AC_DIM, "(%s)", Type::str(val->type));    break;
+        case Type::DT_I8:   writeColored(ctx, out, AC_NUMBER, "%i",   (int) val->i8);        break;
+        case Type::DT_I16:  writeColored(ctx, out, AC_NUMBER, "%i",   (int) val->i16);       break;
+        case Type::DT_I32:  writeColored(ctx, out, AC_NUMBER, "%i",   val->i32);             break;
+        case Type::DT_I64:  writeColored(ctx, out, AC_NUMBER, "%lli", (long long) val->i64); break;
+        case Type::DT_U8:   writeColored(ctx, out, AC_NUMBER, "%u",   (unsigned) val->u8);   break;
+        case Type::DT_U16:  writeColored(ctx, out, AC_NUMBER, "%u",   (unsigned) val->u16);  break;
+        case Type::DT_U32:  writeColored(ctx, out, AC_NUMBER, "%u",   val->u32);             break;
+        case Type::DT_POINTER:
+        case Type::DT_U64:  writeColored(ctx, out, AC_NUMBER, "%llu", (unsigned long long) val->u64); break;
+        case Type::DT_F32:  writeColored(ctx, out, AC_NUMBER, "%g",   (double) val->f32);    break;
+        case Type::DT_F64:  writeColored(ctx, out, AC_NUMBER, "%g",   val->f64);             break;
+        case Type::DT_MULTIPLE_TYPES:
+        case Type::DT_TYPE: writeTypeRef(ctx, out, val->tval);                               break;
+        default:            writeColored(ctx, out, AC_DIM, "<valueof %s>", Type::str(val->type));    break;
+    }
+}
+
+static void writeEscaped(IO::Stream* out, String str) {
+    uint64_t runStart = 0;
+    uint64_t i        = 0;
+
+    while (i < str.len) {
+        const uint8_t ch = (uint8_t) str.buff[i];
+
+        const bool needsEscape = ch == '"'
+            || ch == '\\'
+            || ch <  0x20
+            || ch == 0x7F;
+
+        if (!needsEscape) {
+            i++;
+            continue;
+        }
+
+        if (i > runStart) {
+            IO::write(out, String { str.buff + runStart, i - runStart });
+        }
+
+        switch (ch) {
+            case '"':  IO::write(out, "\\\""); break;
+            case '\\': IO::write(out, "\\\\"); break;
+            case '\n': IO::write(out, "\\n");  break;
+            case '\r': IO::write(out, "\\r");  break;
+            case '\t': IO::write(out, "\\t");  break;
+            default:   IO::writef(out, "\\x%02X", (unsigned) ch); break;
+        }
+
+        i++;
+        runStart = i;
+    }
+
+    if (runStart < str.len) {
+        IO::write(out, String { str.buff + runStart, str.len - runStart });
     }
 }
 
@@ -140,7 +185,7 @@ static void writeStringLiteral(Emitter::Context* ctx, IO::Stream* out, String st
     if (ctx->style.color) IO::write(out, AC_GREEN);
 
     IO::write(out, '"');
-    IO::write(out, str);
+    writeEscaped(out, str);
     IO::write(out, '"');
 
     if (ctx->style.color) IO::write(out, AC_RESET);
@@ -150,8 +195,6 @@ static void writeStringLiteral(Emitter::Context* ctx, IO::Stream* out, String st
 
 // === Types ======
 // -----
-// Resolved types are written left-oriented, as the language does:
-//     ^i32   [4]f32   [^2]i32   ^(i32, i32) -> i32
 
 static void writeTypeRefRaw(IO::Stream* out, Type::TypeInfo* type) {
     switch (type->kind) {
@@ -181,6 +224,10 @@ static void writeTypeRefRaw(IO::Stream* out, Type::TypeInfo* type) {
 
             if (sType->flags & IS_CONST) {
                 IO::write(out, "[const]");
+            } else if (sType->flags & IS_DYNAMIC) {
+                IO::write(out, "[alloc]");
+            } else if (sType->flags & IS_FORMAT) {
+                IO::write(out, "[#format]");
             } else {
                 IO::write(out, "[]");
             }
@@ -246,7 +293,7 @@ static void writeTypeRef(Emitter::Context* ctx, IO::Stream* out, Type::TypeInfo*
     }
 
     if (ctx->style.color) IO::write(out, AC_TYPE);
-    writeTypeRefRaw(out, type);
+    Type::writeTypeName(out, type);
     if (ctx->style.color) IO::write(out, AC_RESET);
 }
 
@@ -330,6 +377,10 @@ static void emitTerm(Emitter::Context* ctx, IO::Stream* out, Variable* var) {
         return;
     }
 
+    // NOTE: precedence is 'expression -> value -> name'. A term that carries
+    //       both a name and an expression renders as the expression only;
+    //       callers that need 'name = expr' (e.g. enum members) must emit
+    //       both parts themselves.
     if (var->expression) {
         emitExpression(ctx, var->expression, out);
         return;
@@ -340,7 +391,17 @@ static void emitTerm(Emitter::Context* ctx, IO::Stream* out, Variable* var) {
         return;
     }
 
-    writeQualifiedName(ctx, out, &var->name);
+    if (var->name.len > 0 || var->name.pathSize > 0) {
+        writeQualifiedName(ctx, out, &var->name);
+        return;
+    }
+
+    if (var->value.type) {
+        writeTypeRef(ctx, out, var->value.type);
+        return;
+    }
+
+    writeColored(ctx, out, AC_DIM, "<none>");
 }
 
 static void writeOperator(Emitter::Context* ctx, IO::Stream* out, OperatorEnum op) {
@@ -374,15 +435,37 @@ static bool needsParens(Variable* var) {
     return var && var->expression && var->expression->type == EXT_BINARY;
 }
 
-static void emitParenTerm(Emitter::Context* ctx, IO::Stream* out, Variable* var) {
-    if (!needsParens(var)) {
-        emitTerm(ctx, out, var);
-        return;
-    }
+static bool needsNoParens(ExpressionType type) {
+    switch (type) {
+        case EXT_ARRAY_INITIALIZATION:
+        case EXT_STRING_INITIALIZATION:
+        case EXT_STRUCT:
+        case EXT_UNION:
+        case EXT_ERROR_SET:
+        case EXT_CATCH:
+        case EXT_FUNCTION_CALL:
+            return true;
 
-    IO::write(out, '(');
-    emitTerm(ctx, out, var);
-    IO::write(out, ')');
+        default:
+            return false;
+    }
+}
+
+static void emitParenTerm(Emitter::Context* ctx, IO::Stream* out, Variable* var) {
+    const bool bare =
+        var &&
+        (
+            var->value.hasValue || var->name.len > 0 || !var->expression ||
+            needsNoParens(var->expression->type)
+        );
+
+    if (bare) {
+        emitTerm(ctx, out, var);
+    } else {
+        IO::write(out, '(');
+        emitTerm(ctx, out, var);
+        IO::write(out, ')');
+    }
 }
 
 static void emitRange(Emitter::Context* ctx, IO::Stream* out, RangeExpression* range) {
@@ -392,16 +475,15 @@ static void emitRange(Emitter::Context* ctx, IO::Stream* out, RangeExpression* r
     }
 
     if (range->bidx) emitTerm(ctx, out, range->bidx);
-    IO::write(out, ':');
-    if (range->eidx) emitTerm(ctx, out, range->eidx);
     if (range->step) {
         IO::write(out, ':');
         emitTerm(ctx, out, range->step);
     }
+    IO::write(out, ':');
+    if (range->eidx) emitTerm(ctx, out, range->eidx);
 }
 
 static void emitAttributeVariable(Emitter::Context* ctx, IO::Stream* out, Variable* var) {
-    // When the field name survived the AST, keep the named form:  .{ id : 4 }
     if (var && var->name.buff && var->name.len) {
         writeQualifiedName(ctx, out, &var->name);
         IO::write(out, " : ");
@@ -421,6 +503,9 @@ static void emitTypeInitialization(Emitter::Context* ctx, IO::Stream* out, TypeI
         return;
     }
 
+    if (init->literalBase) {
+        emitVariableInline(ctx, out, init->literalBase);
+    }
     IO::write(out, ".{");
 
     for (uint32_t i = 0; i < init->attributeCount; i++) {
@@ -428,7 +513,6 @@ static void emitTypeInitialization(Emitter::Context* ctx, IO::Stream* out, TypeI
         emitAttributeVariable(ctx, out, init->attributes[i]);
     }
 
-    // Rest defaults: .{ .. : 0 }
     if (init->fillVar) {
         if (init->attributeCount) IO::write(out, ", ");
         writeColored(ctx, out, AC_DIM, "..");
@@ -445,6 +529,9 @@ static void emitArrayInitialization(Emitter::Context* ctx, IO::Stream* out, Arra
         return;
     }
 
+    if (init->literalBase) {
+        emitVariableInline(ctx, out, init->literalBase);
+    }
     IO::write(out, ".[");
 
     for (uint32_t i = 0; i < init->attributeCount; i++) {
@@ -461,13 +548,49 @@ static void emitStringInitialization(Emitter::Context* ctx, IO::Stream* out, Str
         return;
     }
 
-    // Typed dot-prefix when the string decodes to code points wider than u8.
     if (siex->charType && siex->charType->kind != Type::DT_U8) {
         writeTypeRef(ctx, out, siex->charType);
         IO::write(out, '.');
     }
 
     writeStringLiteral(ctx, out, siex->rawData);
+}
+
+static void emitEnumExpression(Emitter::Context* ctx, IO::Stream* out, EnumExpression* exp) {
+    if (!exp) {
+        writeColored(ctx, out, AC_DIM, "<none>");
+        return;
+    }
+
+    writeKeyword(ctx, out, "enum");
+    if (exp->type) {
+        IO::write(out, ' ');
+        writeTypeRef(ctx, out, exp->type);
+    }
+    IO::write(out, ' ');
+
+    IO::write(out, '{');
+    for (uint32_t i = 0; i < exp->memberCount; i++) {
+        if (i) IO::write(out, ", ");
+
+        Variable* member = exp->members[i];
+        if (member && (member->name.len > 0 || member->name.pathSize > 0)) {
+            writeQualifiedName(ctx, out, &member->name);
+        } else {
+            emitTerm(ctx, out, member);
+        }
+
+        if (member && (member->expression || member->value.hasValue)) {
+            writeColored(ctx, out, AC_DIM, " = ");
+            if (member->expression) {
+                emitExpression(ctx, member->expression, out);
+            } else {
+                writeValue(ctx, out, &member->value);
+            }
+        }
+    }
+    IO::write(out, '}');
+
 }
 
 static void emitFunctionCall(Emitter::Context* ctx, IO::Stream* out, FunctionCall* call) {
@@ -486,6 +609,8 @@ static void emitFunctionCall(Emitter::Context* ctx, IO::Stream* out, FunctionCal
         writeColored(ctx, out, AC_DIM, "<none>");
     }
 
+    if (call->isStrict) IO::write(out, '!');
+
     IO::write(out, '(');
     for (uint32_t i = 0; i < call->inArgCount; i++) {
         if (i) IO::write(out, ", ");
@@ -500,8 +625,10 @@ static void emitCatch(Emitter::Context* ctx, IO::Stream* out, Catch* cex) {
         return;
     }
 
-    if (cex->call) {
+    if (cex->call && cex->call->base.type == EXT_FUNCTION_CALL) {
         emitFunctionCall(ctx, out, cex->call);
+    } else if (cex->call) {
+        writeColored(ctx, out, AC_DIM, "<invalid_node_type>");
     } else {
         writeColored(ctx, out, AC_DIM, "<none>");
     }
@@ -525,6 +652,36 @@ static void emitCatch(Emitter::Context* ctx, IO::Stream* out, Catch* cex) {
         IO::write(out, ' ');
         emitScopeBlock(ctx, out, cex->scope);
     }
+}
+
+static void emitErrorSetBody(Emitter::Context* ctx, IO::Stream* out, ErrorSet* es) {
+    IO::write(out, '{');
+
+    if (es && es->varCount > 0) {
+        IO::write(out, ' ');
+
+        for (uint32_t i = 0; i < es->varCount; i++) {
+            Variable* var = es->vars[i];
+            if (!var) continue;
+
+            if (i) IO::write(out, ' ');
+            writeName(ctx, out, (INamed*) &var->name);
+
+            if (var->value.hasValue) {
+                writeColored(ctx, out, AC_DIM, " = ");
+                writeValue(ctx, out, &var->value);
+            } else if (var->expression) {
+                writeColored(ctx, out, AC_DIM, " = ");
+                emitExpression(ctx, var->expression, out);
+            }
+
+            IO::write(out, ';');
+        }
+
+        IO::write(out, ' ');
+    }
+
+    IO::write(out, '}');
 }
 
 static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* out) {
@@ -552,12 +709,12 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
             UnaryExpression* uex = (UnaryExpression*) exp;
 
             if (uex->base.opType == OP_NONE) {
-                emitTerm(ctx, out, uex->operand);
+                emitParenTerm(ctx, out, uex->operand);
                 break;
             }
 
             if (uex->base.opType == OP_GET_VALUE) {
-                emitTerm(ctx, out, uex->operand);
+                emitParenTerm(ctx, out, uex->operand);
                 IO::write(out, '^');
                 break;
             }
@@ -573,8 +730,13 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
                 default:                    writeOperator(ctx, out, uex->base.opType); break;
             }
 
-            // A nested binary keeps its grouping: -(a + b)
-            emitParenTerm(ctx, out, uex->operand);
+            if (uex->operand && uex->operand->expression &&
+                uex->operand->expression->type == EXT_BINARY) {
+                emitTerm(ctx, out, uex->operand);
+            } else {
+                emitParenTerm(ctx, out, uex->operand);
+            }
+
             break;
         }
 
@@ -619,15 +781,10 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
                     IO::write(out, ' ');
                     writeOperator(ctx, out, bex->base.opType);
 
-                    // A cast pins the target type; only value casts land in
-                    // the AST as binary operators, so this is how they seem.
-                    if (isCast(bex->base.opType) && bex->right && bex->right->value.type) {
-                        IO::write(out, ' ');
-                        writeTypeRef(ctx, out, bex->right->value.type);
-                    } else {
-                        IO::write(out, ' ');
-                        emitParenTerm(ctx, out, bex->right);
-                    }
+
+                    IO::write(out, ' ');
+                    emitParenTerm(ctx, out, bex->right);
+
                     break;
                 }
             }
@@ -662,6 +819,92 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
 
         case EXT_STRING_INITIALIZATION: {
             emitStringInitialization(ctx, out, (StringInitialization*) exp);
+            break;
+        }
+
+        case EXT_POINTER_TYPE: {
+            PointerTypeExpression* type = (PointerTypeExpression*) exp;
+
+            IO::write(out, '^');
+            emitVariableInline(ctx, out, type->operand);
+
+            break;
+        }
+
+        case EXT_ARRAY_TYPE: {
+            ArrayTypeExpression* type = (ArrayTypeExpression*) exp;
+
+            IO::write(out, '[');
+            emitVariableInline(ctx, out, type->length);
+            IO::write(out, ']');
+            emitVariableInline(ctx, out, type->element);
+
+            break;
+        }
+
+        case EXT_SLICE_TYPE: {
+            SliceTypeExpression* type = (SliceTypeExpression*) exp;
+
+            IO::write(out, '[');
+            if (type->flags & IS_CONST) {
+                writeKeyword(ctx, out, "const");
+            } else if (type->flags & IS_DYNAMIC) {
+                writeKeyword(ctx, out, "alloc");
+            } else if (type->flags & IS_FORMAT) {
+                writeKeyword(ctx, out, "#format");
+            }
+            IO::write(out, ']');
+            emitVariableInline(ctx, out, type->element);
+
+            break;
+        }
+
+        case EXT_QUALIFIER_TYPE: {
+            QualifierTypeExpression* type = (QualifierTypeExpression*) exp;
+
+            // TODO: to a function
+            if (type->qualifier & Type::Q_CONST) {
+                writeKeyword(ctx, out, "const");
+            } else if (type->qualifier & Type::Q_ALLOC) {
+                writeKeyword(ctx, out, "alloc");
+            } else if (type->qualifier & Type::Q_EMBED) {
+                writeKeyword(ctx, out, "embed");
+            }
+            IO::write(out, ' ');
+            emitVariableInline(ctx, out, type->operand);
+
+            break;
+        }
+
+        case EXT_FUNCTION_TYPE: {
+            FunctionTypeExpression* type = (FunctionTypeExpression*) exp;
+
+            IO::write(out, '^');
+            emitFunctionSignature(ctx, out, type->fcn);
+
+            break;
+        }
+
+        case EXT_ERROR_SET: {
+            ErrorSetExpression* type = (ErrorSetExpression*) exp;
+            writeKeyword(ctx, out, "error");
+            IO::write(out, ' ');
+            emitErrorSetBody(ctx, out, type->set);
+            break;
+        }
+
+        case EXT_UNION:
+        case EXT_STRUCT: {
+            RecordExpression* type = (RecordExpression*) exp;
+            emitRecordExpression(ctx, out, type);
+
+            break;
+        }
+
+        case EXT_ENUM: {
+            EnumExpression* type = (EnumExpression*) exp;
+            emitEnumExpression(ctx, out, type);
+
             break;
         }
 
@@ -719,7 +962,8 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
         }
 
         default: {
-            writeColored(ctx, out, AC_DIM, "<no_emitter>");
+            // Self-diagnosing fallback: points at the missing expression kind.
+            writeColored(ctx, out, AC_DIM, "<no_emitter:%s>", Ast::Node::str(exp->type));
             break;
         }
     }
@@ -788,7 +1032,8 @@ static void emitDeclarationInline(Emitter::Context* ctx, IO::Stream* out, Variab
     }
 
     IO::write(out, " : ");
-    writeDeclaredTypeRef(ctx, out, def);
+    emitVariableInline(ctx, out, def->typeValue);
+    // writeDeclaredTypeRef(ctx, out, def);
 
     if (def->var && def->var->expression) {
         if (def->var->expression->type == EXT_CATCH) {
@@ -819,7 +1064,11 @@ static void emitVariableAssignment(Emitter::Context* ctx, IO::Stream* out, Varia
     indent(ctx, out);
 
     emitTerm(ctx, out, ass->lvar);
-    IO::write(out, " = ");
+    IO::write(out, ' ');
+    if (ass->op != OP_NONE) {
+        writeOperator(ctx, out, ass->op);
+    }
+    IO::write(out, "= ");
 
     if (ass->rvar && ass->rvar->expression && ass->rvar->expression->type == EXT_CATCH) {
         emitCatch(ctx, out, (Catch*) ass->rvar->expression);
@@ -872,6 +1121,10 @@ static void emitSwitchCase(Emitter::Context* ctx, IO::Stream* out, SwitchCase* s
     if (!sc) return;
 
     indent(ctx, out);
+    if (sc->label.buff && sc->label.len) {
+        writeName(ctx, out, (INamed*) &sc->label);
+        writeColored(ctx, out, AC_DIM, ": ");
+    }
     writeKeyword(ctx, out, "case");
     IO::write(out, ' ');
     emitTerm(ctx, out, sc->switchExp);
@@ -914,12 +1167,19 @@ static void emitLoop(Emitter::Context* ctx, IO::Stream* out, Loop* lp) {
     if (!lp) return;
 
     indent(ctx, out);
+    if (lp->label.buff && lp->label.len) {
+        writeName(ctx, out, (INamed*) &lp->label);
+        writeColored(ctx, out, AC_DIM, ": ");
+    }
     writeKeyword(ctx, out, "loop");
+
+    const bool infinite = lp->arg.kind == Loop::Arg::CONDITION
+        && lp->arg.exp == Ast::Internal::variables + Ast::Internal::IV_TRUE;
 
     if (lp->arg.kind == Loop::Arg::RANGE) {
         IO::write(out, ' ');
         emitRange(ctx, out, lp->arg.range);
-    } else if (lp->arg.exp) {
+    } else if (lp->arg.exp && !infinite) {
         IO::write(out, ' ');
         emitTerm(ctx, out, lp->arg.exp);
     }
@@ -937,14 +1197,17 @@ static void emitLoop(Emitter::Context* ctx, IO::Stream* out, Loop* lp) {
         IO::write(out, ' ');
 
         INamed* indexName = NULL;
+        bool indexIsReference = false;
         if (((SyntaxNode*) lp->index.var)->type == NT_VARIABLE_DEFINITION) {
             VariableDefinition* indexDef = (VariableDefinition*) lp->index.var;
             if (indexDef->var) indexName = (INamed*) &indexDef->var->name;
         } else {
+            indexIsReference = true;
             indexName = (INamed*) &((Variable*) lp->index.var)->name;
         }
 
         if (indexName) {
+            if (indexIsReference) writeColored(ctx, out, AC_DIM, "&");
             writeName(ctx, out, indexName);
         } else {
             writeColored(ctx, out, AC_DIM, "<none>");
@@ -979,11 +1242,79 @@ static void emitReturnStatement(Emitter::Context* ctx, IO::Stream* out, ReturnSt
     writeNewline(ctx, out);
 }
 
-static void emitFlowStatement(Emitter::Context* ctx, IO::Stream* out, const char* keywordText) {
+static void emitFlowTarget(Emitter::Context* ctx, IO::Stream* out, SyntaxNode* target) {
+    if (!target) return;
+
+    IO::write(out, ' ');
+
+    switch (target->type) {
+        case NT_VARIABLE: {
+            Variable* var = (Variable*) target;
+            if (var->name.buff || var->name.pathSize) {
+                writeQualifiedName(ctx, out, &var->name);
+                return;
+            }
+            break;
+        }
+
+        case NT_LOOP: {
+            Loop* loop = (Loop*) target;
+            if (loop->label.buff && loop->label.len) {
+                writeName(ctx, out, (INamed*) &loop->label);
+                return;
+            }
+            break;
+        }
+
+        case NT_SWITCH_CASE: {
+            SwitchCase* sc = (SwitchCase*) target;
+            if (sc->label.buff && sc->label.len) {
+                writeName(ctx, out, (INamed*) &sc->label);
+                return;
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    writeColored(ctx, out, AC_DIM, "<none>");
+}
+
+static void emitFlowStatement(Emitter::Context* ctx, IO::Stream* out, const char* keywordText, SyntaxNode* target) {
     indent(ctx, out);
     writeKeyword(ctx, out, keywordText);
+    emitFlowTarget(ctx, out, target);
     IO::write(out, ';');
     writeNewline(ctx, out);
+}
+
+static void emitDeferStatement(Emitter::Context* ctx, IO::Stream* out, DeferStatement* ds) {
+    if (!ds) return;
+
+    indent(ctx, out);
+    writeKeyword(ctx, out, "defer");
+    IO::write(out, ' ');
+
+    if (!ds->body) {
+        writeColored(ctx, out, AC_DIM, "<none>");
+        writeNewline(ctx, out);
+        return;
+    }
+
+    if (ds->body->type == NT_SCOPE) {
+        emitScopeBlock(ctx, out, (Scope*) ds->body);
+        writeNewline(ctx, out);
+        return;
+    }
+
+    // Single-statement form: emit the inner node after the keyword without
+    // letting it add its own leading indentation.
+    const uint32_t indentLevel = ctx->indentLevel;
+    ctx->indentLevel = 0;
+    emitNode(ctx, ds->body, out);
+    ctx->indentLevel = indentLevel;
 }
 
 static void emitGotoStatement(Emitter::Context* ctx, IO::Stream* out, GotoStatement* gs) {
@@ -1051,71 +1382,135 @@ static void emitEnumerator(Emitter::Context* ctx, IO::Stream* out, Enumerator* e
     writeNewline(ctx, out);
 }
 
-static void emitTypeDefinition(Emitter::Context* ctx, IO::Stream* out, SyntaxNode* node) {
-    TypeDefinition* td = (TypeDefinition*) node;
-    if (!td) return;
+static void emitUsingStatement(Emitter::Context* ctx, IO::Stream* out, Using* use) {
+    if (!use) return;
 
     indent(ctx, out);
-    writeName(ctx, out, (INamed*) &td->name);
-    writeColored(ctx, out, AC_DIM, " := ");
-    writeKeyword(ctx, out, node->type == NT_UNION ? "union" : "struct");
-
-    if (td->varCount == 0) {
-        // A transparent alias: Name := i32;
-        IO::write(out, ' ');
-
-        if (td->type) {
-            writeTypeRef(ctx, out, (Type::TypeInfo*) td->type);
-        } else {
-            writeColored(ctx, out, AC_DIM, "<none>");
-        }
-
-        IO::write(out, ';');
-        writeNewline(ctx, out);
-        return;
-    }
-
+    writeKeyword(ctx, out, "using");
     IO::write(out, ' ');
-    emitBlockHeader(ctx, out);
 
-    for (uint32_t i = 0; i < td->varCount; i++) {
-        emitVariableDefinition(ctx, out, td->vars[i]);
+    if (use->label.buff && use->label.len) {
+        writeName(ctx, out, (INamed*) &use->label);
+        writeColored(ctx, out, AC_DIM, " : ");
     }
 
-    emitBlockFooter(ctx, out);
+    if (use->ref) {
+        writeQualifiedName(ctx, out, use->ref);
+    } else {
+        writeColored(ctx, out, AC_DIM, "<none>");
+    }
+
     IO::write(out, ';');
     writeNewline(ctx, out);
 }
 
-static void emitErrorSet(Emitter::Context* ctx, IO::Stream* out, ErrorSet* es) {
-    if (!es) return;
+static void emitRecordExpression(Emitter::Context* ctx, IO::Stream* out, RecordExpression* exp) {
+    RecordExpression* record = (RecordExpression*) exp;
+    if (!record) return;
 
     indent(ctx, out);
-    writeName(ctx, out, (INamed*) &es->name);
-    writeColored(ctx, out, AC_DIM, " := ");
-    writeKeyword(ctx, out, "error");
-    IO::write(out, ' ');
-    emitBlockHeader(ctx, out);
+    writeKeyword(ctx, out, record->base.type == EXT_UNION ? "union" : "struct");
 
-    for (uint32_t i = 0; i < es->varCount; i++) {
-        Variable* var = es->vars[i];
-        if (!var) continue;
+    if (record->paramCount > 0) {
+        IO::write(out, '(');
+        for (uint32_t i = 0; i < record->paramCount; i++) {
+            if (i) IO::write(out, ", ");
+            emitDeclarationInline(ctx, out, record->params[i]);
+        }
+        IO::write(out, ')');
+    }
 
-        indent(ctx, out);
-        writeName(ctx, out, (INamed*) &var->name);
-
-        if (var->value.hasValue) {
-            writeColored(ctx, out, AC_DIM, " = ");
-            writeValue(ctx, out, &var->value);
+    const uint32_t layoutFlags = record->flags & (SF_PACKED | SF_REORDER);
+    const bool isBuilder = (record->flags & SF_BUILDER) != 0;
+    if (layoutFlags != 0) {
+        IO::write(out, ' ');
+        IO::write(out, '[');
+        if (layoutFlags & SF_PACKED) {
+            writeKeyword(ctx, out, "#packed");
+            if (layoutFlags != SF_PACKED) IO::write(out, ", ");
         }
 
-        IO::write(out, ';');
-        writeNewline(ctx, out);
+        if (layoutFlags & SF_REORDER) {
+            writeKeyword(ctx, out, "#reorder");
+        }
+        IO::write(out, ']');
+        if (!isBuilder) IO::write(out, ' ');
+    } else if (!isBuilder) {
+        IO::write(out, ' ');
+    }
+
+    // Import-builder records have no inline body; the imported AST
+    // fills them later. The caller owns the declaration terminator.
+    if (isBuilder) {
+        return;
+    }
+
+    emitBlockHeader(ctx, out);
+
+    for (uint32_t i = 0; i < record->fieldCount; i++) {
+        SyntaxNode* field = record->fields[i];
+        if (!field) continue;
+
+        // The node kind is carried by the node itself, so fields dispatch on
+        // their own type instead of a parallel kind array.
+        switch (field->type) {
+            case NT_VARIABLE_DEFINITION: {
+                emitVariableDefinition(ctx, out, (VariableDefinition*) field);
+                break;
+            }
+
+            case NT_USING: {
+                emitUsingStatement(ctx, out, (Using*) field);
+                break;
+            }
+
+            case NT_STATEMENT: {
+                // Anonymous nested composite, stored as a bare expression
+                // statement so that every field is a plain syntax node.
+                Statement* st = (Statement*) field;
+                if (st->operand && st->operand->expression) {
+                    emitExpression(ctx, st->operand->expression, out);
+                }
+                IO::write(out, ';');
+                writeNewline(ctx, out);
+                break;
+            }
+
+            default: {
+                indent(ctx, out);
+                writeColored(ctx, out, AC_DIM, "<no_emitter:field_type=%u>", (unsigned) field->type);
+                writeNewline(ctx, out);
+                break;
+            }
+        }
     }
 
     emitBlockFooter(ctx, out);
-    IO::write(out, ';');
-    writeNewline(ctx, out);
+    // IO::write(out, ';');
+    // writeNewline(ctx, out);
+}
+
+static void emitFunctionSignature(Emitter::Context* ctx, IO::Stream* out, FunctionPrototype* prototype, QualifiedName* errorSet) {
+    IO::write(out, '(');
+
+    for (uint32_t i = 0; i < prototype->inArgCount; i++) {
+        if (i) IO::write(out, ", ");
+        emitDeclarationInline(ctx, out, prototype->inArgs[i]);
+    }
+
+    IO::write(out, ')');
+
+    if (errorSet) {
+        IO::write(out, ' ');
+        writeKeyword(ctx, out, "using");
+        IO::write(out, ' ');
+        writeQualifiedName(ctx, out, errorSet);
+    }
+
+    if (prototype->outArg) {
+        writeColored(ctx, out, AC_DIM, " -> ");
+        emitVariableInline(ctx, out, prototype->outArg->typeValue);
+    }
 }
 
 static void emitFunction(Emitter::Context* ctx, IO::Stream* out, Function* fcn) {
@@ -1129,37 +1524,20 @@ static void emitFunction(Emitter::Context* ctx, IO::Stream* out, Function* fcn) 
     indent(ctx, out);
     writeName(ctx, out, (INamed*) &fcn->name);
     writeColored(ctx, out, AC_DIM, " : ");
-    IO::write(out, '(');
 
-    for (uint32_t i = 0; i < fcn->prototype.inArgCount; i++) {
-        if (i) IO::write(out, ", ");
-        emitDeclarationInline(ctx, out, fcn->prototype.inArgs[i]);
-    }
+    emitFunctionSignature(ctx, out, &fcn->prototype, fcn->errorSetName);
 
-    IO::write(out, ')');
-
-    if (fcn->prototype.outArg) {
-        writeColored(ctx, out, AC_DIM, " -> ");
-
-        if (hasDeclaredType(&fcn->prototype.outArg->type)) {
-            writeDeclaredTypeRef(ctx, out, fcn->prototype.outArg);
-        } else if (fcn->prototype.outArg->var && fcn->prototype.outArg->var->value.type) {
-            writeTypeRef(ctx, out, fcn->prototype.outArg->var->value.type);
-        } else {
-            writeColored(ctx, out, AC_DIM, "<none>");
-        }
-    }
-
-    if (fcn->errorSetName) {
+    if (fcn->code.tagStr.buff && fcn->code.tagStr.len) {
         IO::write(out, ' ');
-        writeKeyword(ctx, out, "using");
-        IO::write(out, ' ');
-        writeQualifiedName(ctx, out, fcn->errorSetName);
+        writeColored(ctx, out, AC_DIM, "[");
+        IO::write(out, fcn->code.tagStr);
+        writeColored(ctx, out, AC_DIM, "]");
     }
 
     if (fcn->bodyScope) {
         IO::write(out, ' ');
         emitScopeBlock(ctx, out, fcn->bodyScope);
+        IO::write(out, ';');
         writeNewline(ctx, out);
     } else {
         IO::write(out, ';');
@@ -1228,26 +1606,30 @@ static void emitCodeBlock(Emitter::Context* ctx, IO::Stream* out, CodeBlock* cb)
     writeNewline(ctx, out);
 }
 
-static void emitVariable(Emitter::Context* ctx, IO::Stream* out, Variable* var) {
+static void emitVariableInline(Emitter::Context* ctx, IO::Stream* out, Variable* var) {
     if (!var) return;
 
-    indent(ctx, out);
-
-    if (var->name.buff || var->name.pathSize) {
+    // NOTE: precedence here is 'value -> expression -> name', which differs
+    //       from emitTerm ('expression -> value -> name'). Declaration type
+    //       slots normally carry either a folded type value or a type
+    //       expression, never both.
+    if (var->value.hasValue) {
+        writeValue(ctx, out, &var->value);
+    } else if (var->expression) {
+        emitExpression(ctx, var->expression, out);
+    } else if (var->name.len > 0 || var->name.pathSize > 0) {
         writeQualifiedName(ctx, out, &var->name);
+    } else if (var->value.type && var->value.type->kind == Type::DT_INFER) {
+        writeColored(ctx, out, AC_DIM, "<infer>"); // TODO
     } else {
         writeColored(ctx, out, AC_DIM, "<none>");
     }
+}
 
-    if (var->value.hasValue || var->expression) {
-        writeColored(ctx, out, AC_DIM, " = ");
-    }
+static void emitVariable(Emitter::Context* ctx, IO::Stream* out, Variable* var) {
+    indent(ctx, out);
 
-    if (var->expression) {
-        emitExpression(ctx, var->expression, out);
-    } else if (var->value.hasValue) {
-        writeValue(ctx, out, &var->value);
-    }
+    emitVariableInline(ctx, out, var);
 
     IO::write(out, ';');
     writeNewline(ctx, out);
@@ -1276,15 +1658,11 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
 
     switch (node->type) {
         case NT_SCOPE: {
-            Scope* scope = (Scope*) node;
-
-            // The unit root is the source itself, it does not get braces
-            if (ctx->indentLevel == 0) {
-                emitScopeBody(ctx, out, scope);
-            } else {
-                emitScopeBlock(ctx, out, scope);
-                writeNewline(ctx, out);
-            }
+            // The unit root is emitted via emitScopeBody() from emitUnit();
+            // any scope reaching this point is a real nested block.
+            indent(ctx, out);
+            emitScopeBlock(ctx, out, (Scope*) node);
+            writeNewline(ctx, out);
             break;
         }
 
@@ -1302,8 +1680,7 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
 
         case NT_TYPE_DEFINITION:
         case NT_UNION: {
-            emitMarker(ctx, out, node);
-            emitTypeDefinition(ctx, out, node);
+            IO::write(out, "<deprecated>");
             break;
         }
 
@@ -1360,13 +1737,19 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
 
         case NT_CONTINUE_STATEMENT: {
             emitMarker(ctx, out, node);
-            emitFlowStatement(ctx, out, "continue");
+            emitFlowStatement(ctx, out, "continue", ((ContinueStatement*) node)->target);
             break;
         }
 
         case NT_BREAK_STATEMENT: {
             emitMarker(ctx, out, node);
-            emitFlowStatement(ctx, out, "break");
+            emitFlowStatement(ctx, out, "break", ((BreakStatement*) node)->target);
+            break;
+        }
+
+        case NT_DEFER: {
+            emitMarker(ctx, out, node);
+            emitDeferStatement(ctx, out, (DeferStatement*) node);
             break;
         }
 
@@ -1400,12 +1783,6 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
             break;
         }
 
-        case NT_ERROR: {
-            emitMarker(ctx, out, node);
-            emitErrorSet(ctx, out, (ErrorSet*) node);
-            break;
-        }
-
         case NT_IMPORT: {
             emitMarker(ctx, out, node);
             emitImport(ctx, out, (ImportStatement*) node);
@@ -1414,7 +1791,7 @@ static void emitNode(Emitter::Context* ctx, SyntaxNode* node, IO::Stream* out) {
 
         default: {
             indent(ctx, out);
-            writeColored(ctx, out, AC_DIM, "<no_emitter>");
+            writeColored(ctx, out, AC_DIM, "<no_emitter:%s>", Ast::Node::str(node->type));
             writeNewline(ctx, out);
             break;
         }
@@ -1426,7 +1803,7 @@ static void emitUnit(Emitter::Context* ctx, Reg::Unit* unit, IO::Stream* out) {
         return;
     }
 
-    emitNode(ctx, (SyntaxNode*) unit->ast->root, out);
+    emitScopeBody(ctx, out, unit->ast->root);
     writeNewline(ctx, out);
 }
 

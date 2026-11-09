@@ -1,0 +1,193 @@
+// =============================================================================
+// Parser snapshots: lexical layer
+// =============================================================================
+//
+// Scope: tokens, literals and comments — grammar.ebnf 'Lexical Grammar'.
+// The pretty-printed AST dump pins how source text becomes tokens: folded
+// literal values, decoded string escapes, comment absorption and malformed
+// token recovery are all visible in the golden file.
+//
+// Construct-level behaviour (operators, qualified names, decorators, ...)
+// lives in its own suites — expressions, types, declarations, control_flow,
+// functions, composites, enums, arrays_slices, pointers, casts, directives,
+// cte_embed and print_format.
+//
+// Conventions:
+//   * every chunk between '#test' markers is compiled standalone
+//   * the LAST standalone '// ...' line before a '#test' is the test name,
+//     so explanations are written as trailing comments on code lines
+//     (line_comments is the one test that must place its name last, as
+//     standalone comments are its subject matter)
+//   * integer literals use i64 so folded values print without cast noise
+//   * positives first, intentionally malformed inputs last
+
+a: i64 = 1; // trailing comment after code
+// standalone comment between statements
+b: i64 = 2;
+// line_comments
+#test ""
+
+// block_comments
+a: i64 = 3;
+/{
+    outer block comment
+    /{
+        nested block comment
+    /}
+/}
+b: i64 = 4;
+#test ""
+
+// inline_block_comment
+a: i64 = 5;
+b: i64 = a + /{ comment splits the expression /} 2;
+#test ""
+
+// block_comment_eof
+a: i64 = 1;
+/{ comment is the last token of the chunk /}
+#test ""
+
+// identifiers
+snake_case: i64 = 1;
+_identifier: i64 = 2;
+x9: i64 = 3;
+camelCase: i64 = 4;
+ifx: i64 = 5;   // keyword-prefix adjacency must stay one identifier
+i32x: i64 = 6;  // type-keyword adjacency must stay one identifier
+#test ""
+
+// int_literals
+dec: i64 = 1_000_000;
+hex: i64 = 0xFF_00_AA;
+hex2: i64 = 0x_dead_beef;  // separator directly after the base prefix
+bin: i64 = 0b1010_0101;
+flat: i64 = 2024;
+zero: i64 = 0;
+#test ""
+
+// float_literals
+f1: f64 = 1.5;
+f2: f64 = 1e10;           // plain exponent, no decimal point
+f3: f64 = 2.5e-4;         // signed exponent
+f4: f32 = 3.5f;           // 'f' suffix selects f32
+f5: f32 = 299_792_458.0f; // separators around the dot
+f6: f32 = 1_0.5_0f;       // separators on both terms
+f7: f64 = 1.;             // trailing dot, no fractional digits
+f8: f32 = 10f;            // suffix without a dot
+f9: f64 = 1e+10;          // explicit exponent sign
+f10: f64 = 1.5e1_0;       // separator inside the exponent
+#test ""
+
+// char_literals
+c1: u8 = 'a';    // ASCII
+c2: i64 = '\n';  // escape
+c3: u16 = 'č';   // unicode code point, raw UTF-8 source
+c4: u32 = 'abcd'; // packed multi-byte, big-endian 0x61626364
+c5: i64 = '\t';   // simple escape
+c6: i64 = '\\';   // escaped backslash
+c7: i64 = '\'';   // escaped quote
+c8: i64 = '\0';   // octal escape, NUL
+c9: i64 = '\x41'; // hex escape
+c10: i64 = '\101'; // octal escape, same value as the hex form
+#test ""
+
+// string_literals
+"a\nb\tc \" \\";
+"deep:\x41 oct:\101";
+"unicode: café";
+cp: [_]u16 = u16."čau"; // typed prefix decodes code points
+inf: [_]u8 = ."abc";    // inference prefix takes the destination element type
+empty: [_]u8 = "as";    // bare strings are [_]u8 raw bytes
+#test ""
+
+// unicode_escapes
+"\u0041";                  // 4-digit escape folds to 'A'
+"\U0001F600";              // 8-digit escape folds to a code point above the BMP
+cp: [_]u16 = u16."\u010d"; // non-ASCII escape inside a typed string
+#test ""
+
+// directive_names
+#if 1 {
+    a: i64 = 1;   // '#if' dispatches to a compile-time branch
+}
+#loop 0:2 at i {
+    n: i64 = i;   // '#loop' dispatches to a compile-time loop
+}
+P := struct '#packed' { x: i64; };  // layout annotation name
+R := struct '#reorder' { a: u8; b: i64; };
+F: (fmt: [#format]u8) { }          // format annotation name in type position
+#test ""
+
+// special_constants
+t: i64 = true;
+f: i64 = false;
+u: u8 = false;  // 1/0 literals, usable with any integer type
+p: ^i64 = null;
+#test ""
+
+// keyword_as_name
+if: i64 = 1;
+#test ""
+
+// lone_underscore
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+_: i64 = 5;  // '_' is the placeholder, never an identifier
+#test ""
+
+// hex_no_digits
+x: i64 = 0x;  // grammar demands one hex digit, silently lexes to 0 today
+#test ""
+
+// binary_no_digits
+x: i64 = 0b;  // grammar demands one binary digit, silently lexes to 0 today
+#test ""
+
+// bare_exponent
+x: i64 = 1e;  // exponent without digits
+#test ""
+
+// unterminated_string
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+s: i64 = "never closed...
+#test ""
+
+// unterminated_char
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+c: i64 = 'a
+#test ""
+
+// number_glued_identifier
+x: i64 = 12abc;
+#test ""
+
+// c_style_comment
+a: i64 = 5;
+b: i64 = a + /* inline */ 2;  // '/*' is not a comment here, lexes as operators
+#test ""
+
+// number_two_dots
+x: f64 = 1.2.3;  // the second dot can not belong to the literal
+#test ""
+
+// unsupported_char_escape
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+c: i64 = '\q'; // \q is not a valid escape
+#test ""
+
+// bad_unicode_escape
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+"\u12";        // \u needs four hex digits, folds to an empty format
+after: i64 = 2; // parsing continues after the bad escape
+#test ""
+
+// unknown_directive
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+#foo 1;        // unknown directive name, recovery syncs to ';'
+after: i64 = 2;
+#test ""
+
+// unterminated_block_comment
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+/{ never closed
+#test ""

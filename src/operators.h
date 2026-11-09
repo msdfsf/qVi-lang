@@ -29,8 +29,13 @@ enum OperatorEnum : uint8_t {
     OP_SUBSCRIPT = OP_BINARY_BEGIN,
     OP_SLICE, // META operator
     OP_CALL,
+    OP_CALL_STRICT,
     OP_MEMBER_SELECTION,
     OP_DEREFERENCE_MEMBER_SELECTION, // META operator
+
+    OP_INIT_STRUCT,
+    OP_INIT_ARRAY,
+    OP_INIT_STRING,
 
     OP_CAST_BIT,
     OP_CAST_STATIC,
@@ -83,8 +88,13 @@ constexpr Operator operators[] {
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_SUBSCRIPT
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_SLICE
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_CALL
+    { .rank = 0, .flag = IS_BINARY | IS_TWO_CHAR }, // OP_CALL_STRICT
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_MEMBER_SELECTION
     { .rank = 0, .flag = IS_BINARY | IS_ONE_CHAR }, // OP_DEREF_MEMBER_SELECTION
+
+    { .rank = 0, .flag = IS_BINARY | IS_TWO_CHAR }, // OP_INIT_STRUCT
+    { .rank = 0, .flag = IS_BINARY | IS_TWO_CHAR }, // OP_INIT_ARRAY
+    { .rank = 0, .flag = IS_BINARY | IS_TWO_CHAR }, // OP_INIT_STRING
 
     { .rank = 1, .flag = IS_BINARY | IS_TWO_CHAR }, // OP_BIT_CAST
     { .rank = 1, .flag = IS_BINARY | IS_TWO_CHAR }, // OP_STATIC_CAST

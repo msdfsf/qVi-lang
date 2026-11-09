@@ -1,0 +1,103 @@
+// =============================================================================
+// Parser snapshots: enums
+// =============================================================================
+//
+// Scope: enum types — doc.md 'Enums'. ':=' definitions, auto-increment,
+// explicit values, custom backing types, '::' member access, integer decay,
+// casts, flag operations and reflection. Malformed forms last.
+
+// enum_basic
+Color := enum {
+    Red,    // 0
+    Green,  // 1
+    Blue    // 2
+};
+Fruit := enum { Apple, Banana, };   // trailing comma is allowed
+c: Color = Color::Red;
+#test ""
+
+// enum_explicit
+HttpStatus := enum u16 {
+    Ok = 200,
+    Created,       // 201, auto-incremented
+    Accepted,      // 202
+    BadRequest = 400,
+    Unauthorized,  // 401
+    NotFound = 404,
+};
+Status := enum {
+    Error = -1,   // negative explicit value
+    Idle,        // 0
+    Ready        // 1
+};
+#test ""
+
+// enum_backing
+LogLevel := enum u8 { Debug, Info, Warning, Error, };     // 1-byte backing
+DeviceCode := enum i16 { SensorA = 10, SensorB = 20, };    // 2-byte signed
+Default := enum { One, Two };                             // backing defaults to i64
+#test ""
+
+// enum_backing_in_struct
+Device := struct {
+    Kind := enum u8 { Idle = 0, Busy = 1, };   // backing + explicit values, nested
+    kind: Kind = Kind::Busy;
+};
+d: Device;
+#test ""
+
+// enum_access
+HttpStatus := enum u16 { Ok = 200, NotFound = 404, };
+Entity := struct {
+    Kind := enum u8 { Player, Npc, };
+    kind: Kind = Kind::Npc;
+};
+ok: HttpStatus = HttpStatus::Ok;
+nested: Entity::Kind = Entity::Kind::Player;   // nested member chain
+#test ""
+
+// enum_decay
+HttpStatus := enum u16 { Ok = 200, NotFound = 404, };
+status: HttpStatus = HttpStatus::Ok;
+code: u16 = status;        // implicit decay to the backing type
+index: i64 = status;       // decay, then widening
+next: i64 = status + 1;    // in math, the result is an integer
+arr: [4]i64 = .[10, 20, 30, 40];
+arr[HttpStatus::Ok] = 10;  // members decay to indices
+#test ""
+
+// enum_casts
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+HttpStatus := enum u16 { Ok = 200, NotFound = 404, };
+valid: HttpStatus = 200 -> HttpStatus;     // compile-time member check passes
+value: i64 = get_code();                    // runtime value, trusted
+restored: HttpStatus = value -> HttpStatus;
+bad: HttpStatus = 999 -> HttpStatus;        // not a member, compile-time error
+#test ""
+
+// enum_ops
+Flags := enum u32 {
+    Read = 0b0001,
+    Write = 0b0010,
+    Execute = 0b0100,
+    Mask = 0xF0,    // hex literals fold to decimal in the dump
+};
+rw: Flags = Flags::Read | Flags::Write;   // same-enum ops keep the enum type
+masked: Flags = rw & Flags::Write;
+rw |= Flags::Execute;                      // compound assignment keeps the type
+mixed: u32 = rw & 0b0011;                  // mixed operands decay to integers
+#test ""
+
+// enum_reflection
+Foo := enum { A, B, C, };
+count: i64 = Foo.count;        // number of members
+arr: [Foo::A]i32;              // member value as the array length
+lut: [Foo.count]i32;           // member count as the array length
+backing: type = Foo.backing;   // the backing type is a type value
+#test ""
+
+// enum_access_dot
+Foo := enum { A, B, };
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+c: i64 = Foo.A;   // members are scoped with '::', '.' was the legacy form
+#test ""

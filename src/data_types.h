@@ -30,6 +30,9 @@ namespace Type {
         // Scalar Pointer type. Tracks pointer metadata via 'PointerInfo'.
         DT_POINTER,
 
+        // Meta-type
+        DT_TYPE,
+
         // Aggregate Container Types
         DT_ARRAY,   // Fixed-size compile-time array
         DT_SLICE, // Dynamic runtime slice view (pointer + length pair)
@@ -47,6 +50,9 @@ namespace Type {
         DT_UNION,
         DT_ERROR,
         DT_ENUM,
+
+        // Meta-type
+        DT_INFER,
 
         // FunctionPrototype
         DT_FUNCTION,

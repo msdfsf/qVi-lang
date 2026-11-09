@@ -1,0 +1,124 @@
+// =============================================================================
+// Parser snapshots: declarations
+// =============================================================================
+//
+// Scope: the label-oriented declaration grammar — grammar.ebnf
+// 'Top-Level Declarations' plus doc.md 'Scopes'. Variable forms, scope
+// blocks, shadowing, namespaces, declaration ordering, malformed forms.
+
+// variable_init
+x: i64 = 1;
+y: i64 = 1 + 2 * 3;       // initializer expression folds in the dump
+a: i32 = 1; b: i32 = 2;   // several declarations per line
+f: f64 = 0.5;
+s: [_]u8 = "text";   // bare strings are [_]u8 raw bytes
+#test ""
+
+// variable_late_init
+x: i64;
+x = 5;             // bare assignment completes the declaration
+y: i64 = x + 1;
+z: i64;
+z = y;
+#test ""
+
+// walrus_definition
+Integer: type = i32;  // explicit metatype, types are values
+Short := i16;          // ':=' collapses ': type ='
+x: Short = 10;         // the alias is interchangeable with the base type
+#test ""
+
+// empty_statement
+;
+x: i64 = 1;
+;
+y: i64 = x + 1;
+;
+#test ""
+
+// block_scope
+x: i64 = 1;
+{
+    y: i64 = 2;   // local to the block
+    x = y + 1;    // outer stays writable from inside
+}
+z: i64 = x;      // block local is gone, outer survived
+#test ""
+
+// shadowing
+count: i64 = 10;
+{
+    count: i64 = 99;   // shadows the outer 'count'
+    inner: i64 = count;
+}
+outer: i64 = count;    // shadow did not leak
+#test ""
+
+// nested_scopes
+a: i64 = 1;
+{
+    b: i64 = 2;
+    {
+        c: i64 = 3;
+        sum1: i64 = a + b + c;
+    }
+    sum2: i64 = a + b;
+}
+sum3: i64 = a;
+#test ""
+
+// namespace_block
+config: {
+    MAX_SPEED: i64 = 300;
+    limits: {
+        FUEL: i64 = 42;
+    }
+}
+speed: i64 = config::MAX_SPEED;        // namespace members are observed with '::'
+fuel: i64 = config::limits::FUEL;      // nested namespace member chain
+#test ""
+
+// ordering_declarative
+r: i64 = later(2, 3);   // referenced before its definition
+later: (a: i64, b: i64) -> i64 { return a + b; }
+#test ""
+
+// qualified_declaration
+math: { PI: i64 = 3; }
+math::TAU: i64 = 6;   // declaring a member through its namespace
+#test ""
+
+// language_tag
+cb: () -> i64 '#abi(C)' { return 0; }   // annotation follows the signature
+r: i64 = cb();
+#test ""
+
+// ordering_imperative
+r: i64 = x + 1;   // used before declaration, variables obey ordering
+x: i64 = 5;
+ok: i64 = 3;
+#test ""
+
+// undeclared_assignment
+q = 1;         // 'q' was never declared
+ok: i64 = 3;
+#test ""
+
+// duplicate_declaration
+x: i64 = 1;
+x: i64 = 2;   // same-scope redeclaration
+ok: i64 = x;
+#test ""
+
+// recovery_declaration_parts
+ok: i64 = 3;  // anchor statement, the malformed forms below abort the rest of the dump
+x i64 = 1;    // missing ':' separator
+: i64 = 2;    // missing label
+y:;          // missing definition
+#test ""
+
+// recovery_missing_semicolon
+x: i64 = 1
+y: i64 = 2;   // the line above was swallowed or recovered here
+ok: i64 = 3;
+#test ""

@@ -1,0 +1,189 @@
+// =============================================================================
+// Parser snapshots: functions
+// =============================================================================
+//
+// Scope: function declarations and error handling — grammar.ebnf
+// 'Top-Level Declarations' plus doc.md 'Functions And Error Handling'.
+// Signatures, parameters, overloading, function pointers, local functions,
+// error sets, 'using' and 'catch' forms. Malformed inputs last.
+
+// basic_definition
+add: (a: i64, b: i64) -> i64 {
+    return a + b;
+}
+fire: (x: i64) {
+    x += 1;   // parameters are by-value copies
+}
+r: i64 = add(1, 2);
+#test ""
+
+// parameters
+increment: (ptr: ^i64) {
+    ptr^ += 1;   // pointers mutate the caller's variable
+}
+n: i64 = 5;
+increment(&n);
+#test ""
+
+// default_parameters
+greet: (name: [_]u8, times: i64 = 3) {
+    t: i64 = times;
+}
+greet("hi");        // trailing default omitted
+greet("hi", 5);     // default overridden
+#test ""
+
+// variadic_params
+log_values: (args: ...) {
+    loop args as arg { }   // 'args' behaves like a []::Any descriptor
+}
+log_values(42, 3.14, "str");
+#test ""
+
+// overloading
+foo: (x: i64) { }
+foo: (x: f64) { }
+foo(10);    // exact match: integer literal takes the i64 variant
+foo(1.0);    // exact match: float literal takes the f64 variant
+v: i8 = 5;
+foo(v);      // implicit: i8 widens to i64
+#test ""
+
+// strict_call
+foo: (x: i64) { }
+foo!(10);    // exact match required
+foo!(1.0);   // no implicit conversion is allowed under '!'
+ok: i64 = 1;
+#test ""
+
+// function_pointer
+multiply: (a: i64, b: i64) -> i64 { return a * b; }
+op: ^(i64, i64) -> i64 = multiply;   // pointer to a function
+r: i64 = op(6, 7);                   // called through implicit dereference
+nul: ^(i64) -> i64 = null;           // pointers default to null
+nul = multiply;                     // runtime pointer reassignment
+#test ""
+
+// abstract_signature
+bar: (x: i32) -> i32;            // body-less declaration, interface or FFI
+foreign: (x: f64) -> f64 '#abi(C)';    // ABI annotation on a signature-only declaration
+#test ""
+
+// local_function
+foo: (x: i64) {
+    total: i64 = 0;
+    add: (val: i64) {          // local subroutine in foo's stack frame
+        total += val + x;      // closes over the enclosing variables
+    }
+    add(10);
+    add(20);
+}
+#test ""
+
+// error_sets
+ReadFile := error { NotFound; PermissionDenied; };
+WriteFile := error { Locked; DiskFull; };
+FileOps := error { ReadFile; WriteFile; };   // nesting includes every member
+err: error = FileOps::ReadFile::NotFound;
+err = null;
+#test ""
+
+// error_set_values
+E := error { NotFound = 404; PermissionDenied = 403; };   // explicit member values
+e: error = E::NotFound;
+#test ""
+
+// error_set_as_type
+FileError := error { NotFound; Locked; };
+probe: (e: FileError) {   // error set as a parameter type
+    t: i64 = 1;
+}
+factory: () -> FileError {   // error set as a return type
+    t: i64 = 2;
+}
+#test ""
+
+// using_errors
+FileError := error { NotFound; Locked; };
+read_file: (path: [const]u8) using FileError -> []u8 {
+    if path == null {
+        return _, FileError::NotFound;   // '_' discards the primary value
+    }
+    return path, null;                   // value plus empty error channel
+}
+#test ""
+
+// catch_forms
+FileError := error { NotFound; Locked; };
+read_file: (path: [const]u8) using FileError -> []u8 {
+    return path, null;
+}
+err: FileError = null;
+d0: []u8 = read_file("f") catch err;      // catch into an existing variable
+process: () using FileError {
+    d1: []u8 = read_file("f") catch e {   // catch into a block-local binding
+        logged: i64 = 1;
+    };
+    d2: []u8 = read_file("f") catch return; // propagate to the caller
+}
+#test ""
+
+// catch_assignment
+FileError := error { NotFound; };
+read_file: (path: [const]u8) using FileError -> []u8 {
+    return path, null;
+}
+err: FileError = null;
+x: []u8 = read_file("f");
+x = read_file("f") catch err;   // catch works on the assignment RHS too
+#test ""
+
+// catch_nested
+FileError := error { NotFound; };
+read_file: (path: [const]u8) using FileError -> []u8 {
+    return path, null;
+}
+outer: []u8 = read_file("f") catch e {
+    inner: []u8 = read_file("f") catch e2 {   // catch scopes nest like blocks
+        logged: i64 = 1;
+    };
+};
+#test ""
+
+// catch_non_function_call
+Foo::Boo : i64 = arr[9] catch _ePz;
+#test ""
+
+// error_in_function_type
+FileError := error { NotFound; };
+p: ^(e: error) -> i64;            // bare 'error' flows through function types
+q: ^() using FileError -> i64;    // 'using' is rejected inside function types
+#test ""
+
+// recovery_signature
+f: (a: i64, { };              // parameter list never closes
+g: (a: ) -> i64 { return 1; } // parameter without a type
+ok: i64 = 1;
+#test ""
+
+// recovery_error_set_unclosed
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+E := error { A;   // body never closes, partial members are not leaked
+#test ""
+
+// recovery_error_set_separator
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+E := error { A B };   // missing separator, the set recovers with the first member
+#test ""
+
+// recovery_catch_non_call
+x: i64 = 1 catch err;   // only call expressions may be caught, clause dropped
+after: i64 = 2;
+#test ""
+
+// recovery_catch_binding
+read_file: (path: [const]u8) -> []u8 {
+    return path, null;
+}
+d: []u8 = read_file("f") catch 42;   // binding must be an identifier, call survives
+#test ""

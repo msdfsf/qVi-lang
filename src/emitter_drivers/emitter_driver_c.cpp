@@ -368,6 +368,13 @@ static void emitExpression(Emitter::Context* ctx, Expression* exp, IO::Stream* o
             break;
         }
 
+        case EXT_POINTER_TYPE: {
+            IO::write(out, '^');
+            PointerTypeExpression* type = (PointerTypeExpression*) exp;
+            emitVariable(ctx, out, type->operand);
+            break;
+        }
+
         case EXT_CATCH: {
             emitCatchExpression(ctx, (Catch*) exp, out, lvalue, false);
             break;
@@ -879,20 +886,6 @@ static void emitUnit(Emitter::Context* ctx, Reg::Unit* unit, IO::Stream* out) {
                     IO::write(out, block->code.codeStr.buff, (uint32_t) block->code.codeStr.len);
                     IO::write(out, '\n');
                 }
-            }
-        }
-
-        for (uint32_t i = 0; i < unit->reg->foreignFunctions.size; i++) {
-            ForeignFunction* fcn = ((ForeignFunction*) unit->reg->foreignFunctions.buffer) + i;
-            if (fcn) {
-                emitFunctionDefinition(ctx, out, &fcn->fcn, true);
-                IO::write(out, ";\n");
-                emitFunctionDefinition(ctx, out, &fcn->fcn, false);
-                IO::write(out, " {\n");
-                if (fcn->code.codeStr.buff) {
-                    IO::write(out, fcn->code.codeStr.buff, (uint32_t) fcn->code.codeStr.len);
-                }
-                IO::write(out, "}\n\n");
             }
         }
     }

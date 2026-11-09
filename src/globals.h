@@ -87,15 +87,23 @@ enum State : uint64_t {
     // what ordering constraints are applicable to 'us'.
     IS_UNORDERED = 1 << 18,
 
+    // Type decorator: '[#format]T'
+    IS_FORMAT = 1 << 19,
+
     // If node is 'anonymous' and actualy is product
     // of an import statement.
     IS_FROM_IMPORT = 1 << 20,
 
     IS_EXTERN = 1 << 21,
 
+    IS_STRICT_CALL = 1 << 22,
+    IS_VARIADIC    = 1 << 23,
+
     IS_RENDERED = 1 << 24,
 
     IS_CASTED_FROM_LOWER_LEVEL = 1 << 25,
+
+    IS_ASSIGNABLE = 1 << 26,
     // TODO : better name
     // If children are unique. Where both, children and unique,
     // are relative to the specific node type.

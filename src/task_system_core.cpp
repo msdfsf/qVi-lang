@@ -174,7 +174,6 @@ namespace TaskSystem::Core {
         worker->amIAlive = true;
 
         allocInit();
-        nallocInit();
 
         Lex::init();
 

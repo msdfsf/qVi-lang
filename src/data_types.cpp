@@ -107,6 +107,27 @@ namespace Type {
         .size = 0,
     };
 
+    TypeInfo typeType {
+        .kind = DT_TYPE,
+        .rank = 0,
+        .align = 1,
+        .size = 0,
+    };
+
+    TypeInfo errorType {
+        .kind = DT_ERROR,
+        .rank = 0,
+        .align = 1,
+        .size = 0,
+    };
+
+    TypeInfo inferType {
+        .kind = DT_INFER,
+        .rank = 0,
+        .align = 1,
+        .size = 0,
+    };
+
     // TODO : to config
     constexpr uint64_t typeSetInitSize = 16 * 1024;
 
@@ -530,15 +551,16 @@ namespace Type {
             case Type::DT_F64:  return "f64";
 
             case Type::DT_POINTER: return "ptr";
+            case Type::DT_TYPE:    return "type";
             case Type::DT_ARRAY:   return "array";
-            case Type::DT_SLICE: return "slice";
+            case Type::DT_SLICE:   return "slice";
             case Type::DT_RANGE:   return "range";
 
-            case Type::DT_STRUCT:  return "struct";
-            case Type::DT_UNION:   return "union";
-            case Type::DT_ERROR:   return "error";
-            case Type::DT_ENUM:    return "enum";
-            case Type::DT_MEMBER:  return "<member>";
+            case Type::DT_STRUCT:   return "struct";
+            case Type::DT_UNION:    return "union";
+            case Type::DT_ERROR:    return "error";
+            case Type::DT_ENUM:     return "enum";
+            case Type::DT_MEMBER:   return "<member>";
             case Type::DT_FUNCTION: return "function";
 
             case Type::DT_UNDEFINED:      return "<undefined>";
@@ -551,7 +573,7 @@ namespace Type {
     }
 
     const char* str(TypeInfo* type) {
-        return str(type->kind);
+        return type ? str(type->kind) : "<none>";
     }
 
     void writeTypeName(IO::Stream* stream, Type::TypeInfo* type) {
@@ -649,6 +671,11 @@ namespace Type {
                 break;
             }
 
+            case Type::DT_TYPE: {
+                IO::write(stream, "type");
+                break;
+            }
+
             case Type::DT_RANGE: {
                 IO::write(stream, "<range>");
                 break;
@@ -664,8 +691,13 @@ namespace Type {
                 break;
             }
 
+            case Type::DT_INFER: {
+                IO::write(stream, "<infer>");
+                break;
+            }
+
             case Type::DT_ERROR: {
-                IO::write(stream, "<error_type>");
+                IO::write(stream, "error");
                 break;
             }
 
@@ -695,10 +727,16 @@ namespace Type {
             case DT_F32:
             case DT_F64:
                 return basicTypes + kind;
+            case DT_TYPE:
+                return &typeType;
             case DT_MULTIPLE_TYPES:
                 return &varType;
             case DT_RANGE:
                 return &rangeType;
+            case DT_ERROR:
+                return &errorType;
+            case DT_INFER:
+                return &inferType;
             default:
                 assert("Unexpected data-type requested.");
                 return NULL;

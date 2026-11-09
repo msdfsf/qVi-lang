@@ -1,0 +1,59 @@
+// =============================================================================
+// Parser snapshots: pointers
+// =============================================================================
+//
+// Scope: pointer usage — doc.md 'Decorators' and 'Structs' pointer notes.
+// Address-of and postfix dereference, null handling, stacked decorators,
+// auto-dereferencing member access and pointer subscripts. Legacy and
+// malformed forms last.
+
+// address_deref
+x: i64 = 42;
+p: ^i64 = &x;   // address-of
+fetched: i64 = p^;   // postfix dereference reads
+p^ = 99;             // dereference writes through to x
+p^ += 1;             // compound assignment through a pointer
+#test ""
+
+// null_pointer
+p: ^i64 = null;
+if p != null {
+    p^ = 10;   // guarded through the null check
+}
+q: ^^i64 = null;
+#test ""
+
+// pointer_stacks
+x: i64 = 1;
+p: ^i64 = &x;
+pp: ^^i64 = &p;      // pointer to pointer
+pa: ^[4]i64;         // pointer to a fixed array
+ap: [4]^i64;         // array of pointers
+#test ""
+
+// pointer_member
+Entity := struct { id: u64; health: i64 = 100; };
+e: Entity = .{ id: 10 };
+ptr: ^Entity = &e;
+ptr.health = 100;         // '.' auto-dereferences the pointer
+copied: Entity = ptr^;    // postfix '^' copies the whole value
+nested: i64 = ptr.health;
+#test ""
+
+// pointer_subscript
+buf: ^i64 = null;
+buf[3] = 42;    // ptr[i] is (ptr + i)^, arithmetic is in elements
+val: i64 = buf[0];
+#test ""
+
+// legacy_prefix_deref
+ok: i64 = 2;   // anchor statement
+x: i64 = 1;
+p: ^i64 = &x;
+v: i64 = ^p;   // dereference is postfix 'p^' at usage, '^p' is not an expression
+#test ""
+
+// recovery_deref_dangling
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+v: i64 = q^;   // dereferencing a name that was never declared
+#test ""

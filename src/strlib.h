@@ -25,6 +25,8 @@ namespace Strings {
     wchar_t* encodeUtf16(String str, int* lenOut, int nullTerminate);
     UTFInfo decodeUtf8(UTFInfo info, String str, void* out);
 
+    int putUtf8(uint32_t codepoint, uint8_t* const out);
+
     inline constexpr bool isLowercase(const char ch) {
         return ('a' <= ch && ch <= 'z');
     }

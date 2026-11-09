@@ -11,6 +11,7 @@
 
 
 extern const Test::Suite gArenaSuite;
+extern const Test::Suite gTmpStringSuite;
 extern const Test::Suite gDArraySuite;
 extern const Test::Suite gSetSuite;
 extern const Test::Suite gOrderedDictSuite;
@@ -34,6 +35,7 @@ enum OptionId {
     OPT_VISUALIZE,
     OPT_FILTER,
     OPT_BENCH,
+    OPT_ITER,
     OPT_GOLDEN,
     OPT_AUTO_GOLDEN,
 
@@ -48,6 +50,7 @@ CLI::Option options[OPT_COUNT] = {
     { OPT_VISUALIZE,   "v", "visualize",        "Visualize failure diagnostics" },
     { OPT_FILTER,      "f", "filter",           "Filter tests by pattern",      },
     { OPT_BENCH,       "b", "bench",            "Run benchmarks",               },
+    { OPT_ITER,        "i", "iter",             "Overwrite bench iterations",   },
     { OPT_GOLDEN,      "gg", "generate-golden", "Generate golden files",        },
     { OPT_AUTO_GOLDEN, "ag", "autogen-golden",  "Auto Generate golden files",   },
 };
@@ -78,6 +81,7 @@ const char* str(TestKind kind) {
 TestKind testKind   = TK_NONE;
 bool visualize      = false;
 Test::Filter filter = { 0 };
+int iterations      = 0;
 
 
 
@@ -170,6 +174,10 @@ int main(int argc, const char** argv) {
         Test::gAutoGenerateGoldens = true;
     }
 
+    if (options[OPT_ITER].encountered && options[OPT_ITER].hasValue) {
+        iterations = atoi(options[OPT_ITER].value.data);
+    }
+
     if (options[OPT_E2E].encountered) {
         if (options[OPT_E2E].hasValue) {
             CLI::Value* value = &options[OPT_E2E].value;
@@ -215,8 +223,8 @@ int main(int argc, const char** argv) {
 
 
     if (options[OPT_BENCH].encountered) {
-        printf(AC_BOLD_MAGENTA "Welcome to the club, buddy" AC_RESET ", lets bench some iron to see whose the boss of this gym" AC_BOLD_MAGENTA "<3\n");
-        printf(AC_BRIGHT_BLACK "====================================================================================\n\n" AC_RESET);
+        printf(AC_BOLD_MAGENTA "Welcome to the club, buddy" AC_RESET ", lets bench some iron to see whose the boss of this gym" AC_BOLD_MAGENTA " <3\n");
+        printf(AC_BRIGHT_BLACK "=====================================================================================\n\n" AC_RESET);
 
         for (int i = 0; i < gBenchReps; i++) {
             const Test::BenchCase* bench = gBench + i;
@@ -226,7 +234,7 @@ int main(int argc, const char** argv) {
                 continue;
             }
 
-            Test::BenchResult result = Test::run(bench);
+            Test::BenchResult result = Test::run(bench, iterations);
             Test::_writeBenchResult(&result);
         }
 
@@ -244,6 +252,7 @@ int main(int argc, const char** argv) {
     if (testKind & TK_UNIT) {
         allocInit();
         Test::runTestSuite(&ctx, &gArenaSuite, &Test::gResult);
+        Test::runTestSuite(&ctx, &gTmpStringSuite, &Test::gResult);
         Test::runTestSuite(&ctx, &gDArraySuite, &Test::gResult);
         Test::runTestSuite(&ctx, &gSetSuite, &Test::gResult);
         Test::runTestSuite(&ctx, &gOrderedDictSuite, &Test::gResult);
@@ -268,8 +277,8 @@ int main(int argc, const char** argv) {
     }
 
     if (testKind & TK_SNAPSHOT) {
-        runDirectorySuites("test/snapshots", Test::CK_SNAPSHOT, true,  gTestSnapshotAst,
-            gPreCaseFrontend, gTestPostCase, &ctx, &Test::gResult);
+        runDirectorySuites("test/snapshots/parser", Test::CK_SNAPSHOT, true,  gTestSnapshotAstParser,
+            gPreCaseParser, gPostCaseParser, &ctx, &Test::gResult);
     }
 
     Test::_writeResult(&Test::gResult);

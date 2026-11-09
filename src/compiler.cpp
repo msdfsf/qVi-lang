@@ -44,7 +44,6 @@ namespace Compiler {
 
     void init() {
         allocInit();
-        nallocInit();
 
         Type::init();
         Ast::init();
@@ -81,13 +80,14 @@ namespace Compiler {
 
 
 
-    int64_t runFrontend(FileSystem::Handle fileHandle) {
+    int64_t runFrontend(FileSystem::Handle fileHandle, FrontendPass pass) {
         TaskSystem::beginGroup();
         TaskSystem::dispatchParse(fileHandle);
         TaskSystem::wait();
 
         if (Diag::hasErrors()) return -1; // TODO: something meaningful
         Logger::log(logInf, "Parsing completed");
+        if (pass <= FP_PARSE) return 0;
 
 
 
@@ -97,6 +97,7 @@ namespace Compiler {
 
         if (Diag::hasErrors()) return -1; // TODO: something meaningful
         Logger::log(logInf, "Pre validation completed");
+        if (pass <= FP_PRE_VALIDATE) return 0;
 
 
 

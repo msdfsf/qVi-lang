@@ -6,6 +6,7 @@ src/.vscode/
 tmp/*
 lsp/build/
 tools/Zed\ plugins/language-support/target/
+test/bench/*.qvi
 
 *.exe
 *.txt

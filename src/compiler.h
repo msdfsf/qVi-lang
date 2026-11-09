@@ -15,6 +15,15 @@
 
 namespace Compiler {
 
+    // TODO: maybe make it like generic pass and also add backend
+    //       or create separate backend one and then another type
+    //       to unite both...
+    enum FrontendPass : uint8_t {
+        FP_PARSE,
+        FP_PRE_VALIDATE,
+        FP_FULL,
+    };
+
     enum BuildCommand : uint8_t {
         BC_VALIDATE  = 1 << 0,
         BC_TRANSLATE = 1 << 1,
@@ -73,7 +82,7 @@ namespace Compiler {
     void release();
 
     int64_t compile();
-    int64_t runFrontend(FileSystem::Handle fileHandle);
+    int64_t runFrontend(FileSystem::Handle fileHandle, FrontendPass pass = FP_FULL);
     int64_t runBackends(FileSystem::Handle fileHandle);
 
 }

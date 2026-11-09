@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../src/compiler.h"
+#include "../src/parser.h"
 #include "../src/emitter_drivers/emitter_driver_debug.h"
 #include "../src/syntax.h"
 #include "../src/diagnostic.h"
@@ -16,8 +17,27 @@
 // ---
 
 inline Config::Options gDefaultOptions = Config::Options();
+inline thread_local Parser::ParseContext* parseContext = NULL;
 
-inline void gTestPreCase(bool visualize, bool enableBackends = true) {
+inline void writeErrors() {
+    IO::Stream stream = { .kind = IO::Stream::SK_C_STREAM, .cstream = stdout };
+    uint32_t count;
+    AstContext** asts = Diag::getAllErrorFiles(&count);
+    for (int i = 0; i < count; i++) {
+        AstContext* ast = asts[i];
+        for (int j = 0; j < ast->errorCount; j++) {
+            IO::write(&stream, (ast->errors + j)->msg);
+        }
+    }
+}
+
+enum GTestKind {
+    GTK_PARSER,
+    GTK_FRONTEND,
+    GTK_FULL
+};
+
+inline void gTestPreCase(bool visualize, GTestKind kind = GTK_FULL) {
     Config::opt = gDefaultOptions;
     Config::opt.loggingEnabled = visualize;
     Config::opt.maxErrorCount = 16;
@@ -32,7 +52,7 @@ inline void gTestPreCase(bool visualize, bool enableBackends = true) {
     Compiler::threadCount = 1;
     Compiler::cascade     = false;
 
-    if (enableBackends) {
+    if (kind == GTK_FULL) {
         Compiler::targets[0] = (Compiler::Target*)&Compiler::bakedTargets[Compiler::TK_VM];
         Compiler::targets[1] = NULL;
     } else {
@@ -43,24 +63,24 @@ inline void gTestPreCase(bool visualize, bool enableBackends = true) {
 }
 
 // Lifecycle hooks for Suites
-inline void gPreCaseE2E(bool viz)       { gTestPreCase(viz, true); }
-inline void gPreCaseFrontend(bool viz)  { gTestPreCase(viz, false); }
+inline void gPreCaseParser(bool viz)    { gTestPreCase(viz, GTK_PARSER);   }
+inline void gPreCaseFrontend(bool viz)  { gTestPreCase(viz, GTK_FRONTEND); }
+inline void gPreCaseE2E(bool viz)       { gTestPreCase(viz, GTK_FULL);     }
 
 inline void gTestPostCase(bool visualize) {
-    if (visualize) {
-        IO::Stream stream = { .kind = IO::Stream::SK_C_STREAM, .cstream = stdout };
-        uint32_t count;
-        AstContext** asts = Diag::getAllErrorFiles(&count);
-        for (int i = 0; i < count; i++) {
-            AstContext* ast = asts[i];
-            for (int j = 0; j < ast->errorCount; j++) {
-                IO::write(&stream, (ast->errors + j)->msg);
-            }
-        }
-    }
+    if (visualize) writeErrors();
 
     Diag::clear();
     Compiler::release();
+}
+
+inline void gPostCaseParser(bool visualize) {
+    if (visualize) writeErrors();
+
+    Diag::clear();
+    //Parser::release(parseContext);
+    Compiler::release();
+    parseContext = NULL;
 }
 
 
@@ -102,17 +122,9 @@ inline void gTestRunFail(const char* input, Test::TestArgument arg, Test::Result
     }
 }
 
-// AST Snapshot (AST is compared to a golden dump handled via test_core)
-inline void gTestSnapshotAst(const char* input, Test::TestArgument arg, Test::Result* result) {
-    FileSystem::Handle hnd = FileSystem::loadBuffer(Compiler::mainFile, input, FileSystem::Origins::USER_START);
-
-    Compiler::runFrontend(hnd);
-
-    Reg::Unit* unit = Reg::get(hnd);
-    Test::assertOrDie(unit != NULL && unit->ast != NULL);
-
-    if (arg.outStream) {
-        IO::Stream stream = { .kind = IO::Stream::SK_C_STREAM, .cstream = arg.outStream };
+inline void emitAst(FILE* fstream, Reg::Unit* unit) {
+    if (fstream) {
+        IO::Stream stream = { .kind = IO::Stream::SK_C_STREAM, .cstream = fstream };
         Emitter::Context ctx = {
             .userData = NULL,
             .style {
@@ -124,4 +136,28 @@ inline void gTestSnapshotAst(const char* input, Test::TestArgument arg, Test::Re
         };
         Emitter::driverDebug.emitUnit(&ctx, unit, &stream);
     }
+}
+
+// AST Snapshot (AST is compared to a golden dump handled via test_core)
+inline void gTestSnapshotAst(const char* input, Test::TestArgument arg, Test::Result* result) {
+    FileSystem::Handle hnd = FileSystem::loadBuffer(Compiler::mainFile, input, FileSystem::Origins::USER_START);
+
+    Compiler::runFrontend(hnd);
+
+    Reg::Unit* unit = Reg::get(hnd);
+    Test::assertOrDie(unit != NULL && unit->ast != NULL);
+
+    emitAst(arg.outStream, unit);
+}
+
+// AST Snapshot (AST is compared to a golden dump handled via test_core)
+inline void gTestSnapshotAstParser(const char* input, Test::TestArgument arg, Test::Result* result) {
+    FileSystem::Handle hnd = FileSystem::loadBuffer(Compiler::mainFile, input, FileSystem::Origins::USER_START);
+
+    Compiler::runFrontend(hnd, Compiler::FP_PARSE);
+
+    Reg::Unit* unit = Reg::get(hnd);
+    Test::assertOrDie(unit != NULL && unit->ast != NULL);
+
+    emitAst(arg.outStream, unit);
 }

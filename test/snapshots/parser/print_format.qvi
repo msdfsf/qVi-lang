@@ -1,0 +1,70 @@
+// =============================================================================
+// Parser snapshots: print_format
+// =============================================================================
+//
+// Scope: the print statement and format strings — doc.md 'Format Strings'.
+// Statement desugaring, '%'-directives, the full format block, the
+// '[#format]' annotation and '::print' rebinding. Malformed forms last.
+
+// print_statement
+"Hello, world!";              // no arguments
+"Hello, %v!" "world";         // one argument
+"Point: (%v, %v)" 1, 2;       // comma-separated arguments
+#test ""
+
+// print_shortcuts
+"%v" 42;       // value
+"%x" 255;      // hexadecimal
+"%b" 5;        // binary
+"%t" 1;        // type name
+"%r" "raw";    // raw bytes
+#test ""
+
+// print_blocks
+"Total: %{R+:0:8}" 42;     // options, indent and max width
+"Data: %{#}" 1;            // pretty-print
+"Hex: %{x::16}" 255;       // empty middle fields are fine
+"Val: %{::20}" 1;          // default value formatting with max width
+#test ""
+
+// print_escape
+"100%%";       // '%%' escapes the directive character
+"50%% of %v" 3;
+#test ""
+
+// format_qualifier
+printf: (fmt: [#format]u8, args: ...) {
+    t: i64 = 1;
+}
+logInfo: (level: i64, fmt: [#format]u8, args: ...) { }
+#test ""
+
+// format_qualifier_stacks
+a: [const][#format]u8;   // qualifier stacks with the format decorator
+b: [#format][const]u8;   // either order parses
+#test ""
+
+// print_rebind
+custom_logger: (fmt: [#format]u8, args: ...) {
+    t: i64 = 1;
+}
+setup: () {
+    ::print = custom_logger;   // all print statements route through the new pointer
+    "System booted at %v" 42;
+}
+#test ""
+
+// root_print_call
+::print("direct call", 42);   // the statement form desugars exactly to this
+#test ""
+
+// recovery_format_directive
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+"%" 1;         // a directive with no option character
+"%{}" 2;       // empty format block
+#test ""
+
+// recovery_format_qualifier
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+p: (fmt: [#foo]u8) { }   // unknown bracket directive recovers as a plain slice
+#test ""

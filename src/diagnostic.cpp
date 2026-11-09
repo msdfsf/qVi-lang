@@ -170,6 +170,10 @@ const char* const Err::str(Err code) { switch (code) {
         return "Invalid language tag!";
     case INVALID_FUNCTION_POINTER:
         return "Invalid function pointer type!";
+    case UNTERMINATED_STRING:
+        return "Unterminated string literal!";
+    case INVALID_CHAR_ENCODING:
+        return "Invalid character literal encoding!";
     default:
         return "Unknown error!";
 
@@ -273,7 +277,7 @@ namespace Diag {
                     int errStrLen;
                     char* errStr = Logger::getLastString(&errStrLen);
 
-                    err->msg.buff = (char*) nalloc(AT_ERROR_STRING, errStrLen + 1);
+                    err->msg.buff = alloc<char>(errStrLen + 1);
                     memcpy(err->msg.buff, errStr, errStrLen);
                     err->msg.buff[errStrLen] = '\0';
                     err->msg.len = errStrLen;

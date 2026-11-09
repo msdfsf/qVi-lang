@@ -26,11 +26,6 @@ namespace Parser {
         SE_STATEMENT = 1,
     };
 
-    struct FullToken {
-        Lex::Token token;
-        Lex::TokenValue value;
-    };
-
     struct End {
         Lex::TokenKind a;
         Lex::TokenKind b;
@@ -71,8 +66,17 @@ namespace Parser {
         ImportNode* importRoot;
 
         // Stacks and Buffers
+        // TODO: we need either custom data structure to handle both stack
+        //       or just use one dynamic array for both, so we pay some
+        //       fragmentation for less jumping around.
+        //       BUT first we need refactor parser and prepare benchmarks...
         DArray::Container nodeStack;
         DArray::Container defStack;
+
+        // We will push the offsets of each qualified name part here while parsing,
+        // so we can pack the offsets more tightly in the result object,
+        // as we will know their total size in advance.
+        DArray::Container qnameStack;
 
         // Counters and Indices
         int   idxInScope; // Track definition index in current scope
@@ -102,49 +106,55 @@ namespace Parser {
     Lex::Token parseForeignScope(ParseContext* ctx, Span* span);
 
     // Statements
-    Lex::Token parseBareStatement(ParseContext* ctx, Span* span, const Pos startPos, const End end);
+    Lex::Token parseBareStatement(ParseContext* ctx, Span* span);
     Lex::Token parseFreeStatement(ParseContext* ctx, Span* span);
     Lex::Token parseAllocStatement(ParseContext* ctx, Span* span);
-    Lex::Token parsePrintLiteral(ParseContext* ctx, Span* span, Lex::TokenValue* startTokenVal);
+    Lex::Token parseDeferStatement(ParseContext* ctx, Span* span);
+    Lex::Token parsePrintLiteral(ParseContext* ctx, Span* span, Lex::Token token, Lex::Value value);
 
-    Lex::Token parseLabel(ParseContext* ctx, Span* span, FullToken prev, NodeType nodeType, End end);
-    Lex::Token parseLabel(ParseContext* ctx, Span* span, QualifiedName* name, End end);
-    Lex::Token parseAssignment(ParseContext* ctx, Span* span, const Pos startPos, const End end);
-    Lex::Token parseVarDefinition(ParseContext* ctx, Span* span, FullToken prev, QualifiedName* name, const End end);
-    Lex::Token parseDefinitionAssignment(ParseContext* ctx, Span* span, FullToken prev, VariableDefinition* def, const End end, Flags flags);
+    Lex::Token parseLabel(ParseContext* ctx, Span* span, Lex::TokenEx tex, End end);
+    Lex::Token parseDeclarationBody(ParseContext* ctx, Span* span, QualifiedName* name, End end);
+    Lex::Token parseAssignment(ParseContext* ctx, Span* span, const End end);
+    Lex::Token parseVarDefinition(ParseContext* ctx, Span* span, Lex::TokenEx prev, QualifiedName* name, VariableDefinition* def, const End end);
+    Lex::Token parseQualifiedName(ParseContext* ctx, Span* span, Lex::TokenEx tex, QualifiedName* qname);
 
     // Types
-    Lex::Token parseDataType(ParseContext* ctx, Span* span, FullToken prev, Flags flags, TypeSpecifier* type);
-    Lex::Token parseTypeDecorators(ParseContext* ctx, Span* const span, TypeSpecifier* spec);
-    Lex::Token parseEnumDefinition(ParseContext* ctx, Span* span, QualifiedName* name);
-    Lex::Token parseTypeDefinition(ParseContext* ctx, Span* span, QualifiedName* name, Type::Kind kind);
     Lex::Token parseTypeInitialization(ParseContext* ctx, Span* span, TypeInitialization** out);
     Lex::Token parseArrayInitialization(ParseContext* ctx, Span* span, ArrayInitialization** out);
 
     // Control Flow
-    Lex::Token parseIfStatement(ParseContext* ctx, Span* span);
-    Lex::Token parseCaseStatement(ParseContext* ctx, Span* span);
-    Lex::Token parseLoop(ParseContext* ctx, Span* span);
+    Lex::Token parseIfStatement(ParseContext* ctx, Span* const span, QualifiedName* label, const bool compileTime);
+    Lex::Token parseCaseStatement(ParseContext* ctx, Span* span, INamedEx* label);
+    Lex::Token parseLoop(ParseContext* ctx, Span* span, INamedEx* label, const bool compileTime);
     Lex::Token parseBreakStatement(ParseContext* ctx, Span* span);
     Lex::Token parseContinueStatement(ParseContext* ctx, Span* span);
     Lex::Token parseReturnStatement(ParseContext* ctx, Span* span);
 
     // Expression / R-Value
-    Lex::Token parseExpression(ParseContext* ctx, Span* span, Variable** outVar, const Pos startPos, const End end, const Flags flags = NULL_FLAG);
-    Lex::Token parseExpression(ParseContext* ctx, Span* span, Variable* var, const Pos startPos, const End end, const Flags flags = NULL_FLAG);
+    Lex::Token parseExpression(ParseContext* ctx, Span* span, Variable** outVar, const End end, const Flags flags = NULL_FLAG);
+    Lex::Token parseExpression(ParseContext* ctx, Span* span, Variable* var, const End end, const Flags flags = NULL_FLAG);
     Lex::Token parseRValue(ParseContext* ctx, Span* span, Variable* outVar, const End end);
     Lex::Token parseCatch(ParseContext* ctx, Span* span, Variable* var);
-    Lex::Token parseRangeExpression(ParseContext* ctx, Span* span, End end, RangeExpression** range, Variable** outLeftExp);
+    Lex::Token parseRangeExpression(ParseContext* ctx, Span* span, End end, RangeExpression** range, Variable** outLeftExp, const bool allowOpenBounds = false);
+    Lex::Token parseExpressionNode(ParseContext* ctx, Span* const span, Lex::TokenEx tex, Variable* var, OperatorEnum prevOp = OP_NONE, bool parsePrefix = true);
 
     // Functions
-    Lex::Token parseFunction(ParseContext* ctx, Span* span, QualifiedName* name, Flags flags);
-    Lex::Token parseFunctionPointer(ParseContext* ctx, Span* span, FunctionPrototype** out);
+    Lex::Token parseParameterList(ParseContext* ctx, Span* const span, FunctionPrototype* out, Scope* paramScope);
+    Lex::Token parseFunctionSignature(ParseContext* ctx, Span* const span, FunctionPrototype* out, Scope* paramScope, QualifiedName** errorSetOut);
+    Lex::Token parseFunction(ParseContext* ctx, Span* span, QualifiedName* name);
+
+    // Composites
+    Lex::Token parseRecordExpression(ParseContext* ctx, Span* span, RecordExpression* record);
+    Lex::Token parseRecordItems(ParseContext* ctx, Span* span, RecordExpression* record);
+    Lex::Token parseEnumExpression(ParseContext* ctx, Span* span, EnumExpression* enumerator);
+    Lex::Token parseErrorSetBody(ParseContext* ctx, Span* span, ErrorSet* errorSet);
+    Lex::Token parseUsingStatement(ParseContext* ctx, Span* span);
 
     // Misc
     Lex::Token parseList(ParseContext* ctx, Span* span, Lex::TokenKind separator, Lex::TokenKind end);
-    Lex::Token parseError(ParseContext* ctx, Span* span);
     Lex::Token parseImport(ParseContext* ctx, Span* span);
-    Lex::Token parseDirective(ParseContext* ctx, Span* span, const Lex::Directive dir, Flags flags);
+    Lex::Token parseDirective(ParseContext* ctx, Span* span);
     Lex::Token parseLanguageTag(ParseContext* ctx, Span* span, String* tag);
 
+    int64_t parseStringLiteral(const char* const str, const int len, const int requestedAlign, StringInitialization** initOut);
 }

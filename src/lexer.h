@@ -230,6 +230,7 @@ namespace Lex {
         TK_SCOPE_LITERAL_BEGIN,  // ".{"
         TK_ARRAY_LITERAL_BEGIN,  // ".["
         TK_STRING_INFER,         // ".\"...\"", alternative to TK_STRING, spans the whole literal
+        TK_STRICT_CALL,          // "!("
         TK_VARIADIC,             // "..."
 
         TK_SKIP,
@@ -254,7 +255,8 @@ namespace Lex {
         TK_OP_MODULO,
         TK_OP_AND,
         TK_OP_OR,
-        TK_OP_XOR,
+        // TK_OP_XOR,
+        TK_OP_POINTER,
         TK_OP_NEGATION,
         TK_OP_SHIFT_RIGHT,
         TK_OP_SHIFT_LEFT,
@@ -279,7 +281,7 @@ namespace Lex {
     };
 
     constexpr TokenKind TK_LABEL_END = TK_STATEMENT_BEGIN;
-    constexpr TokenKind TK_POINTER = TK_OP_XOR;
+    constexpr TokenKind TK_OP_XOR = TK_OP_NEGATION;
     constexpr TokenKind TK_ADDRESS = TK_OP_AND;
     constexpr TokenKind TK_ARRAY_BEGIN = TK_OP_SUBSCRIPT;
     constexpr TokenKind TK_THE_REST = TK_OP_CONCATENATION;
@@ -326,6 +328,8 @@ namespace Lex {
     void init();
     void release();
 
+    TokenEx currentToken();
+
     // 'try' functions will not commit changes to span if token is not found
     TokenEx tryToken  (Span* const span, Token token);
     TokenEx tryKeyword(Span* const span, Keyword keyword);
@@ -333,6 +337,7 @@ namespace Lex {
     // 'peek' functions will not commit changes to span
     TokenEx peekToken   (Span* const span);
     TokenEx peekNthToken(Span* const span, const uint32_t n);
+    TokenEx peekTokenAfterQualifiedName(Span* const span);
 
     // 'sync' functions will search the input stream for the first occurrence
     // of any specified token. It skips all preceding tokens and commits changes
@@ -340,6 +345,8 @@ namespace Lex {
     TokenEx syncToken(Span* const span, const Token tokenA,     const Token tokenB,        const bool stopOnNewline = false);
     TokenEx syncToken(Span* const span, const Token* tokens,    const uint32_t tokenCount, const bool stopOnNewline = false);
     TokenEx syncToken(Span* const span, const TokenKind tokenA, const TokenKind tokenB,    const bool stopOnNewline = false);
+
+    void rollback(Span* const span);
 
     TokenCore lookupKeyword  (const char* str, int len);
     TokenCore lookupDirective(const char* str, int len);
@@ -402,7 +409,7 @@ namespace Lex {
 
             case TK_OP_PLUS             : return OP_UNARY_PLUS;
             case TK_OP_MINUS            : return OP_UNARY_MINUS;
-            case TK_POINTER             : return OP_GET_VALUE;
+            // case TK_OP_POINTER          : return OP_GET_VALUE;
             case TK_ADDRESS             : return OP_GET_ADDRESS;
             case TK_OP_NEGATION         : return OP_BITWISE_NEGATION;
             case TK_OP_BOOL_NEGATION    : return OP_NEGATION;
@@ -414,8 +421,13 @@ namespace Lex {
     inline OperatorEnum toPostfixOperator(Token val) {
         switch (val.kind) {
             case TK_OP_SUBSCRIPT        : return OP_SUBSCRIPT;
+            case TK_OP_POINTER          : return OP_GET_VALUE; // postfix 'p^' dereferences
             case TK_PARENTHESIS_BEGIN   : return OP_CALL;
+            case TK_STRICT_CALL         : return OP_CALL_STRICT;
             case TK_OP_MEMBER_SELECTION : return OP_MEMBER_SELECTION;
+            case TK_SCOPE_LITERAL_BEGIN : return OP_INIT_STRUCT;
+            case TK_ARRAY_LITERAL_BEGIN : return OP_INIT_ARRAY;
+            case TK_STRING_INFER        : return OP_INIT_STRING;
             default                     : return OP_NONE;
         }
     }
@@ -442,7 +454,7 @@ namespace Lex {
             case TK_OP_AND                      : return OP_BITWISE_AND;
             case TK_OP_OR                       : return OP_BITWISE_OR;
             case TK_OP_XOR                      : return OP_BITWISE_XOR;
-            case TK_OP_NEGATION                 : return OP_BITWISE_NEGATION;
+            // case TK_OP_NEGATION                 : return OP_BITWISE_NEGATION;
             case TK_OP_SHIFT_RIGHT              : return OP_SHIFT_RIGHT;
             case TK_OP_SHIFT_LEFT               : return OP_SHIFT_LEFT;
             case TK_ARRAY_BEGIN                 : return OP_SUBSCRIPT;

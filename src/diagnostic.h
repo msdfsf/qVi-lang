@@ -89,7 +89,9 @@ namespace Err {
         UNEXPECTED_KEYWORD              = -75,
         INVALID_LANGUAGE_TAG            = -76,
         INVALID_FUNCTION_POINTER        = -77,
-        COUNT                           = 77,
+        UNTERMINATED_STRING             = -78,
+        INVALID_CHAR_ENCODING           = -79,
+        COUNT                           = 79,
     };
     const char* const str(Err code);
     bool isFatal(Err err);

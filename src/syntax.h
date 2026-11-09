@@ -70,12 +70,12 @@ struct Catch;
 struct Alloc;
 struct Free;
 struct Using;
+struct DeferStatement;
 
 struct ScopeName;
 
 struct IForeignCode;
 struct CodeBlock;
-struct ForeignFunction;
 struct LangDef;
 
 struct TypeDefinition;
@@ -108,7 +108,8 @@ namespace Extern {
 
 typedef int AllocType;
 
-enum NodeType : AllocType {
+enum NodeType : uint8_t {
+    NT_NONE = 0,
     NT_SCOPE,
     NT_VARIABLE_DEFINITION,
     NT_VARIABLE_ASSIGNMENT,
@@ -132,33 +133,8 @@ enum NodeType : AllocType {
     NT_UNION,
     NT_USING,
     NT_IMPORT,
+    NT_DEFER,
     NT_COUNT
-};
-
-enum AllocExType : AllocType {
-    AT_BYTE = NT_COUNT,
-    AT_EXT_FUNCTION_CALL,
-    AT_EXT_OPERATION,
-    AT_EXT_UNARY,
-    AT_EXT_BINARY,
-    AT_EXT_TERNARY,
-    AT_EXT_RANGE,
-    AT_EXT_TYPE_INITIALIZATION,
-    AT_EXT_STRING_INITIALIZATION,
-    AT_EXT_ARRAY_INITIALIZATION,
-    AT_EXT_CATCH,
-    AT_EXT_CAST,
-    AT_EXT_ALLOC,
-    AT_EXT_FREE,
-    AT_EXT_GET_LENGTH,
-    AT_EXT_GET_SIZE,
-    AT_INAMED,
-    AT_QUALIFIED_NAME,
-    AT_FUNCTION_PROTOTYPE,
-    AT_FOREIGN_FUNCTION,
-    AT_TYPE_SPECIFIER,
-    AT_ERROR_STRING,
-    AT_COUNT
 };
 
 enum ScopeType {
@@ -166,12 +142,25 @@ enum ScopeType {
     SC_COMMON = 0
 };
 
-enum ExpressionType {
-    EXT_FUNCTION_CALL = AT_EXT_FUNCTION_CALL,
+enum StructFlag {
+    SF_PACKED  = 1 << 0,
+    SF_REORDER = 1 << 1,
+
+    // Import-builder form: 'as Target: struct [#packed];'
+    SF_BUILDER = 1 << 2
+};
+
+enum ExpressionType : uint8_t {
+    EXT_NONE = 0,
+    EXT_FUNCTION_CALL,
     EXT_OPERATION,
     EXT_UNARY,
     EXT_BINARY,
     EXT_TERNARY,
+    EXT_TYPE,
+    EXT_STRUCT,
+    EXT_UNION,
+    EXT_ENUM,
     EXT_RANGE,
     EXT_TYPE_INITIALIZATION,
     EXT_STRING_INITIALIZATION,
@@ -182,6 +171,16 @@ enum ExpressionType {
     EXT_FREE,
     EXT_GET_LENGTH,
     EXT_GET_SIZE,
+
+    // Type-decorator expressions (types are values)
+    EXT_POINTER_TYPE,
+    EXT_ARRAY_TYPE,
+    EXT_SLICE_TYPE,
+    EXT_FUNCTION_TYPE,
+    EXT_QUALIFIER_TYPE,
+
+    // Anonymous error set used as a type value: 'error { A; B; }'
+    EXT_ERROR_SET,
 };
 
 enum ExpressionQualifier {
@@ -283,6 +282,11 @@ struct Namespace {
 struct Using {
     SyntaxNode  base;
     SyntaxNode* var; // node that is being included
+
+    QualifiedName* ref = NULL;
+
+    // Optional
+    INamed label = {};
 };
 
 // used for interoperability to keep code of the foreign language
@@ -297,6 +301,7 @@ struct CodeBlock {
     IForeignCode code;
 };
 
+// TODO: deprecate
 struct Enumerator {
     SyntaxNode base;
     INamedEx   name;
@@ -329,6 +334,8 @@ struct Value {
         double_t    f64;
 
         char*       str;
+
+        Type::TypeInfo* tval;
 
         Expression* exp;
         ArrayInitialization*  aex;
@@ -370,6 +377,16 @@ struct TernaryExpression {
     Variable* falseExp;
 };
 
+struct EnumExpression {
+    Expression base;
+
+    Variable** members;
+    uint32_t   memberCount;
+
+    Type::TypeInfo* memberType;
+    Type::TypeInfo* type;
+};
+
 struct RangeExpression {
     Expression base;
 
@@ -389,6 +406,8 @@ struct TypeInitialization {
     // to fill the rest of the attributes with the same value
     // if NULL then no filling
     Variable* fillVar;
+
+    Variable* literalBase = NULL;
 };
 
 struct FormatStringDescriptor {
@@ -430,6 +449,8 @@ struct ArrayInitialization {
     Flags      flags;
     Variable** attributes;
     uint32_t   attributeCount;
+
+    Variable* literalBase = NULL;
 };
 
 struct Catch {
@@ -475,7 +496,7 @@ struct GetSize {
 static_assert(sizeof(GetSize) <= sizeof(BinaryExpression),
               "GetLength exceeded size of BinaryExpression");
 
-// Represents a single decorator applied to a type (*, [10], [const], ...)
+// Represents a single decorator applied to a type (^, [10], [const], ...)
 struct TypeDecorator {
     enum Kind {
         DEC_POINTER,
@@ -489,7 +510,10 @@ struct TypeDecorator {
     Variable* len;
 };
 
-struct TypeSpecifier {
+// DEPRECATED: the old type model.
+struct TypeSpecification {
+    Expression base;
+
     Type::Kind      baseType;
     Type::Qualifier qualifier;
 
@@ -508,11 +532,42 @@ struct TypeSpecifier {
     uint32_t        decoratorCount;
 };
 
+using TypeSpecifier = TypeSpecification; // DEPRECATED alias
+
+struct PointerTypeExpression {
+    Expression base;
+    Variable*  operand;
+};
+
+struct ArrayTypeExpression {
+    Expression base;
+    Variable*  length;
+    Variable*  element;
+};
+
+struct SliceTypeExpression {
+    Expression base;
+    uint64_t   flags;
+    Variable*  element;
+};
+
+struct FunctionTypeExpression {
+    Expression base;
+    FunctionPrototype* fcn;
+};
+
+struct QualifierTypeExpression {
+    Expression base;
+    Type::Qualifier qualifier;
+    Variable*  operand;
+};
+
 struct VariableDefinition {
     SyntaxNode base;
 
-    Variable*     var; // it may be enough
-    TypeSpecifier type;
+    Variable*   var;
+    Variable*   typeValue;  // NEW: change to type when 'type' gets deleted
+    TypeSpecifier type;     // DEPRECATED
 
     // local offset in vm
     uint64_t vmOffset;
@@ -523,6 +578,9 @@ struct VariableAssignment {
     SyntaxNode base;
     Variable*  lvar;
     Variable*  rvar;
+
+    // compound assignment operator like '+=', '<<=', ...
+    OperatorEnum op = OP_NONE;
 };
 
 struct Variable {
@@ -549,14 +607,11 @@ struct FunctionPrototype {
     uint32_t inArgCount;
 };
 
+// TODO: Its too fatty
 struct Function {
     SyntaxNode base;
     FunctionPrototype prototype;
     INamedEx name;
-
-    // TODO : not sure we need this
-    ReturnStatement** returns;
-    uint32_t returnCount;
 
     Scope* bodyScope;
 
@@ -570,17 +625,17 @@ struct Function {
     Extern::LibraryHandle lib;
     void* externAddress;
 
+    IForeignCode code;
+
     // TODO: name
     Ast::Internal::FunctionType internalIdx; // if it is > 0, then its internal function, and value represents unique id, otherwise should be ignored ***** TODO : for now value: -1 is used as identifer to not render function, fix it later *****
 };
 
-struct ForeignFunction {
-    Function     fcn;
-    IForeignCode code;
-};
-
 struct FunctionCall {
-    Expression    base;
+    Expression base;
+
+    bool isStrict;
+
     QualifiedName name;
 
     Function*  fcn;
@@ -628,6 +683,9 @@ struct SwitchCase {
     uint32_t sortedCount;
 
     CaseStrategy strategy;
+
+    // Optional
+    INamed label = {};
 };
 
 struct Loop {
@@ -658,6 +716,9 @@ struct Loop {
         Variable*           var;
         VariableDefinition* def;
     } index;
+
+    // Optional
+    INamed label = {};
 };
 
 struct ReturnStatement {
@@ -680,6 +741,11 @@ struct BreakStatement {
     SyntaxNode* target;
 };
 
+struct DeferStatement {
+    SyntaxNode  base;
+    SyntaxNode* body;
+};
+
 struct GotoStatement {
     SyntaxNode base;
     INamed     name;
@@ -694,6 +760,20 @@ struct Label {
     uint64_t   vmAddress;
 };
 
+struct RecordExpression {
+    Expression base;
+
+    SyntaxNode** fields;
+    uint32_t     fieldCount;
+
+    uint32_t flags; // ex, [#packed], [#reorder]
+
+    // struct (T : type) { ... }
+    VariableDefinition** params    = NULL;
+    uint32_t             paramCount = 0;
+};
+
+// TODO: deprecate
 struct TypeDefinition {
     SyntaxNode base;
     INamedEx   name;
@@ -707,7 +787,7 @@ struct TypeDefinition {
     uint32_t             varCount;
 };
 
-// TODO : unite under TypeDefinition?
+// TODO: deprecate
 struct Union {
     TypeDefinition base;
 };
@@ -719,6 +799,12 @@ struct ErrorSet {
     uint64_t   value;
     Variable** vars;
     uint32_t   varCount;
+};
+
+// Expression wrapper so an anonymous error set can live in a type-value slot.
+struct ErrorSetExpression {
+    Expression base;
+    ErrorSet*  set;
 };
 
 struct LangDef {
@@ -782,7 +868,6 @@ struct AstRegistry {
             DArray::Container namespaces;
             DArray::Container langDefs;
             DArray::Container codeBlocks;
-            DArray::Container foreignFunctions;
             DArray::Container variables;
             DArray::Container fcnCalls;
             DArray::Container fcns;
@@ -876,7 +961,6 @@ namespace Ast {
         void init(VariableAssignment* node);
         void init(Variable* node);
         void init(Function* node);
-        void init(ForeignFunction* node);
         void init(Branch* node);
         void init(SwitchCase* node);
         void init(Loop* node);
@@ -888,18 +972,28 @@ namespace Ast {
         void init(TypeDefinition* node);
         void init(Union* node);
         void init(ErrorSet* node);
+        void init(ErrorSetExpression* node);
         void init(ImportStatement* node);
+        void init(DeferStatement* node);
 
         void init(FunctionCall* node);
         void init(OperationExpression* node);
         void init(UnaryExpression* node);
         void init(BinaryExpression* node);
         void init(TernaryExpression* node);
+        void init(RecordExpression* node);
+        void init(EnumExpression* node);
         void init(RangeExpression* node);
         void init(Catch* node);
         void init(Cast* node);
         void init(Alloc* node);
         void init(Free* node);
+
+        void init(PointerTypeExpression* node);
+        void init(ArrayTypeExpression* node);
+        void init(SliceTypeExpression* node);
+        void init(FunctionTypeExpression* node);
+        void init(QualifierTypeExpression* node);
 
         void init(FunctionPrototype* node);
         void init(ArrayInitialization* node);
@@ -918,7 +1012,6 @@ namespace Ast {
         VariableAssignment* makeVariableAssignment();
         Variable*           makeVariable();
         Function*           makeFunction();
-        ForeignFunction*    makeForeignFunction();
         Branch*             makeBranch();
         SwitchCase*         makeSwitchCase();
         Loop*               makeLoop();
@@ -930,18 +1023,28 @@ namespace Ast {
         TypeDefinition*     makeTypeDefinition();
         Union*              makeUnion();
         ErrorSet*           makeErrorSet();
+        ErrorSetExpression* makeErrorSetExpression();
         ImportStatement*    makeImportStatement();
+        DeferStatement*     makeDeferStatement();
 
         FunctionCall*        makeFunctionCall();
         OperationExpression* makeOperationExpression();
         UnaryExpression*     makeUnaryExpression();
         BinaryExpression*    makeBinaryExpression();
         TernaryExpression*   makeTernaryExpression();
+        RecordExpression*    makeRecordExpression();
+        EnumExpression*      makeEnumExpression();
         RangeExpression*     makeRangeExpression();
         Catch*               makeCatch();
         Cast*                makeCast();
         Alloc*               makeAlloc();
         Free*                makeFree();
+
+        PointerTypeExpression*   makePointerTypeExpression();
+        ArrayTypeExpression*     makeArrayTypeExpression();
+        SliceTypeExpression*     makeSliceTypeExpression();
+        FunctionTypeExpression*  makeFunctionTypeExpression();
+        QualifierTypeExpression* makeQualifierTypeExpression();
 
         FunctionPrototype*    makeFunctionPrototype();
         ArrayInitialization*  makeArrayInitialization();
@@ -960,7 +1063,6 @@ namespace Ast {
         VariableAssignment* copy(VariableAssignment* node);
         Variable*           copy(Variable* node);
         Function*           copy(Function* node);
-        ForeignFunction*    copy(ForeignFunction* node);
         Branch*             copy(Branch* node);
         SwitchCase*         copy(SwitchCase* node);
         Loop*               copy(Loop* node);
@@ -1012,7 +1114,6 @@ namespace Ast {
         Using*              inArray(Using**              arr, uint32_t len, String* name);
         ImportStatement*    inArray(ImportStatement**    arr, uint32_t len, String* name);
         CodeBlock*          inArray(CodeBlock**          arr, uint32_t len, String* name);
-        ForeignFunction*    inArray(ForeignFunction**    arr, uint32_t len, String* name);
         VariableDefinition* inArray(VariableDefinition** arr, uint32_t len, String* name);
 
         // And 'full' functions that can be used to get the index. In fact, these alone
@@ -1030,7 +1131,6 @@ namespace Ast {
         int inArray(Using**              arr, uint32_t len, String* name, Using** out);
         int inArray(ImportStatement**    arr, uint32_t len, String* name, ImportStatement** out);
         int inArray(CodeBlock**          arr, uint32_t len, String* name, CodeBlock** out);
-        int inArray(ForeignFunction**    arr, uint32_t len, String* name, ForeignFunction** out);
         int inArray(VariableDefinition** arr, uint32_t len, String* name, VariableDefinition** out);
 
         Variable*       inScopeVariable       (Scope* scope, String* name);
@@ -1077,99 +1177,6 @@ namespace Ast {
     };
 
 };
-
-
-
-// ======================================
-// NODE ALLOCATOR
-// ===
-
-constexpr int nodeTypeSize[AT_COUNT] = {
-    sizeof(Scope),
-    sizeof(VariableDefinition),
-    sizeof(VariableAssignment),
-    sizeof(TypeDefinition),
-    sizeof(TypeInitialization),
-    sizeof(Enumerator),
-    sizeof(Variable),
-    sizeof(Function),
-    sizeof(Branch),
-    sizeof(SwitchCase),
-    sizeof(Loop),
-    sizeof(ReturnStatement),
-    sizeof(ContinueStatement),
-    sizeof(BreakStatement),
-    sizeof(GotoStatement),
-    sizeof(Label),
-    sizeof(Namespace),
-    sizeof(Statement),
-    sizeof(CodeBlock),
-    sizeof(ErrorSet),
-    sizeof(Union),
-    sizeof(Using),
-    sizeof(ImportStatement),
-
-    sizeof(uint8_t),
-
-    sizeof(FunctionCall),
-    sizeof(OperationExpression),
-    sizeof(UnaryExpression),
-    sizeof(BinaryExpression),
-    sizeof(TernaryExpression),
-    sizeof(RangeExpression),
-    sizeof(TypeInitialization),
-    sizeof(StringInitialization),
-    sizeof(ArrayInitialization),
-    sizeof(Catch),
-    sizeof(Cast),
-    sizeof(Alloc),
-    sizeof(Free),
-    sizeof(GetLength),
-    sizeof(GetSize),
-
-    sizeof(INamed),
-    sizeof(QualifiedName),
-    sizeof(FunctionPrototype),
-    sizeof(ForeignFunction),
-    sizeof(TypeSpecifier),
-
-    sizeof(char)
-};
-
-// This is more specific version of the allocator to handle allocations
-// of nodes defined here, so there is an abstraction how each node type
-// is handled.
-// Look at allocator.h to for the 'actual' allocator that this is based on
-// TODO: shall we deprecate? YES
-#if !defined(_CUSTOM_ALLOCATOR_)
-
-    inline void nallocInit() {
-    }
-
-    inline void nallocRelease() {
-    }
-
-    inline void* nalloc(AllocType type) {
-        return alloc(nodeTypeSize[type], alignof(std::max_align_t));
-    }
-
-    inline void* nalloc(AllocType type, size_t count) {
-        return alloc(nodeTypeSize[type] * count, alignof(std::max_align_t));
-    }
-
-    inline void ndealloc(void* ptr) {
-    }
-
-#else
-
-    extern void nallocInit();
-    extern void nallocRelease();
-
-    extern void* nalloc   (AllocType type);
-    extern void* nalloc   (AllocType type, size_t count);
-    extern void  ndealloc (void* ptr);
-
-#endif
 
 
 

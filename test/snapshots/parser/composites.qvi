@@ -1,0 +1,128 @@
+// =============================================================================
+// Parser snapshots: composites
+// =============================================================================
+//
+// Scope: struct and union types — doc.md 'Structs', 'Unions', 'Composition'
+// and 'Generics'. ':=' definitions, defaults, nested types, layout
+// annotations, literal forms, composition via 'using', parameterized type
+// constructors. Legacy and malformed forms last.
+
+// struct_definition
+Vec2 := struct {
+    x: i64 = 0;   // field with a default initializer
+    y: i64 = 0;
+};
+v: Vec2;
+Entity := struct {
+    id: u64;        // uninitialized field
+    health: i64 = 100;
+};
+e: Entity;
+#test ""
+
+// struct_anonymous
+vec2: struct { a: i64; b: i64; };   // a variable of an anonymous struct type
+vec2.a = 1;
+#test ""
+
+// nested_types
+Entity := struct {
+    Kind := enum u8 { Player, Enemy, Npc, };   // nested type definition
+    id: u64;
+    kind: Kind = Kind::Enemy;                  // defaults may use nested members
+};
+k: Entity::Kind = Entity::Kind::Npc;   // nested types are scoped with '::'
+#test ""
+
+// struct_annotations
+Raw := struct '#packed' { magic: u32; kind: u16; };    // no padding bytes
+Opt := struct '#reorder' { a: u8; big: i64; b: u8; };  // compiler may reorder
+Both := struct '#packed', '#reorder' { a: u8; b: i64; }; // reorder first, pack after
+#test ""
+
+// struct_empty_vs_builder
+Empty := struct { };   // explicit empty body
+Builder := struct;     // import-builder form, body comes from the imported file
+e: Empty;
+#test ""
+
+// generic_container
+Buffer := struct(T : type) {   // generic parameter used inside a field decorator
+    data: [4]T;
+};
+b: Buffer(i64);
+#test ""
+
+// struct_literals
+P := struct { x: i64; y: i64; };
+p1: P = .{ x: 1 };            // inferred literal, rest defaults
+p2: P = P.{ x: 2, y: 3 };     // typed literal
+p3: P = .{ .x = 4, .y = 5 };  // invalid
+pos: P = .{ 6, 7 };           // positional
+p4: P = .{ x: 8, ..: 0 };     // rest defaults fill the remainder
+p5: P = .{};                  // everything defaulted
+#test ""
+
+// using_flattening
+Vec2 := struct { x: i64 = 0; y: i64 = 0; };
+Vec3 := struct {
+    using Vec2;   // fields of Vec2 flatten into Vec3
+    z: i64 = 0;
+};
+Player := struct {
+    using transform: Vec3;   // named base keeps grouped access
+    health: i64;
+};
+v3: Vec3 = .{ x: 1, y: 2, z: 3 };
+v3.x = 10;   // flattened access
+p: Player = default(_);
+p.transform = default(_);   // grouped access
+#test ""
+
+// union_standalone
+Value := union {
+    as_int: i64;
+    as_float: f64;
+    as_bytes: [8]u8;
+};
+u: Value;
+#test ""
+
+// union_anonymous
+Packet := struct {
+    id: u32;
+    union {                    // anonymous union, members overlap at offset 0
+        movement: i64;
+        raw_data: [8]u8;
+    };
+    checksum: u32;
+};
+pkt: Packet = .{ id: 1 };
+first: u8 = pkt.raw_data[0];   // union members act like parent fields
+#test ""
+
+// generic_struct
+Vec2 := struct(T: type) {   // parameterized type constructor sugar
+    x: T;
+    y: T;
+};
+v1: Vec2(i32);
+v2: Vec2(f32) = .{ x: 1.0, y: 2.5 };
+#test ""
+
+// generic_type_function
+MakePair: (T: type) -> type {   // explicit function returning a type
+    return struct {
+        first: T;
+        second: T;
+    };
+}
+PairI := MakePair(i64);
+pi: PairI;
+#test ""
+
+// recovery_unclosed_struct
+S := struct {
+    x: i64;
+ok: i64 = 1;   // anchor statement, the swallow below must not eat it
+#test ""

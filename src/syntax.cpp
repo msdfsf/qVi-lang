@@ -93,14 +93,14 @@ void Ast::init() {
 
     fPrintf->prototype.inArgs = alloc<VariableDefinition*>(2);
 
-    VariableDefinition* fPrintArg1 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
-    fPrintArg1->var = (Variable*) nalloc(NT_VARIABLE);
+    VariableDefinition* fPrintArg1 = alloc<VariableDefinition>();
+    fPrintArg1->var = alloc<Variable>();
     fPrintArg1->var->base.scope = SyntaxNode::root;
     fPrintArg1->var->value.type = Type::makeSlice(Type::basicTypes + Type::DT_U8, IS_CONST);
     fPrintArg1->var->value.hasValue = 0;
 
-    VariableDefinition* fPrintArg2 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
-    fPrintArg2->var = (Variable*) nalloc(NT_VARIABLE);
+    VariableDefinition* fPrintArg2 = alloc<VariableDefinition>();
+    fPrintArg2->var = alloc<Variable>();
     fPrintArg2->var->base.scope = SyntaxNode::root;
     fPrintArg2->var->value.type = Type::getInfo(Type::DT_MULTIPLE_TYPES);
     fPrintArg2->var->value.hasValue = 0;
@@ -122,8 +122,8 @@ void Ast::init() {
 
     fAlloc->prototype.inArgs = alloc<VariableDefinition*>();
 
-    VariableDefinition* fAllocArg1 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
-    fAllocArg1->var = (Variable*) nalloc(NT_VARIABLE);
+    VariableDefinition* fAllocArg1 = alloc<VariableDefinition>();
+    fAllocArg1->var = alloc<Variable>();
     fAllocArg1->var->base.scope = SyntaxNode::root;
     fAllocArg1->var->value.type = Type::basicTypes + Type::DT_U64;
 
@@ -143,8 +143,8 @@ void Ast::init() {
 
     fFree->prototype.inArgs = alloc<VariableDefinition*>(2);
 
-    VariableDefinition* fFreeArg1 = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
-    fFreeArg1->var = (Variable*) nalloc(NT_VARIABLE);
+    VariableDefinition* fFreeArg1 = alloc<VariableDefinition>();
+    fFreeArg1->var = alloc<Variable>();
     fFreeArg1->var->base.scope = SyntaxNode::root;
     fFreeArg1->var->value.type = Type::basicTypes + Type::DT_POINTER;
 
@@ -164,7 +164,7 @@ void Ast::init() {
     vNull->name.len = sizeof(Internal::IVS_NULL) - 1;
     vNull->base.flags = IS_CMP_TIME;
 
-    VariableDefinition* vNullDef = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
+    VariableDefinition* vNullDef = alloc<VariableDefinition>();
     vNullDef->var = vNull;
 
 
@@ -180,7 +180,7 @@ void Ast::init() {
     vTrue->name.len = sizeof(Internal::IVS_TRUE) - 1;
     vTrue->base.flags = IS_CMP_TIME;
 
-    VariableDefinition* vTrueDef = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
+    VariableDefinition* vTrueDef = alloc<VariableDefinition>();
     vTrueDef->var = vTrue;
 
 
@@ -196,7 +196,7 @@ void Ast::init() {
     vFalse->name.len = sizeof(Internal::IVS_FALSE) - 1;
     vFalse->base.flags = IS_CMP_TIME;
 
-    VariableDefinition* vFalseDef = (VariableDefinition*) nalloc(NT_VARIABLE_DEFINITION);
+    VariableDefinition* vFalseDef = alloc<VariableDefinition>();
     vFalseDef->var = vFalse;
 
 }
@@ -836,7 +836,6 @@ _defineInArray(Label, name);
 _defineInArray(GotoStatement, name);
 _defineInArray(ImportStatement, fname);
 _defineInArray(CodeBlock, code.tagStr);
-_defineInArray(ForeignFunction, fcn.name);
 
 _defineInArrayIdx(Variable, name);
 _defineInArrayIdx(Function, name);
@@ -849,7 +848,6 @@ _defineInArrayIdx(Label, name);
 _defineInArrayIdx(GotoStatement, name);
 _defineInArrayIdx(ImportStatement, fname);
 _defineInArrayIdx(CodeBlock, code.tagStr);
-_defineInArrayIdx(ForeignFunction, fcn.name);
 _defineInArrayIdxPtr(VariableDefinition, Variable, var, name);
 
 _defineInScope(Variable, NT_VARIABLE);
@@ -864,8 +862,8 @@ _defineInScope(GotoStatement, NT_GOTO_STATEMENT);
 
 
 
-#define _defineMake(T, E) T* Ast::Node::make##T() { \
-    T* node = (T*) nalloc(E); \
+#define _defineMake(T) T* Ast::Node::make##T() { \
+    T* node = (T*) alloc<T>(); \
     init(node); \
     return node; \
 } \
@@ -896,28 +894,29 @@ void Ast::Node::init(Scope* node) {
     ::init(&node->base);
     node->base.type = NT_SCOPE;
 }
-_defineMake(Scope, NT_SCOPE);
+_defineMake(Scope);
 
 void Ast::Node::init(Namespace* node) {
     init(&node->scope);
     ::init(&node->name);
     node->scope.base.type = NT_NAMESPACE;
 }
-_defineMake(Namespace, NT_NAMESPACE);
+_defineMake(Namespace);
 
 void Ast::Node::init(Using* node) {
     node->var = NULL;
+    node->label = {};
     ::init(&node->base);
     node->base.type = NT_USING;
 }
-_defineMake(Using, NT_USING);
+_defineMake(Using);
 
 void Ast::Node::init(CodeBlock* node) {
     ::init(&node->code);
     ::init(&node->base);
     node->base.type = NT_CODE_BLOCK;
 }
-_defineMake(CodeBlock, NT_CODE_BLOCK);
+_defineMake(CodeBlock);
 
 void Ast::Node::init(Enumerator* node) {
     node->memberType = Type::basicTypes + Type::DT_VOID;
@@ -928,14 +927,14 @@ void Ast::Node::init(Enumerator* node) {
     ::init(&node->base);
     node->base.type = NT_ENUMERATOR;
 }
-_defineMake(Enumerator, NT_ENUMERATOR);
+_defineMake(Enumerator);
 
 void Ast::Node::init(Statement* node) {
     node->operand = NULL;
     ::init(&node->base);
     node->base.type = NT_STATEMENT;
 }
-_defineMake(Statement, NT_STATEMENT);
+_defineMake(Statement);
 
 void Ast::Node::init(VariableDefinition* node) {
     node->var = makeVariable();
@@ -945,7 +944,7 @@ void Ast::Node::init(VariableDefinition* node) {
     Ast::Node::init(&node->type);
     node->base.type = NT_VARIABLE_DEFINITION;
 }
-_defineMake(VariableDefinition, NT_VARIABLE_DEFINITION);
+_defineMake(VariableDefinition);
 
 void Ast::Node::init(VariableAssignment* node) {
     node->lvar = NULL;
@@ -953,7 +952,7 @@ void Ast::Node::init(VariableAssignment* node) {
     ::init(&node->base);
     node->base.type = NT_VARIABLE_ASSIGNMENT;
 }
-_defineMake(VariableAssignment, NT_VARIABLE_ASSIGNMENT);
+_defineMake(VariableAssignment);
 
 void Ast::Node::init(Variable* node) {
     ::init(&node->base);
@@ -963,15 +962,14 @@ void Ast::Node::init(Variable* node) {
     node->value = { 0 };
     node->name = { 0 };
 }
-_defineMake(Variable, NT_VARIABLE);
+_defineMake(Variable);
 
 void Ast::Node::init(Function* node) {
     node->bodyScope = NULL;
     node->errorSet = NULL;
     node->errorSetName = NULL;
     node->internalIdx = Internal::IF_NONE;
-    node->returns = NULL;
-    node->returnCount = 0;
+    node->code = {};
 
     ::init(&node->name);
     init(&node->prototype);
@@ -979,13 +977,7 @@ void Ast::Node::init(Function* node) {
     node->base.flags |= IS_UNORDERED;
     node->base.type = NT_FUNCTION;
 }
-_defineMake(Function, NT_FUNCTION);
-
-void Ast::Node::init(ForeignFunction* node) {
-    ::init(&node->code);
-    init(&node->fcn);
-}
-_defineMake(ForeignFunction, NT_FUNCTION);
+_defineMake(Function);
 
 void Ast::Node::init(Branch* node) {
     node->expressions = NULL;
@@ -996,7 +988,7 @@ void Ast::Node::init(Branch* node) {
     ::init(&node->base);
     node->base.type = NT_BRANCH;
 }
-_defineMake(Branch, NT_BRANCH);
+_defineMake(Branch);
 
 void Ast::Node::init(SwitchCase* node) {
     node->elseCase = NULL;
@@ -1009,7 +1001,7 @@ void Ast::Node::init(SwitchCase* node) {
     ::init(&node->base);
     node->base.type = NT_SWITCH_CASE;
 }
-_defineMake(SwitchCase, NT_SWITCH_CASE);
+_defineMake(SwitchCase);
 
 void Ast::Node::init(Loop* node) {
     node->arg.exp = NULL;
@@ -1019,7 +1011,7 @@ void Ast::Node::init(Loop* node) {
     ::init(&node->base);
     node->base.type = NT_LOOP;
 }
-_defineMake(Loop, NT_LOOP);
+_defineMake(Loop);
 
 void Ast::Node::init(ReturnStatement* node) {
     node->err = NULL;
@@ -1029,19 +1021,19 @@ void Ast::Node::init(ReturnStatement* node) {
     ::init(&node->base);
     node->base.type = NT_RETURN_STATEMENT;
 }
-_defineMake(ReturnStatement, NT_RETURN_STATEMENT);
+_defineMake(ReturnStatement);
 
 void Ast::Node::init(ContinueStatement* node) {
     ::init(&node->base);
     node->base.type = NT_CONTINUE_STATEMENT;
 }
-_defineMake(ContinueStatement, NT_CONTINUE_STATEMENT);
+_defineMake(ContinueStatement);
 
 void Ast::Node::init(BreakStatement* node) {
     ::init(&node->base);
     node->base.type = NT_BREAK_STATEMENT;
 }
-_defineMake(BreakStatement, NT_BREAK_STATEMENT);
+_defineMake(BreakStatement);
 
 void Ast::Node::init(GotoStatement* node) {
     node->label = NULL;
@@ -1050,7 +1042,7 @@ void Ast::Node::init(GotoStatement* node) {
     ::init(&node->base);
     node->base.type = NT_GOTO_STATEMENT;
 }
-_defineMake(GotoStatement, NT_GOTO_STATEMENT);
+_defineMake(GotoStatement);
 
 void Ast::Node::init(Label* node) {
     node->span = NULL;
@@ -1058,7 +1050,26 @@ void Ast::Node::init(Label* node) {
     ::init(&node->base);
     node->base.type = NT_LABEL;
 }
-_defineMake(Label, NT_LABEL);
+_defineMake(Label);
+
+void Ast::Node::init(RecordExpression* node) {
+    node->fields = NULL;
+    node->fieldCount = 0;
+    ::init(&node->base);
+    node->flags = 0;// node->flags |= IS_UNORDERED;
+    node->base.type = EXT_STRUCT;
+}
+_defineMake(RecordExpression);
+
+void Ast::Node::init(EnumExpression* node) {
+    node->members = NULL;
+    node->memberCount = 0;
+    ::init(&node->base);
+    node->type = NULL;
+    node->memberType = NULL;
+    node->base.type = EXT_ENUM;
+}
+_defineMake(EnumExpression);
 
 void Ast::Node::init(TypeDefinition* node) {
     node->type = NULL;
@@ -1068,13 +1079,13 @@ void Ast::Node::init(TypeDefinition* node) {
     node->base.flags |= IS_UNORDERED;
     node->base.type = NT_TYPE_DEFINITION;
 }
-_defineMake(TypeDefinition, NT_TYPE_DEFINITION);
+_defineMake(TypeDefinition);
 
 void Ast::Node::init(Union* node) {
     init(&node->base);
     node->base.base.type = NT_UNION;
 }
-_defineMake(Union, NT_UNION);
+_defineMake(Union);
 
 void Ast::Node::init(ErrorSet* node) {
     node->value = 0;
@@ -1085,7 +1096,14 @@ void Ast::Node::init(ErrorSet* node) {
     ::init(&node->base);
     node->base.type = NT_ERROR;
 }
-_defineMake(ErrorSet, NT_ERROR);
+_defineMake(ErrorSet);
+
+void Ast::Node::init(ErrorSetExpression* node) {
+    node->set = NULL;
+    ::init(&node->base);
+    node->base.type = EXT_ERROR_SET;
+}
+_defineMake(ErrorSetExpression);
 
 void Ast::Node::init(ImportStatement* node) {
     node->fname = String(NULL, 0);
@@ -1094,7 +1112,15 @@ void Ast::Node::init(ImportStatement* node) {
     ::init(&node->base);
     node->base.type = NT_IMPORT;
 }
-_defineMake(ImportStatement, NT_IMPORT);
+_defineMake(ImportStatement);
+
+void Ast::Node::init(DeferStatement* node) {
+    memset(node, 0, sizeof(DeferStatement));
+    node->base.type  = NT_DEFER;
+    node->base.state = NS_UNRESOLVED;
+    node->body = NULL;
+}
+_defineMake(DeferStatement);
 
 void Ast::Node::init(FunctionCall* node) {
     node->fcn = NULL;
@@ -1107,21 +1133,21 @@ void Ast::Node::init(FunctionCall* node) {
     ::init(&node->base);
     node->base.type = EXT_FUNCTION_CALL;
 }
-_defineMake(FunctionCall, AT_EXT_FUNCTION_CALL);
+_defineMake(FunctionCall);
 
 void Ast::Node::init(OperationExpression* node) {
     node->opType = OP_NONE;
     ::init(&node->base);
     node->base.type = EXT_OPERATION;
 }
-_defineMake(OperationExpression, AT_EXT_OPERATION);
+_defineMake(OperationExpression);
 
 void Ast::Node::init(UnaryExpression* node) {
     node->operand = NULL;
     init(&node->base);
     node->base.base.type = EXT_UNARY;
 }
-_defineMake(UnaryExpression, AT_EXT_UNARY);
+_defineMake(UnaryExpression);
 
 void Ast::Node::init(BinaryExpression* node) {
     node->left = NULL;
@@ -1129,27 +1155,27 @@ void Ast::Node::init(BinaryExpression* node) {
     init(&node->base);
     node->base.base.type = EXT_BINARY;
 }
-_defineMake(BinaryExpression, AT_EXT_BINARY);
+_defineMake(BinaryExpression);
 
 void Ast::Node::init(TernaryExpression* node) {
     init(&node->base);
     node->base.base.type = EXT_TERNARY;
 }
-_defineMake(TernaryExpression, AT_EXT_TERNARY);
+_defineMake(TernaryExpression);
 
 void Ast::Node::init(QualifiedName* node) {
     node->path = NULL;
     node->pathSize = 0;
     ::init((INamedEx*) node);
 }
-_defineMake(QualifiedName, AT_QUALIFIED_NAME);
+_defineMake(QualifiedName);
 
 void Ast::Node::init(FunctionPrototype* node) {
     node->inArgCount = 0;
     node->inArgs = NULL;
     node->outArg = NULL;
 }
-_defineMake(FunctionPrototype, AT_FUNCTION_PROTOTYPE);
+_defineMake(FunctionPrototype);
 
 void Ast::Node::init(StringInitialization* node) {
     node->rawData.buff = NULL;
@@ -1159,7 +1185,7 @@ void Ast::Node::init(StringInitialization* node) {
     ::init(&node->base);
     node->base.type = EXT_STRING_INITIALIZATION;
 }
-_defineMake(StringInitialization, AT_EXT_STRING_INITIALIZATION);
+_defineMake(StringInitialization);
 
 void Ast::Node::init(ArrayInitialization* node) {
     node->attributes = NULL;
@@ -1168,7 +1194,7 @@ void Ast::Node::init(ArrayInitialization* node) {
     ::init(&node->base);
     node->base.type = EXT_ARRAY_INITIALIZATION;
 }
-_defineMake(ArrayInitialization, AT_EXT_ARRAY_INITIALIZATION);
+_defineMake(ArrayInitialization);
 
 void Ast::Node::init(TypeInitialization* node) {
     node->fillVar = NULL;
@@ -1179,7 +1205,7 @@ void Ast::Node::init(TypeInitialization* node) {
     ::init(&node->base);
     node->base.type = EXT_TYPE_INITIALIZATION;
 }
-_defineMake(TypeInitialization, AT_EXT_TYPE_INITIALIZATION);
+_defineMake(TypeInitialization);
 
 void Ast::Node::init(RangeExpression* node) {
     node->bidx = NULL;
@@ -1188,9 +1214,10 @@ void Ast::Node::init(RangeExpression* node) {
     ::init(&node->base);
     node->base.type = EXT_RANGE;
 }
-_defineMake(RangeExpression, AT_EXT_RANGE);
+_defineMake(RangeExpression);
 
 void Ast::Node::init(TypeSpecifier* node) {
+    node->base.type = EXT_TYPE;
     node->baseType = Type::DT_VOID;
     node->decoratorCount = NULL;
     node->baseFcn = NULL;
@@ -1198,7 +1225,7 @@ void Ast::Node::init(TypeSpecifier* node) {
     node->decoratorCount = 0;
     node->span = NULL;
 }
-_defineMake(TypeSpecifier, AT_TYPE_SPECIFIER);
+_defineMake(TypeSpecifier);
 
 void Ast::Node::init(Catch* node) {
     node->call = NULL;
@@ -1207,69 +1234,106 @@ void Ast::Node::init(Catch* node) {
     ::init(&node->base);
     node->base.type = EXT_CATCH;
 }
-_defineMake(Catch, AT_EXT_CATCH);
+_defineMake(Catch);
 
 void Ast::Node::init(Cast* node) {
     node->target = NULL;
     node->operand = NULL;
     node->base.type = EXT_CAST;
 }
-_defineMake(Cast, AT_EXT_CAST);
+_defineMake(Cast);
 
 void Ast::Node::init(Alloc* node) {
     ::init(&node->base);
     node->base.type = EXT_ALLOC;
     node->def = makeVariableDefinition();
 }
-_defineMake(Alloc, AT_EXT_ALLOC);
+_defineMake(Alloc);
 
 void Ast::Node::init(Free* node) {
     ::init(&node->base);
     node->var = makeVariable();
 }
-_defineMake(Free, AT_EXT_FREE);
+_defineMake(Free);
 
-#define _defineCopy(T, E) \
+void Ast::Node::init(PointerTypeExpression* node) {
+    ::init(&node->base);
+    node->base.type = EXT_POINTER_TYPE;
+    node->operand = NULL;
+}
+_defineMake(PointerTypeExpression);
+
+void Ast::Node::init(ArrayTypeExpression* node) {
+    ::init(&node->base);
+    node->base.type = EXT_ARRAY_TYPE;
+    node->length = NULL;
+    node->element = NULL;
+}
+_defineMake(ArrayTypeExpression);
+
+void Ast::Node::init(SliceTypeExpression* node) {
+    ::init(&node->base);
+    node->base.type = EXT_SLICE_TYPE;
+    node->flags = 0;
+    node->element = NULL;
+}
+_defineMake(SliceTypeExpression);
+
+void Ast::Node::init(FunctionTypeExpression* node) {
+    ::init(&node->base);
+    node->base.type = EXT_FUNCTION_TYPE;
+    node->fcn = NULL;
+}
+_defineMake(FunctionTypeExpression);
+
+void Ast::Node::init(QualifierTypeExpression* node) {
+    ::init(&node->base);
+    node->base.type = EXT_QUALIFIER_TYPE;
+    node->qualifier = Type::Q_NONE;
+    node->operand = NULL;
+}
+_defineMake(QualifierTypeExpression);
+
+#define _defineCopy(T) \
 T* Ast::Node::copy(T* node) { \
-    T* tmp = (T*) nalloc(E); \
+    T* tmp = alloc<T>(); \
     *tmp = *(node); \
     return tmp; \
 }
 
-_defineCopy(Scope,               NT_SCOPE);
-_defineCopy(Namespace,           NT_NAMESPACE);
-_defineCopy(Using,               NT_USING);
-_defineCopy(CodeBlock,           NT_CODE_BLOCK);
-_defineCopy(Enumerator,          NT_ENUMERATOR);
-_defineCopy(Statement,           NT_STATEMENT);
-_defineCopy(VariableDefinition,  NT_VARIABLE_DEFINITION);
-_defineCopy(VariableAssignment,  NT_VARIABLE_ASSIGNMENT);
-_defineCopy(Variable,            NT_VARIABLE);
-_defineCopy(Function,            NT_FUNCTION);
-_defineCopy(ForeignFunction,     AT_FOREIGN_FUNCTION);
-_defineCopy(Branch,              NT_BRANCH);
-_defineCopy(SwitchCase,          NT_SWITCH_CASE);
-_defineCopy(Loop,                NT_LOOP);
-_defineCopy(ReturnStatement,     NT_RETURN_STATEMENT);
-_defineCopy(ContinueStatement,   NT_CONTINUE_STATEMENT);
-_defineCopy(BreakStatement,      NT_BREAK_STATEMENT);
-_defineCopy(GotoStatement,       NT_GOTO_STATEMENT);
-_defineCopy(Label,               NT_LABEL);
-_defineCopy(TypeDefinition,      NT_TYPE_DEFINITION);
-_defineCopy(Union,               NT_UNION);
-_defineCopy(ErrorSet,            NT_ERROR);
-_defineCopy(ImportStatement,     NT_IMPORT);
-_defineCopy(FunctionCall,        AT_EXT_FUNCTION_CALL);
-_defineCopy(OperationExpression, AT_EXT_OPERATION);
-_defineCopy(UnaryExpression,     AT_EXT_UNARY);
-_defineCopy(BinaryExpression,    AT_EXT_BINARY);
-_defineCopy(TernaryExpression,   AT_EXT_TERNARY);
+_defineCopy(Scope);
+_defineCopy(Namespace);
+_defineCopy(Using);
+_defineCopy(CodeBlock);
+_defineCopy(Enumerator);
+_defineCopy(Statement);
+_defineCopy(VariableDefinition);
+_defineCopy(VariableAssignment);
+_defineCopy(Variable);
+_defineCopy(Function);
+_defineCopy(Branch);
+_defineCopy(SwitchCase);
+_defineCopy(Loop);
+_defineCopy(ReturnStatement);
+_defineCopy(ContinueStatement);
+_defineCopy(BreakStatement);
+_defineCopy(GotoStatement);
+_defineCopy(Label);
+_defineCopy(TypeDefinition);
+_defineCopy(Union);
+_defineCopy(ErrorSet);
+_defineCopy(ImportStatement);
+_defineCopy(FunctionCall);
+_defineCopy(OperationExpression);
+_defineCopy(UnaryExpression);
+_defineCopy(BinaryExpression);
+_defineCopy(TernaryExpression);
 
 Variable* Ast::Node::copy(Variable* dest, Variable* src) {
 
     if (!src) return NULL;
     if (!dest) {
-        dest = (Variable*) nalloc(NT_VARIABLE);
+        dest = alloc<Variable>();
     }
 
     dest->base = src->base;
@@ -1301,7 +1365,7 @@ Variable* Ast::Node::copyRef(Variable* dest, Variable* src) {
 
     if (!src) return NULL;
     if (!dest) {
-        dest = (Variable*) nalloc(NT_VARIABLE);
+        dest = alloc<Variable>();
     }
     if (src == dest) return dest;
 

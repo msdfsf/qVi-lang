@@ -1,0 +1,227 @@
+// =============================================================================
+// Parser snapshots: expressions
+// =============================================================================
+//
+// Scope: the expression ladder — the refreshed grammar.ebnf 'Expressions'.
+// Precedence tests use variable operands so the AST shape survives constant
+// folding in the dump.
+//
+// Conventions:
+//   * every chunk between '#test' markers is compiled standalone
+//   * the LAST standalone '// ...' line before a '#test' is the test name,
+//     so explanations are written as trailing comments on code lines
+//   * positives first, legacy and malformed inputs last
+
+// precedence_arithmetic
+a: i64 = 1; b: i64 = 2; c: i64 = 3;
+r1: i64 = a + b * c;     // * ranks above +
+r2: i64 = a * b + c;
+r3: i64 = a - b - c;     // left-associative
+r4: i64 = a * b / c % a; // same rank, left-associative
+#test ""
+
+// precedence_shift
+a: i64 = 1; b: i64 = 2; c: i64 = 3;
+r1: i64 = a << b + c;  // additive ranks above shift
+r2: i64 = a + b << c;
+r3: i64 = a << b << c; // left-associative
+#test ""
+
+// precedence_relational
+a: i64 = 1; b: i64 = 2; c: i64 = 3;
+r1: i64 = a < b == c;  // (a < b) == c, equality ranks below relational
+r2: i64 = a + b > c;   // additive inside relational
+r3: i64 = a == b * c;  // multiplicative inside equality
+#test ""
+
+// precedence_bitwise
+a: i64 = 1; b: i64 = 2; c: i64 = 3; d: i64 = 4;
+r1: i64 = a | b ~ c & d; // & above ^ above |
+r2: i64 = a & b | c;
+r3: i64 = a ~ b ~ c;     // left-associative
+#test ""
+
+// precedence_logical
+x: i64 = 1; y: i64 = 0; z: i64 = 1;
+r1: i64 = x || y && z; // && ranks above ||
+r2: i64 = x && y || z;
+r3: i64 = x && y == z; // equality inside logical-and
+#test ""
+
+// precedence_cast
+a: i64 = 1; b: i64 = 2; f: f32 = 1.5f;
+r1: i64 = a -> u8 + b;     // cast binds to 'a' only
+r2: i64 = a -> f64 -> i64; // casts chain left to right
+r3: u32 = f => u32;        // bitcast
+r4: u32 = f => u32 + 1;    // bitcast binds before +
+r5: i64 = a + b -> i64;    // docs: parses as a + (b -> i64)
+tiny: u8 = a -> _;         // '_' infers the cast destination
+#test ""
+
+// precedence_unary
+a: i64 = 5; b: i64 = 2; x: i64 = 0; y: i64 = 1;
+arr: [3]i64 = .[1, 2, 3];
+r1: i64 = -a * b;    // (-a) * b
+r2: i64 = b * -a;    // unary binds to the right operand
+r3: i64 = -arr[0];   // postfix ranks above unary: -(arr[0])
+r4: i64 = !x == y;   // (!x) == y
+r5: i64 = ~a & b;    // (~a) & b
+#test ""
+
+// parenthesized
+a: i64 = 1; b: i64 = 2; c: i64 = 3;
+r1: i64 = (a + b) * c; // grouping overrides precedence
+r2: i64 = (a) + (b * c);
+r3: i64 = -(a + b);
+r4: i64 = ((a));       // redundant nesting
+#test ""
+
+// unary_forms
+a: i64 = 5; x: i64 = 0;
+p: ^i64 = &a;   // address-of
+r1: i64 = p^;   // postfix dereference
+r2: i64 = -a;   // negation
+r3: i64 = +a;   // identity
+r4: i64 = ~a;   // bitwise complement
+r5: i64 = !x;   // logical not
+#test ""
+
+// postfix_call
+square: (v: i64) -> i64 { return v * v; }
+add: (u: i64, v: i64) -> i64 { return u + v; }
+zero: () -> i64 { return 0; }
+a: i64 = 3; b: i64 = 4;
+r1: i64 = square(a);
+r2: i64 = square(square(a)); // nested
+r3: i64 = add(a, b);         // multi-argument
+r4: i64 = zero();            // no-argument
+#test ""
+
+// postfix_index
+arr: [3]i64 = .[10, 20, 30];
+m: [2][2]i64 = .[.[1, 2], .[3, 4]];
+r1: i64 = arr[0];
+r2: i64 = m[1][0];         // multi-dimensional
+r3: i64 = arr[1] + arr[2]; // postfix inside binary
+#test ""
+
+// postfix_slice
+arr: [5]i64 = .[10, 20, 30, 40, 50];
+m: [2][2]i64 = .[.[1, 2], .[3, 4]];
+s1: [const]i64 = arr;      // fixed handle over the whole array
+s2: []i64 = arr[1:3];      // rebindable slice
+s3: []i64 = arr[2:];       // open end
+s4: []i64 = arr[:2];       // open start
+s5: []i64 = arr[0:2:4];    // strided, start:step:end
+s6: []i64 = m[0:1][1:2];   // multi-dimensional slicing
+s7: []i64 = m[0:1, 1:2];   // invalid multi-dimensional slicing
+s8: []i64 = arr[::2];      // invlid, only end/begin can be emty
+#test ""
+
+// postfix_member
+Inner := struct { val: i64; };
+Outer := struct { inner: Inner; };
+o: Outer = .{ inner: .{ val: 7 } };
+p: ^Outer = &o;
+r1: i64 = o.inner.val; // nested member chain
+r2: i64 = p.inner.val; // '.' auto-dereferences the pointer
+#test ""
+
+// postfix_chained
+W := struct { vals: [2]i64; };
+w: W = .{ vals: .[5, 6] };
+mk: () -> [2]i64 { return .[1, 2]; }
+r1: i64 = w.vals[1]; // member then index
+r2: i64 = mk()[0];   // call then index
+#test ""
+
+// qualified_names
+x: i64 = 4;
+y: i64 = ::x + 1;          // root-qualified reference
+math: { PI: i64 = 3; }
+area: i64 = math::PI * 2;  // namespace-qualified access
+z: i64 = a::b::c;          // multi-level chain
+::foo: i64 = a;
+#test ""
+
+// array_literals
+a1: [_]i64 = .[1, 2, 3];
+a2: [_]i64 = .[];              // empty
+a3: [_]i64 = .[1, 2, 3,];      // trailing comma
+n1: [_][_]i64 = .[.[1, 2], .[3, 4]]; // nested
+typed: [3]i64 = i64.[1, 2, 3]; // typed literal pins the element type
+inf: [3]i64 = _.[10, 20, 30];  // '_' base resolves to the element type
+#test ""
+
+// struct_literals
+Inner := struct { val: i64; };
+Outer := struct { inner: Inner; };
+P := struct { x: i64; y: i64; };
+o1: Outer = .{ inner: .{ val: 7 } };           // inferred literal, named fields
+o2: Outer = Outer.{ inner: Inner.{ val: 1 } }; // fully typed literals
+o3: Outer = .{ .inner = .{ val: 2 } };         // dotted field name with '='
+pos: Inner = .{ 9 };                           // positional
+p4: P = .{ x: 1, ..: 0 };                      // rest defaults fill unset fields
+empty: P = .{};                                // all defaults
+#test ""
+
+// concatenation
+a: [_]i64 = .[1, 2];
+b: [_]i64 = .[3, 4, 5];
+c: [_]i64 = a .. b;
+d: [_]i64 = .[1] .. .[2] .. .[3]; // left-associative chain
+#test ""
+
+// bool_null_operands
+t: i64 = 1;
+p: ^i64 = null;
+r1: i64 = t && false; // keyword literal as operand
+r2: i64 = p != null;  // null comparison
+#test ""
+
+// compound_assignment
+x: i64 = 10;
+x += 5;
+x -= 3;
+x *= 2;
+x /= 4;
+x %= 5;
+x <<= 1;
+x >>= 1;
+x &= 6;
+x |= 8;
+x ~= 3;
+#test ""
+
+// recovery_unclosed_paren
+a: i64 = 1; b: i64 = 2;
+r1: i64 = (a + b;
+ok: i64 = 3;  // parsing must recover and continue
+#test ""
+
+// recovery_unclosed_call
+add: (u: i64, v: i64) -> i64 { return u + v; }
+a: i64 = 1; b: i64 = 2;
+r1: i64 = add(a, b;
+ok: i64 = 3;  // parsing must recover and continue
+#test ""
+
+// recovery_unclosed_index
+arr: [3]i64 = .[1, 2, 3];
+r1: i64 = arr[1;
+ok: i64 = 3;  // parsing must recover and continue
+#test ""
+
+// recovery_operands
+a: i64 = 1; b: i64 = 2;
+r1: i64 = a + ;     // dangling binary operator
+r2: i64 = a * / b;  // adjacent binary operators
+r3: i64 = ;         // empty initializer
+ok: i64 = 3;        // parsing must recover and continue
+#test ""
+
+// incdec_removed
+ok: i64 = 1;
+r1: i64 = ++ok; // '++' and '--' are not operators
+r2: i64 = --ok;
+#test ""

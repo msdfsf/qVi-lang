@@ -1,0 +1,193 @@
+// =============================================================================
+// Parser snapshots: control_flow
+// =============================================================================
+//
+// Scope: control flow statements — the refreshed grammar.ebnf 'Statements'
+// plus doc.md 'Control Flow'. If/case forms, loop targets and bindings,
+// labels, defer, flow control, return forms. Removed ':'-bodies and labeled
+// if are kept as legacy bad tests, malformed bodies last.
+
+// if_else
+x: i64 = 10;
+if x > 5 {
+    a: i64 = 1;
+} else {
+    a: i64 = 2;
+}
+if x == 10 { b: i64 = 3; }
+#test ""
+
+// else_if_ladder
+score: i64 = 75;
+grade: i64 = 0;
+if score >= 90 {
+    grade = 4;
+} else if score >= 70 {
+    grade = 3;
+} else if score >= 60 {
+    grade = 2;
+} else {
+    grade = 1;
+}
+#test ""
+
+// case_when
+x: i64 = 2;
+out: i64 = 0;
+case x {
+    when 1 { out = 10; }
+    when 2 { out = 20; }
+    else { out = 30; }
+}
+#test ""
+
+// loop_infinite
+n: i64 = 0;
+loop {
+    n = n + 1;
+    if n == 3 { break; }
+}
+#test ""
+
+// loop_condition
+n: i64 = 0;
+loop n < 3 {
+    n = n + 1;
+}
+#test ""
+
+// loop_range
+total: i64 = 0;
+loop 0:10 at i {
+    total = total + i;
+}
+loop 0:2:10 at i { }   // strided
+loop 10:-1:0 at i { }   // negative step
+loop :5 at i { }        // open start bound
+#test ""
+
+// loop_array
+vals: [3]i64 = .[10, 20, 30];
+loop vals as v {
+    s: i64 = v;
+}
+loop .[1, 2, 3] as v { }  // literal iterable
+#test ""
+
+// loop_bindings
+arr: [3]i64 = .[1, 2, 3];
+found: i64 = 0;
+loop arr as v at i { }         // item alias plus fresh index
+loop 0:10 at i: i32 { }        // explicit index type
+loop arr as v at &found { }    // '&' binds the counter to an outer variable
+loop arr as v {
+    v = 0;  // 'as' alias writes the element in place
+}
+#test ""
+
+// break_continue
+loop 0:10 at i {
+    if i == 2 { continue; }
+    if i == 5 { break; }
+}
+#test ""
+
+// labels
+x: i64 = 1;
+outer: loop 0:3 at a {
+    inner: loop 0:3 at b {
+        if b == 1 { continue outer; }
+        if a == b { break outer; }
+    }
+}
+menu: case x {
+    when 1 { out: i64 = 10; }
+    else {
+        case y: i64 = 2 {
+            when 2 { break menu; } // labels target outer case statements too
+        }
+    }
+}
+prep: {
+    break prep;
+}
+#test ""
+
+// return_forms
+f: (a: i64) -> i64 { return a; }
+g: () { return; }               // bare return
+h: () -> i64 { return 1, 2; }   // second expression fills the error channel
+#test ""
+
+// defer
+process: () -> i64 {
+    f: i64 = 0;
+    defer f = 99;   // deferred statement form
+    defer {
+        f = 100;    // deferred block form, runs in reverse order of appearance
+    }
+    return f;
+}
+#test ""
+
+// flow_control_orphan
+break;       // no enclosing statement to exit
+continue;    // no enclosing loop to advance
+ok: i64 = 3;
+#test ""
+
+// continue_non_loop_label
+block: {
+    continue block;   // non-loop labels are break targets only
+}
+ok: i64 = 3;
+#test ""
+
+// unknown_label
+loop 0:3 at i {
+    break ghost;   // label was never declared
+}
+ok: i64 = 3;
+#test ""
+
+// legacy_colon_scope
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+val: i64 = 3;
+if val == 3 : ok = 30;   // ':' single-statement bodies were removed, blocks are required
+#test ""
+
+// legacy_case_colon
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+k: i64 = 2;
+out: i64 = 0;
+case k {
+    when 1 : out = 10;  // ':' case clauses were removed, blocks are required
+    when 2 : out = 20;
+}
+#test ""
+
+// legacy_if_label
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+x: i64 = 1;
+check: if x > 0 { break check; } // only loops and cases carry labels now
+#test ""
+
+// legacy_loop_bindings
+ok: i64 = 1;   // anchor statement, keeps the golden section non-empty
+arr: [3]i64 = .[1, 2, 3];
+loop arr as &v { }        // 'as' takes a plain alias, '&' was removed
+loop 0:10 at i32 i { }    // the index type follows the name: 'at i: i32'
+#test ""
+
+// recovery_statement_body
+x: i64 = 1;
+loop 0:10 at i    // loop without a body
+if x > 0          // if without a body
+ok: i64 = 3;      // parsing must recover and continue
+#test ""
+
+// recovery_unclosed_block
+x: i64 = 1;
+{
+    y: i64 = 2;
+#test ""
